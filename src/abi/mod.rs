@@ -43,6 +43,13 @@ pub enum NodeKind {
     Record = 0x09,
     Option = 0x0A,
     Tuple = 0x0B,
+    U8 = 0x0C,
+    U16 = 0x0D,
+    U32 = 0x0E,
+    U64 = 0x0F,
+    S8 = 0x10,
+    S16 = 0x11,
+    Char = 0x12,
 }
 
 #[derive(Debug, Clone)]
@@ -192,11 +199,26 @@ impl GraphBuffer {
                         )));
                     }
                 }
-                NodeKind::S32 | NodeKind::F32 => {
+                NodeKind::S32 | NodeKind::F32 | NodeKind::U32 => {
                     cursor.read_bytes(4)?;
                 }
-                NodeKind::S64 | NodeKind::F64 => {
+                NodeKind::S64 | NodeKind::F64 | NodeKind::U64 => {
                     cursor.read_bytes(8)?;
+                }
+                NodeKind::U8 | NodeKind::S8 => {
+                    cursor.read_bytes(1)?;
+                }
+                NodeKind::U16 | NodeKind::S16 => {
+                    cursor.read_bytes(2)?;
+                }
+                NodeKind::Char => {
+                    let value = cursor.read_u32()?;
+                    let ch = char::from_u32(value).ok_or_else(|| {
+                        AbiError::InvalidEncoding(format!(
+                            "Invalid char scalar at node {index}"
+                        ))
+                    })?;
+                    let _ = ch;
                 }
                 NodeKind::String => {
                     let len = cursor.read_u32()? as usize;
@@ -326,6 +348,13 @@ fn node_kind_from_u8(value: u8) -> Result<NodeKind, AbiError> {
         0x09 => Ok(NodeKind::Record),
         0x0A => Ok(NodeKind::Option),
         0x0B => Ok(NodeKind::Tuple),
+        0x0C => Ok(NodeKind::U8),
+        0x0D => Ok(NodeKind::U16),
+        0x0E => Ok(NodeKind::U32),
+        0x0F => Ok(NodeKind::U64),
+        0x10 => Ok(NodeKind::S8),
+        0x11 => Ok(NodeKind::S16),
+        0x12 => Ok(NodeKind::Char),
         _ => Err(AbiError::InvalidTag(value)),
     }
 }
@@ -336,6 +365,30 @@ impl GraphCodec for Value {
             Value::Bool(value) => Ok(encoder.push_node(Node {
                 kind: NodeKind::Bool,
                 payload: vec![u8::from(*value)],
+            })),
+            Value::U8(value) => Ok(encoder.push_node(Node {
+                kind: NodeKind::U8,
+                payload: vec![*value],
+            })),
+            Value::U16(value) => Ok(encoder.push_node(Node {
+                kind: NodeKind::U16,
+                payload: value.to_le_bytes().to_vec(),
+            })),
+            Value::U32(value) => Ok(encoder.push_node(Node {
+                kind: NodeKind::U32,
+                payload: value.to_le_bytes().to_vec(),
+            })),
+            Value::U64(value) => Ok(encoder.push_node(Node {
+                kind: NodeKind::U64,
+                payload: value.to_le_bytes().to_vec(),
+            })),
+            Value::S8(value) => Ok(encoder.push_node(Node {
+                kind: NodeKind::S8,
+                payload: value.to_le_bytes().to_vec(),
+            })),
+            Value::S16(value) => Ok(encoder.push_node(Node {
+                kind: NodeKind::S16,
+                payload: value.to_le_bytes().to_vec(),
             })),
             Value::S32(value) => Ok(encoder.push_node(Node {
                 kind: NodeKind::S32,
@@ -352,6 +405,10 @@ impl GraphCodec for Value {
             Value::F64(value) => Ok(encoder.push_node(Node {
                 kind: NodeKind::F64,
                 payload: value.to_le_bytes().to_vec(),
+            })),
+            Value::Char(value) => Ok(encoder.push_node(Node {
+                kind: NodeKind::Char,
+                payload: (*value as u32).to_le_bytes().to_vec(),
             })),
             Value::String(value) => {
                 let bytes = value.as_bytes();
@@ -425,15 +482,6 @@ impl GraphCodec for Value {
                     payload: payload_bytes,
                 }))
             }
-            Value::U8(_)
-            | Value::U16(_)
-            | Value::U32(_)
-            | Value::U64(_)
-            | Value::S8(_)
-            | Value::S16(_) => Err(AbiError::TypeMismatch {
-                expected: "supported Value variant".to_string(),
-                got: format!("{self:?}"),
-            }),
         }
     }
 
@@ -466,6 +514,21 @@ fn decode_value(
     let mut cursor = Cursor::new(&node.payload);
     let value = match node.kind {
         NodeKind::Bool => Value::Bool(cursor.read_u8()? == 1),
+        NodeKind::U8 => Value::U8(cursor.read_u8()?),
+        NodeKind::U16 => {
+            let raw = cursor.read_u16()?;
+            Value::U16(raw)
+        }
+        NodeKind::U32 => Value::U32(cursor.read_u32()?),
+        NodeKind::U64 => Value::U64(cursor.read_u64()?),
+        NodeKind::S8 => {
+            let raw = cursor.read_u8()?;
+            Value::S8(i8::from_le_bytes([raw]))
+        }
+        NodeKind::S16 => {
+            let raw = cursor.read_u16()?;
+            Value::S16(i16::from_le_bytes(raw.to_le_bytes()))
+        }
         NodeKind::S32 => {
             let raw = cursor.read_u32()?;
             Value::S32(i32::from_le_bytes(raw.to_le_bytes()))
@@ -481,6 +544,12 @@ fn decode_value(
         NodeKind::F64 => {
             let raw = cursor.read_u64()?;
             Value::F64(f64::from_le_bytes(raw.to_le_bytes()))
+        }
+        NodeKind::Char => {
+            let raw = cursor.read_u32()?;
+            let ch = char::from_u32(raw)
+                .ok_or_else(|| AbiError::InvalidEncoding("Invalid char scalar".to_string()))?;
+            Value::Char(ch)
         }
         NodeKind::String => {
             let len = cursor.read_u32()? as usize;

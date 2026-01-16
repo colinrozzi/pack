@@ -4,10 +4,17 @@ use composite::abi::{decode, encode, GraphBuffer, Node, NodeKind, Value};
 fn roundtrip_primitives() {
     let values = vec![
         Value::Bool(true),
+        Value::U8(250),
+        Value::U16(65000),
+        Value::U32(4_000_000_000),
+        Value::U64(9_223_372_036_854_775_000),
+        Value::S8(-5),
+        Value::S16(-32000),
         Value::S32(-42),
         Value::S64(9_223_372_036_854_775_000),
         Value::F32(3.5),
         Value::F64(-1.25),
+        Value::Char('z'),
         Value::String("hello".to_string()),
     ];
 

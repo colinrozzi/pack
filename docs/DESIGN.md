@@ -214,6 +214,13 @@ tag     type        encoding
 0x09    record      u32 field_count + u32[field_count] child_indices
 0x0A    option      u8 has_value + [u32 child_index]
 0x0B    tuple       u32 arity + u32[arity] child_indices
+0x0C    u8          u8
+0x0D    u16         u16 little-endian
+0x0E    u32         u32 little-endian
+0x0F    u64         u64 little-endian
+0x10    s8          i8
+0x11    s16         i16 little-endian
+0x12    char        u32 Unicode scalar
 ```
 
 ### Validation Rules

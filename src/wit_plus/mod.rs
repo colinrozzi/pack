@@ -4,9 +4,11 @@
 
 mod types;
 mod parser;
+mod validation;
 
 pub use types::*;
 pub use parser::parse_interface;
+pub use validation::{validate_graph_against_type, ValidationError};
 
 use std::collections::HashSet;
 
