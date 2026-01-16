@@ -4,26 +4,34 @@ use std::collections::HashMap;
 
 use crate::abi::{Decoder, GraphBuffer, GraphCodec, Limits, NodeKind, Value};
 use crate::wit_plus::{EnumDef, FlagsDef, RecordDef, Type, TypeDef, VariantDef};
+use thiserror::Error;
 
-#[derive(Debug)]
+#[derive(Debug, Error)]
 pub enum ValidationError {
+    #[error("Invalid encoding: {0}")]
     InvalidEncoding(String),
+    #[error("Undefined type: {0}")]
     UndefinedType(String),
+    #[error("Self reference used outside of a type definition")]
     SelfRefOutsideType,
+    #[error("Type mismatch at node {node}: expected {expected}, got {actual}")]
     TypeMismatch {
         node: u32,
         expected: String,
         actual: String,
     },
+    #[error("Variant tag out of range at node {node}: tag {tag}, max {max}")]
     VariantTagOutOfRange {
         node: u32,
         tag: u32,
         max: usize,
     },
+    #[error("Variant payload mismatch at node {node} tag {tag}")]
     VariantPayloadMismatch {
         node: u32,
         tag: u32,
     },
+    #[error("Unsupported type: {0}")]
     UnsupportedType(String),
 }
 
