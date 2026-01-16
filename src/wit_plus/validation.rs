@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use crate::abi::{GraphBuffer, NodeKind};
+use crate::abi::{Decoder, GraphBuffer, GraphCodec, Limits, NodeKind, Value};
 use crate::wit_plus::{EnumDef, FlagsDef, RecordDef, Type, TypeDef, VariantDef};
 
 #[derive(Debug)]
@@ -50,6 +50,25 @@ pub fn validate_graph_against_type(
         &map,
         &mut assigned,
     )
+}
+
+pub fn decode_with_schema(
+    types: &[TypeDef],
+    bytes: &[u8],
+    root_type: &Type,
+    limits: Option<&Limits>,
+) -> Result<Value, ValidationError> {
+    let limits = limits.copied().unwrap_or_default();
+    let buffer = GraphBuffer::from_bytes_with_limits(bytes, &limits)
+        .map_err(|err| ValidationError::InvalidEncoding(err.to_string()))?;
+    buffer
+        .validate_basic_with_limits(&limits)
+        .map_err(|err| ValidationError::InvalidEncoding(err.to_string()))?;
+    validate_graph_against_type(types, &buffer, root_type)?;
+
+    let decoder = Decoder::new(&buffer);
+    Value::decode_graph(&decoder, buffer.root)
+        .map_err(|err| ValidationError::InvalidEncoding(err.to_string()))
 }
 
 fn validate_type(

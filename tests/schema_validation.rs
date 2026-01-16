@@ -1,5 +1,7 @@
 use composite::abi::{encode, GraphBuffer, Node, NodeKind};
-use composite::wit_plus::{parse_interface, validate_graph_against_type, Type, ValidationError};
+use composite::wit_plus::{
+    decode_with_schema, parse_interface, validate_graph_against_type, Type, ValidationError,
+};
 use composite::abi::Value;
 
 #[test]
@@ -101,6 +103,53 @@ fn reject_wrong_node_kind() {
 
     let err = validate_graph_against_type(&[], &buffer, &Type::String)
         .expect_err("expected validation error");
+
+    match err {
+        ValidationError::TypeMismatch { .. } => {}
+        _ => panic!("unexpected error: {err:?}"),
+    }
+}
+
+#[test]
+fn decode_with_schema_roundtrip() {
+    let src = r#"
+        interface api {
+            variant node { leaf(s64), list(list<node>) }
+        }
+    "#;
+    let interface = parse_interface(src).expect("parse");
+
+    let value = Value::Variant {
+        tag: 0,
+        payload: Some(Box::new(Value::S64(42))),
+    };
+    let bytes = encode(&value).expect("encode");
+    let decoded =
+        decode_with_schema(&interface.types, &bytes, &Type::Named("node".to_string()), None)
+            .expect("decode");
+
+    assert_eq!(decoded, value);
+}
+
+#[test]
+fn decode_with_schema_rejects_mismatch() {
+    let src = r#"
+        interface api {
+            variant node { leaf(s64), list(list<node>) }
+        }
+    "#;
+    let interface = parse_interface(src).expect("parse");
+
+    let value = Value::String("bad".to_string());
+    let bytes = encode(&value).expect("encode");
+
+    let err = decode_with_schema(
+        &interface.types,
+        &bytes,
+        &Type::Named("node".to_string()),
+        None,
+    )
+    .expect_err("expected validation error");
 
     match err {
         ValidationError::TypeMismatch { .. } => {}
