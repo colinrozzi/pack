@@ -30,6 +30,25 @@ pub enum AbiError {
 const MAGIC: u32 = u32::from_le_bytes(*b"CGRF");
 const VERSION: u16 = 1;
 
+#[derive(Debug, Clone, Copy)]
+pub struct Limits {
+    pub max_buffer_size: usize,
+    pub max_node_count: usize,
+    pub max_payload_size: usize,
+    pub max_sequence_len: usize,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            max_buffer_size: 16 * 1024 * 1024,
+            max_node_count: 1_000_000,
+            max_payload_size: 8 * 1024 * 1024,
+            max_sequence_len: 1_000_000,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeKind {
     Bool = 0x01,
@@ -118,8 +137,9 @@ pub fn encode(value: &Value) -> Result<Vec<u8>, AbiError> {
 
 /// Decode bytes to a value (graph-encoded ABI)
 pub fn decode(bytes: &[u8]) -> Result<Value, AbiError> {
-    let buffer = GraphBuffer::from_bytes(bytes)?;
-    buffer.validate_basic()?;
+    let limits = Limits::default();
+    let buffer = GraphBuffer::from_bytes_with_limits(bytes, &limits)?;
+    buffer.validate_basic_with_limits(&limits)?;
     let decoder = Decoder::new(&buffer);
     Value::decode_graph(&decoder, buffer.root)
 }
@@ -145,8 +165,17 @@ impl GraphBuffer {
         out
     }
 
-    pub fn from_bytes(_bytes: &[u8]) -> Result<Self, AbiError> {
-        let mut cursor = Cursor::new(_bytes);
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, AbiError> {
+        let limits = Limits::default();
+        Self::from_bytes_with_limits(bytes, &limits)
+    }
+
+    pub fn from_bytes_with_limits(bytes: &[u8], limits: &Limits) -> Result<Self, AbiError> {
+        if bytes.len() > limits.max_buffer_size {
+            return Err(AbiError::InvalidEncoding("Buffer too large".to_string()));
+        }
+
+        let mut cursor = Cursor::new(bytes);
         let magic = cursor.read_u32()?;
         if magic != MAGIC {
             return Err(AbiError::InvalidEncoding("Invalid magic".to_string()));
@@ -159,6 +188,9 @@ impl GraphBuffer {
 
         let _flags = cursor.read_u16()?;
         let node_count = cursor.read_u32()? as usize;
+        if node_count > limits.max_node_count {
+            return Err(AbiError::InvalidEncoding("Node count exceeds limit".to_string()));
+        }
         let root = cursor.read_u32()?;
 
         let mut nodes = Vec::with_capacity(node_count);
@@ -167,6 +199,9 @@ impl GraphBuffer {
             let _node_flags = cursor.read_u8()?;
             let _reserved = cursor.read_u16()?;
             let payload_len = cursor.read_u32()? as usize;
+            if payload_len > limits.max_payload_size {
+                return Err(AbiError::InvalidEncoding("Payload too large".to_string()));
+            }
             let payload = cursor.read_bytes(payload_len)?.to_vec();
             nodes.push(Node { kind, payload });
         }
@@ -183,12 +218,25 @@ impl GraphBuffer {
     }
 
     pub fn validate_basic(&self) -> Result<(), AbiError> {
+        let limits = Limits::default();
+        self.validate_basic_with_limits(&limits)
+    }
+
+    pub fn validate_basic_with_limits(&self, limits: &Limits) -> Result<(), AbiError> {
         let node_count = self.nodes.len();
         if (self.root as usize) >= node_count {
             return Err(AbiError::InvalidEncoding("Root index out of range".to_string()));
         }
+        if node_count > limits.max_node_count {
+            return Err(AbiError::InvalidEncoding("Node count exceeds limit".to_string()));
+        }
 
         for (index, node) in self.nodes.iter().enumerate() {
+            if node.payload.len() > limits.max_payload_size {
+                return Err(AbiError::InvalidEncoding(format!(
+                    "Payload too large at node {index}"
+                )));
+            }
             let mut cursor = Cursor::new(&node.payload);
             match node.kind {
                 NodeKind::Bool => {
@@ -231,6 +279,11 @@ impl GraphBuffer {
                 }
                 NodeKind::List | NodeKind::Record | NodeKind::Tuple => {
                     let count = cursor.read_u32()? as usize;
+                    if count > limits.max_sequence_len {
+                        return Err(AbiError::InvalidEncoding(format!(
+                            "Sequence too large at node {index}"
+                        )));
+                    }
                     for _ in 0..count {
                         let child = cursor.read_u32()? as usize;
                         if child >= node_count {
