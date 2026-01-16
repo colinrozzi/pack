@@ -488,6 +488,21 @@ impl GraphCodec for Value {
                     payload,
                 }))
             }
+            Value::Tuple(items) => {
+                let mut child_indices = Vec::with_capacity(items.len());
+                for item in items {
+                    child_indices.push(item.encode_graph(encoder)?);
+                }
+                let mut payload = Vec::with_capacity(4 + 4 * child_indices.len());
+                payload.extend_from_slice(&(child_indices.len() as u32).to_le_bytes());
+                for child in child_indices {
+                    payload.extend_from_slice(&child.to_le_bytes());
+                }
+                Ok(encoder.push_node(Node {
+                    kind: NodeKind::Tuple,
+                    payload,
+                }))
+            }
             Value::Option(value) => {
                 let mut payload = Vec::new();
                 if let Some(inner) = value {
@@ -637,7 +652,7 @@ fn decode_value(
                 let child = cursor.read_u32()?;
                 items.push(decode_value(decoder, child, cache, visiting)?);
             }
-            Value::List(items)
+            Value::Tuple(items)
         }
         NodeKind::Option => {
             let has_value = cursor.read_u8()?;

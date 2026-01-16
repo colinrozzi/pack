@@ -23,6 +23,7 @@ pub enum Value {
     // Compound
     List(Vec<Value>),
     Option(Option<Box<Value>>),
+    Tuple(Vec<Value>),
     Record(Vec<(String, Value)>),
     Variant { tag: usize, payload: Option<Box<Value>> },
 }

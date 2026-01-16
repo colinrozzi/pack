@@ -29,7 +29,7 @@ fn roundtrip_primitives() {
 fn roundtrip_nested_values() {
     let value = Value::List(vec![
         Value::String("a".to_string()),
-        Value::List(vec![Value::S64(1), Value::S64(2)]),
+        Value::Tuple(vec![Value::S64(1), Value::S64(2)]),
         Value::Option(Some(Box::new(Value::Bool(false)))),
     ]);
 
