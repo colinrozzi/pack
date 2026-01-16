@@ -3,7 +3,8 @@
 //! Parses top-level type definitions and validates named references.
 
 use super::{
-    EnumDef, FlagsDef, Interface, ParseError, RecordDef, Type, TypeDef, VariantCase, VariantDef,
+    EnumDef, FlagsDef, Interface, InterfaceExport, InterfaceImport, ParseError, RecordDef, Type,
+    TypeDef, VariantCase, VariantDef,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -131,6 +132,8 @@ fn parse_interface_body(parser: &mut Parser, interface: &mut Interface) -> Resul
             "enum" => interface.add_type(parse_enum(parser)?),
             "flags" => interface.add_type(parse_flags(parser)?),
             "func" => interface.add_function(parse_func(parser, None)?),
+            "import" => interface.add_import(parse_import_block(parser)?),
+            "export" => interface.add_export(parse_export_block(parser)?),
             _ => return Err(ParseError::UnexpectedToken(keyword)),
         }
     }
@@ -257,6 +260,46 @@ fn parse_func(
         params,
         results,
     })
+}
+
+fn parse_import_block(parser: &mut Parser) -> Result<InterfaceImport, ParseError> {
+    let name = parser.expect_ident()?;
+    parser.expect_symbol('{')?;
+    let functions = parse_function_block(parser)?;
+    parser.expect_symbol('}')?;
+    Ok(InterfaceImport { name, functions })
+}
+
+fn parse_export_block(parser: &mut Parser) -> Result<InterfaceExport, ParseError> {
+    let name = parser.expect_ident()?;
+    parser.expect_symbol('{')?;
+    let functions = parse_function_block(parser)?;
+    parser.expect_symbol('}')?;
+    Ok(InterfaceExport { name, functions })
+}
+
+fn parse_function_block(parser: &mut Parser) -> Result<Vec<super::Function>, ParseError> {
+    let mut functions = Vec::new();
+
+    while !parser.is_eof() {
+        if parser.accept_symbol(';') {
+            continue;
+        }
+        if matches!(parser.peek(), Token::Symbol('}')) {
+            break;
+        }
+        if let Some(func) = try_parse_named_func(parser)? {
+            functions.push(func);
+            continue;
+        }
+        if parser.accept_ident("func") {
+            functions.push(parse_func(parser, None)?);
+            continue;
+        }
+        return Err(ParseError::UnexpectedToken(parser.expect_ident()?));
+    }
+
+    Ok(functions)
 }
 
 fn parse_params(parser: &mut Parser) -> Result<Vec<(String, Type)>, ParseError> {
@@ -515,5 +558,23 @@ mod tests {
         let interface = parse_interface(src).expect("parse");
         assert_eq!(interface.types.len(), 2);
         assert_eq!(interface.functions.len(), 1);
+    }
+
+    #[test]
+    fn parse_imports_and_exports() {
+        let src = r#"
+            variant node { leaf(s64) }
+            import host {
+                log: func(msg: string)
+            }
+            export api {
+                process: func(input: node) -> node
+            }
+        "#;
+
+        let interface = parse_interface(src).expect("parse");
+        assert_eq!(interface.imports.len(), 1);
+        assert_eq!(interface.exports.len(), 1);
+        assert_eq!(interface.types.len(), 1);
     }
 }

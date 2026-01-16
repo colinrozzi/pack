@@ -36,6 +36,8 @@ pub struct Interface {
     pub name: String,
     pub types: Vec<TypeDef>,
     pub functions: Vec<Function>,
+    pub imports: Vec<InterfaceImport>,
+    pub exports: Vec<InterfaceExport>,
 }
 
 /// A function signature
@@ -52,6 +54,8 @@ impl Interface {
             name: name.into(),
             types: Vec::new(),
             functions: Vec::new(),
+            imports: Vec::new(),
+            exports: Vec::new(),
         }
     }
 
@@ -61,6 +65,14 @@ impl Interface {
 
     pub fn add_function(&mut self, func: Function) {
         self.functions.push(func);
+    }
+
+    pub fn add_import(&mut self, import: InterfaceImport) {
+        self.imports.push(import);
+    }
+
+    pub fn add_export(&mut self, export: InterfaceExport) {
+        self.exports.push(export);
     }
 
     pub fn validate(&self) -> Result<(), ParseError> {
@@ -96,8 +108,42 @@ impl Interface {
             }
         }
 
+        for import in &self.imports {
+            for func in &import.functions {
+                for (_, ty) in &func.params {
+                    validate_type_ref(ty, &names, false)?;
+                }
+                for ty in &func.results {
+                    validate_type_ref(ty, &names, false)?;
+                }
+            }
+        }
+
+        for export in &self.exports {
+            for func in &export.functions {
+                for (_, ty) in &func.params {
+                    validate_type_ref(ty, &names, false)?;
+                }
+                for ty in &func.results {
+                    validate_type_ref(ty, &names, false)?;
+                }
+            }
+        }
+
         Ok(())
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct InterfaceImport {
+    pub name: String,
+    pub functions: Vec<Function>,
+}
+
+#[derive(Debug, Clone)]
+pub struct InterfaceExport {
+    pub name: String,
+    pub functions: Vec<Function>,
 }
 
 fn validate_type_ref(
