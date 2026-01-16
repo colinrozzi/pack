@@ -33,52 +33,36 @@ There's no fixed `sizeof(tree)` - the size depends on runtime data.
 
 For message-passing architectures (like actor systems), data is serialized when crossing boundaries anyway. The fixed-layout constraint provides no benefit - we're already paying the serialization cost.
 
-## Solution: WIT+ with Serialization ABI
+## Solution: WIT+ with Graph ABI
 
-Composite extends WIT with a `rec` keyword for recursive types. These types use a serialization-based ABI instead of fixed-layout:
+Composite defines a WIT+ dialect where recursion is allowed by default. All
+values cross the boundary using a graph-encoded ABI:
 
 ```wit
-rec variant sexpr {
+variant sexpr {
     sym(string),
     num(s64),
     lst(list<sexpr>),
 }
 ```
 
-**Key insight**: The component boundary becomes a natural serialization point. Components internally can represent recursive data however they want; only the boundary encoding is specified.
+**Key insight**: The component boundary becomes a natural serialization point.
+Components internally can represent recursive data however they want; only the
+boundary encoding is specified.
 
 ## Design Principles
 
-### 1. Superset Compatibility
+### 1. Unified ABI
 
-Any valid WIT file is a valid WIT+ file. Standard types behave identically.
+WIT+ uses a single graph-encoded ABI for all values, regardless of whether types
+are recursive. This removes any canonical ABI interop guarantees in exchange for
+a consistent runtime model.
 
-```
-WIT ⊂ WIT+
-```
+### 2. WIT+ Dialect
 
-This means:
-- Existing tooling partially works (parsing standard portions)
-- Migration path: start with standard WIT, add recursive types as needed
-- Components not using recursive types work everywhere
-
-### 2. Explicit Recursion
-
-Recursive types must be explicitly marked with `rec`:
-
-```wit
-// This fails - recursion not allowed in standard variant
-variant bad {
-    node(list<bad>),  // ERROR
-}
-
-// This works - explicitly recursive
-rec variant good {
-    node(list<good>),  // OK
-}
-```
-
-This makes the ABI implications clear: `rec` types use serialization, others use canonical ABI.
+WIT+ is a new dialect with recursion allowed by default and a single ABI. It is
+not wire-compatible with canonical ABI components, and interop requires
+explicit adapters at the boundary.
 
 ### 3. Pluggable Execution
 
@@ -96,9 +80,9 @@ Initial implementation uses `wasmi` for simplicity; can swap to `wasmtime` for p
 
 ### 4. Symmetric ABI
 
-The serialization format is the same regardless of direction:
-- Host → Component: serialize, write to memory, pass (ptr, len)
-- Component → Host: component writes to memory, returns (ptr, len), host deserializes
+All values use the same ABI regardless of direction:
+- Host → Component: encode to graph buffer, write to memory, pass (ptr, len)
+- Component → Host: component writes buffer, returns (ptr, len), host decodes
 
 This symmetry simplifies the mental model and implementation.
 
@@ -106,16 +90,20 @@ This symmetry simplifies the mental model and implementation.
 
 ### Layer 1: WIT+ Parser
 
-Extends WIT grammar with:
+Defines a WIT+ grammar with recursion allowed by default:
 
 ```
-type-def ::= ... | rec-type-def
-
-rec-type-def ::= 'rec' 'variant' id '{' variant-cases '}'
-              | 'rec' 'group' '{' type-def* '}'
+type-def ::= variant-def | record-def | enum-def | flags-def | alias-def
 ```
 
-The `rec group` form handles mutually recursive types.
+Mutual recursion is allowed by named references among type definitions.
+
+**Name resolution and recursion rules**
+
+- All type definitions in a file share a single namespace.
+- Named references are resolved by that namespace, regardless of order.
+- Cycles are permitted; the type graph may be cyclic.
+- Undefined names are a hard error.
 
 ### Layer 2: Type System
 
@@ -126,9 +114,6 @@ enum TypeDef {
     Variant(VariantDef),
     Enum(EnumDef),
     Flags(FlagsDef),
-
-    // Extended
-    Recursive(RecursiveDef),
 }
 
 enum Type {
@@ -136,20 +121,19 @@ enum Type {
     // Compounds: List, Option, Result, Tuple
     // References
     Named(String),
-    SelfRef,  // Reference to enclosing rec type
+    SelfRef,  // Reference to enclosing type definition
 }
 ```
 
+Mutual recursion is represented by `Named` references that resolve to other
+type definitions in the same namespace.
+
 ### Layer 3: ABI Encoding
 
-**Standard types**: Use canonical ABI (or close approximation)
-- Fixed-size types inline
-- Strings/lists as (ptr, len)
-
-**Recursive types**: Use tagged binary encoding
-- Self-describing format
-- Length-prefixed for nested structures
-- Efficient for tree-structured data
+**All types**: Use a schema-aware graph encoding
+- Arena layout with node indices
+- Validated against the WIT+ schema at the boundary
+- Supports shared subtrees and cycles
 
 ### Layer 4: Component Linker
 
@@ -157,8 +141,7 @@ enum Type {
 impl Runtime {
     fn instantiate(&mut self, component: &Component) -> Instance {
         // For each import:
-        //   If standard type: bind with canonical ABI
-        //   If recursive type: bind with serialization wrapper
+        //   Bind with graph-encoded ABI wrappers
 
         // For each export:
         //   Register with appropriate ABI handling
@@ -176,36 +159,183 @@ runtime.bind_import("my-interface", "process", |sexpr: SExpr| {
 });
 ```
 
-## Serialization Format
+## Recursive ABI: Graph-Encoded Arena
 
-Tagged, self-describing binary format:
+Recursive values are encoded into a self-contained arena that supports shared
+subtrees and cycles. The ABI payload is a single contiguous byte buffer passed
+as (ptr, len). This keeps v1 copy-friendly while enabling future zero/low-copy
+"view" decoding.
+
+### Serialization Format vs Tagged Encoding
+
+WIT+ uses a schema-aware graph encoding. The type schema is known at the
+boundary, so values do not carry per-value type tags or field names. This keeps
+the format compact and makes validation a schema-driven process.
+
+In contrast, a tagged/self-describing format would embed type tags with every
+value. That is not the chosen design for WIT+.
+
+### Buffer Layout (Little Endian)
+
+```
+u32 magic = 'CGRF'
+u16 version = 1
+u16 flags
+
+u32 node_count
+u32 root_index
+
+Node[node_count]
+```
+
+Each node has a fixed header followed by a variable payload:
+
+```
+u8  kind
+u8  flags
+u16 reserved
+u32 payload_len
+<payload bytes>
+```
+
+### Node Kinds (v1)
 
 ```
 tag     type        encoding
 ----    ----        --------
-0x00    bool        u8 (0 or 1)
-0x01    s32         i32 little-endian
-0x02    s64         i64 little-endian
-0x03    f32         f32 little-endian
-0x04    f64         f64 little-endian
-0x05    string      u32 length + utf8 bytes
-0x06    list        u32 count + elements
-0x07    variant     u32 tag + u8 has_payload + [payload]
-0x08    option      u8 has_value + [value]
-0x09    record      u32 field_count + (name + value)*
-0x0A    u8          u8
-0x0B    u16         u16 little-endian
-0x0C    u32         u32 little-endian
-0x0D    u64         u64 little-endian
+0x01    bool        u8 (0 or 1)
+0x02    s32         i32 little-endian
+0x03    s64         i64 little-endian
+0x04    f32         f32 little-endian
+0x05    f64         f64 little-endian
+0x06    string      u32 length + utf8 bytes
+0x07    list        u32 count + u32[count] child_indices
+0x08    variant     u32 case_tag + u8 has_payload + [u32 child_index]
+0x09    record      u32 field_count + u32[field_count] child_indices
+0x0A    option      u8 has_value + [u32 child_index]
+0x0B    tuple       u32 arity + u32[arity] child_indices
 ```
 
-This format is:
-- Self-describing (no schema needed to parse)
-- Reasonably compact
-- Easy to implement in any language
-- Supports arbitrary nesting
+### Validation Rules
+
+- All child indices must be < node_count.
+- payload_len must match the actual payload size.
+- Values are validated against the WIT+ schema at the boundary:
+  - If a field type is `list<sexpr>`, the node must be `list` and each child
+    must validate as `sexpr`.
+  - Variant case tags must be in range and payload presence must match the case.
+
+### Mapping Recursive Types
+
+Example:
+
+```wit
+variant sexpr {
+    sym(string),
+    num(s64),
+    lst(list<sexpr>),
+}
+```
+
+- `sexpr` values are encoded as `variant` nodes.
+- `sym` references a `string` node.
+- `num` references an `s64` node.
+- `lst` references a `list` node whose children reference `sexpr` nodes.
+
+This encoding permits shared subtrees and cycles by referencing existing node
+indices.
 
 ## Open Questions
+
+### ABI Considerations
+
+These should be specified alongside the graph encoding:
+
+- Type-checking algorithm: validation rules for nodes vs WIT+ schema.
+- Error model: how decode/validation errors are surfaced to host/component.
+- Limits: maximum node count, max string/list sizes, recursion depth, total buffer size.
+- Determinism: canonicalization rules (e.g., record field order).
+- Memory ownership: who allocates/frees recursive buffers.
+- Versioning: magic/version/flags evolution strategy.
+- Security: DoS protections for large or cyclic graphs.
+
+### Type-Checking Algorithm (Sketch)
+
+At the recursive ABI boundary, validate the graph buffer against the expected
+WIT+ type.
+
+1. Parse header, bounds-check counts, and build a table of node headers and
+   payload slices (without interpreting payloads yet).
+2. Validate the root node against the expected type using a DFS with memoization
+   on (node_index, expected_type).
+3. For each node:
+   - Ensure the node kind matches the expected type.
+   - For list/tuple/record/variant/option, validate child indices are in range.
+   - Recursively validate each child against its expected type.
+4. If a node is reached again with a different expected type, fail with a type
+   mismatch error.
+5. Enforce payload_len and primitive constraints (e.g., UTF-8 strings).
+
+This algorithm allows cycles by tracking visited (node_index, expected_type)
+pairs and short-circuiting repeats.
+
+### Error Model (Sketch)
+
+Errors are structural (malformed buffer) or semantic (type mismatch):
+
+- MalformedBuffer: invalid magic/version, out-of-bounds indices, payload_len
+  mismatch, invalid UTF-8, truncated payload.
+- TypeMismatch: node kind does not match expected WIT+ type, variant tag out of
+  range, option/variant payload presence mismatch.
+- LimitExceeded: buffer size, node count, recursion depth, or string/list size
+  limits exceeded.
+
+Errors should include a stable code and optional context (node index, expected
+type, actual kind). The ABI should not expose internal pointers or host-specific
+details.
+
+### Limits (Sketch)
+
+Defaults should be conservative and configurable by the runtime:
+
+- Max buffer size: 16 MiB
+- Max node count: 1,000,000
+- Max string size: 8 MiB
+- Max list/tuple/record arity: 1,000,000
+- Max recursion depth during validation: 10,000
+
+Any limit violation yields LimitExceeded.
+
+### Determinism (Sketch)
+
+- Record fields are serialized in WIT declaration order.
+- Variant case tags use WIT declaration order (0-based).
+- Tuple ordering matches the WIT tuple order.
+
+This keeps encoding deterministic and stable across toolchains.
+
+### Memory Ownership (Sketch)
+
+Values cross the boundary as (ptr, len) buffers:
+
+- Host -> Component: host allocates buffer in component memory (via allocator
+  import), passes (ptr, len), then frees after call returns.
+- Component -> Host: component allocates buffer in its memory, returns (ptr,
+  len), and exposes a `free` export for host to release.
+
+This mirrors the established component string/list ownership pattern.
+
+### Versioning (Sketch)
+
+- The header includes magic + version + flags.
+- Minor, backward-compatible extensions set feature flags.
+- Major changes bump the version and require explicit opt-in.
+
+### Security (Sketch)
+
+- Strict bounds checking on all indices and payload lengths.
+- Enforce limits to avoid memory blowups or pathological cycles.
+- Treat invalid UTF-8 or malformed payloads as MalformedBuffer.
 
 ### 1. Schema Evolution
 
@@ -221,13 +351,7 @@ For very large trees, full serialization may be expensive. Could support:
 - Chunked encoding
 - Reference to already-serialized subtrees
 
-### 3. Canonical ABI Interop
-
-Can we compose with standard components that don't know about recursive types?
-- Probably: just don't expose recursive types in the shared interface
-- May need explicit "flatten" operations
-
-### 4. Performance
+### 3. Performance
 
 Serialization overhead vs fixed-layout ABI:
 - Measure actual overhead
@@ -256,6 +380,59 @@ Serialization overhead vs fixed-layout ABI:
 - [ ] Bindgen for other languages?
 - [ ] Integration with Theater
 - [ ] Integration with Wisp
+
+## MVP Definition (Draft)
+
+### Target Use Case
+
+Round-trip a minimal recursive `node` value across the component boundary using
+the graph-encoded ABI.
+
+Example WIT+ type:
+
+```wit
+variant node {
+    leaf(s64),
+    list(list<node>),
+}
+```
+
+Mutual recursion example:
+
+```wit
+variant expr {
+    literal(lit),
+    add(expr, expr),
+}
+
+variant lit {
+    number(f64),
+    quoted(expr),
+}
+```
+
+### Required Capabilities
+
+- Parse WIT+ with recursive and mutually recursive type definitions.
+- Encode/decode recursive values to/from the graph buffer.
+- Instantiate a component in `wasmi`.
+- Host calls an exported function taking a recursive type and receives a
+  recursive return.
+- Component calls a host import taking a recursive type and receives a
+  recursive return.
+
+### Acceptance Tests
+
+1. **Parse**: A WIT+ file with recursive and mutually recursive types parses
+   without error.
+2. **Round-trip encode/decode**: Encoding then decoding a deeply nested `node`
+   yields structural equality.
+3. **Component -> Host**: A component returns a transformed `node` (e.g.,
+   wraps a leaf in a list) and the host decodes it correctly.
+4. **Host -> Component**: Host passes a recursive `node` to a component
+   function and gets the expected response.
+5. **Validation**: Malformed buffers and type mismatches are rejected with
+   stable error codes.
 
 ## References
 
