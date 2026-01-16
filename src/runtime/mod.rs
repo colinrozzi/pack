@@ -3,7 +3,7 @@
 //! Handles component instantiation, linking, and execution.
 
 use crate::abi::{encode, Value};
-use crate::wit_plus::{decode_with_schema, Type, TypeDef};
+use crate::wit_plus::{decode_with_schema, encode_with_schema, Type, TypeDef};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -49,6 +49,16 @@ impl Runtime {
 
     pub fn encode_result(&self, value: &Value) -> Result<Vec<u8>, RuntimeError> {
         encode(value).map_err(|err| RuntimeError::AbiError(err.to_string()))
+    }
+
+    pub fn encode_result_with_schema(
+        &self,
+        types: &[TypeDef],
+        value: &Value,
+        ty: &Type,
+    ) -> Result<Vec<u8>, RuntimeError> {
+        encode_with_schema(types, value, ty)
+            .map_err(|err| RuntimeError::SchemaError(err.to_string()))
     }
 }
 
@@ -102,6 +112,31 @@ mod tests {
 
         let err = runtime
             .decode_arg(&interface.types, &bytes, &Type::Named("node".to_string()))
+            .expect_err("expected error");
+
+        match err {
+            RuntimeError::SchemaError(_) => {}
+            _ => panic!("unexpected error: {err:?}"),
+        }
+    }
+
+    #[test]
+    fn encode_result_rejects_mismatch() {
+        let src = r#"
+            interface api {
+                record config { name: string }
+            }
+        "#;
+        let interface = parse_interface(src).expect("parse");
+        let runtime = Runtime::new();
+
+        let value = Value::Record(vec![("wrong".to_string(), Value::String("x".to_string()))]);
+        let err = runtime
+            .encode_result_with_schema(
+                &interface.types,
+                &value,
+                &Type::Named("config".to_string()),
+            )
             .expect_err("expected error");
 
         match err {

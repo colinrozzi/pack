@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use crate::abi::{Decoder, GraphBuffer, GraphCodec, Limits, NodeKind, Value};
+use crate::abi::{encode, Decoder, GraphBuffer, GraphCodec, Limits, NodeKind, Value};
 use crate::wit_plus::{EnumDef, FlagsDef, RecordDef, Type, TypeDef, VariantDef};
 use thiserror::Error;
 
@@ -77,6 +77,19 @@ pub fn decode_with_schema(
     let decoder = Decoder::new(&buffer);
     Value::decode_graph(&decoder, buffer.root)
         .map_err(|err| ValidationError::InvalidEncoding(err.to_string()))
+}
+
+pub fn encode_with_schema(
+    types: &[TypeDef],
+    value: &Value,
+    root_type: &Type,
+) -> Result<Vec<u8>, ValidationError> {
+    let mut map = HashMap::new();
+    for def in types {
+        map.insert(def.name().to_string(), def);
+    }
+    validate_value(value, root_type, None, &map)?;
+    encode(value).map_err(|err| ValidationError::InvalidEncoding(err.to_string()))
 }
 
 fn validate_type(
@@ -231,6 +244,224 @@ fn validate_typedef(
         TypeDef::Variant(variant) => validate_variant(buffer, index, variant, types, assigned),
         TypeDef::Enum(enum_def) => validate_enum(buffer, index, enum_def),
         TypeDef::Flags(flags) => validate_flags(buffer, index, flags),
+    }
+}
+
+fn validate_value(
+    value: &Value,
+    ty: &Type,
+    self_name: Option<&str>,
+    types: &HashMap<String, &TypeDef>,
+) -> Result<(), ValidationError> {
+    match (value, ty) {
+        (Value::Bool(_), Type::Bool) => Ok(()),
+        (Value::U8(_), Type::U8)
+        | (Value::U16(_), Type::U16)
+        | (Value::U32(_), Type::U32)
+        | (Value::U64(_), Type::U64) => Ok(()),
+        (Value::S8(_), Type::S8) | (Value::S16(_), Type::S16) => Ok(()),
+        (Value::S32(_), Type::S32) | (Value::S64(_), Type::S64) => Ok(()),
+        (Value::F32(_), Type::F32) | (Value::F64(_), Type::F64) => Ok(()),
+        (Value::Char(_), Type::Char) => Ok(()),
+        (Value::String(_), Type::String) => Ok(()),
+        (Value::List(items), Type::List(inner)) => {
+            for item in items {
+                validate_value(item, inner, self_name, types)?;
+            }
+            Ok(())
+        }
+        (Value::Option(option), Type::Option(inner)) => {
+            if let Some(item) = option.as_deref() {
+                validate_value(item, inner, self_name, types)?;
+            }
+            Ok(())
+        }
+        (Value::Tuple(items), Type::Tuple(inner_types)) => {
+            if items.len() != inner_types.len() {
+                return Err(ValidationError::TypeMismatch {
+                    node: 0,
+                    expected: format!("tuple({})", inner_types.len()),
+                    actual: format!("tuple({})", items.len()),
+                });
+            }
+            for (item, inner) in items.iter().zip(inner_types) {
+                validate_value(item, inner, self_name, types)?;
+            }
+            Ok(())
+        }
+        (value, Type::Named(name)) => {
+            let def = types
+                .get(name)
+                .ok_or_else(|| ValidationError::UndefinedType(name.clone()))?;
+            validate_value_named(value, def, types, self_name)
+        }
+        (value, Type::SelfRef) => {
+            let name = self_name.ok_or(ValidationError::SelfRefOutsideType)?;
+            let def = types
+                .get(name)
+                .ok_or_else(|| ValidationError::UndefinedType(name.to_string()))?;
+            validate_value_named(value, def, types, self_name)
+        }
+        (value, _) => Err(ValidationError::TypeMismatch {
+            node: 0,
+            expected: format!("{ty:?}"),
+            actual: format!("{value:?}"),
+        }),
+    }
+}
+
+fn validate_value_named(
+    value: &Value,
+    def: &TypeDef,
+    types: &HashMap<String, &TypeDef>,
+    self_name: Option<&str>,
+) -> Result<(), ValidationError> {
+    match def {
+        TypeDef::Alias(_, ty) => validate_value(value, ty, self_name, types),
+        TypeDef::Record(record) => match value {
+            Value::Record(fields) => {
+                if fields.len() != record.fields.len() {
+                    return Err(ValidationError::TypeMismatch {
+                        node: 0,
+                        expected: format!("record({})", record.fields.len()),
+                        actual: format!("record({})", fields.len()),
+                    });
+                }
+                for ((field_name, field_ty), (value_name, value)) in
+                    record.fields.iter().zip(fields)
+                {
+                    if field_name != value_name {
+                        return Err(ValidationError::TypeMismatch {
+                            node: 0,
+                            expected: format!("field {field_name}"),
+                            actual: format!("field {value_name}"),
+                        });
+                    }
+                    validate_value(value, field_ty, Some(&record.name), types)?;
+                }
+                Ok(())
+            }
+            _ => Err(ValidationError::TypeMismatch {
+                node: 0,
+                expected: format!("record({})", record.fields.len()),
+                actual: format!("{value:?}"),
+            }),
+        },
+        TypeDef::Variant(variant) => match value {
+            Value::Variant { tag, payload } => {
+                validate_value_variant(*tag, payload.as_deref(), def, types)?;
+                Ok(())
+            }
+            _ => Err(ValidationError::TypeMismatch {
+                node: 0,
+                expected: format!("variant({})", variant.cases.len()),
+                actual: format!("{value:?}"),
+            }),
+        },
+        TypeDef::Enum(enum_def) => match value {
+            Value::Variant { tag, payload } => {
+                if *tag >= enum_def.cases.len() {
+                    return Err(ValidationError::VariantTagOutOfRange {
+                        node: 0,
+                        tag: *tag as u32,
+                        max: enum_def.cases.len(),
+                    });
+                }
+                if payload.is_some() {
+                    return Err(ValidationError::VariantPayloadMismatch {
+                        node: 0,
+                        tag: *tag as u32,
+                    });
+                }
+                Ok(())
+            }
+            _ => Err(ValidationError::TypeMismatch {
+                node: 0,
+                expected: format!("enum({})", enum_def.cases.len()),
+                actual: format!("{value:?}"),
+            }),
+        },
+        TypeDef::Flags(flags) => match value {
+            Value::Flags(mask) => {
+                if flags.flags.len() > 64 {
+                    return Err(ValidationError::UnsupportedType(format!(
+                        "flags size {} exceeds 64",
+                        flags.flags.len()
+                    )));
+                }
+                let max_mask = if flags.flags.len() == 64 {
+                    u64::MAX
+                } else {
+                    (1u64 << flags.flags.len()) - 1
+                };
+                if *mask & !max_mask != 0 {
+                    return Err(ValidationError::TypeMismatch {
+                        node: 0,
+                        expected: format!("flags mask <= {max_mask:#x}"),
+                        actual: format!("{mask:#x}"),
+                    });
+                }
+                Ok(())
+            }
+            _ => Err(ValidationError::TypeMismatch {
+                node: 0,
+                expected: format!("flags({})", flags.flags.len()),
+                actual: format!("{value:?}"),
+            }),
+        },
+    }
+}
+
+fn validate_value_variant(
+    tag: usize,
+    payload: Option<&Value>,
+    def: &TypeDef,
+    types: &HashMap<String, &TypeDef>,
+) -> Result<(), ValidationError> {
+    let variant = match def {
+        TypeDef::Variant(variant) => variant,
+        TypeDef::Enum(enum_def) => {
+            if tag >= enum_def.cases.len() {
+                return Err(ValidationError::VariantTagOutOfRange {
+                    node: 0,
+                    tag: tag as u32,
+                    max: enum_def.cases.len(),
+                });
+            }
+            if payload.is_some() {
+                return Err(ValidationError::VariantPayloadMismatch {
+                    node: 0,
+                    tag: tag as u32,
+                });
+            }
+            return Ok(());
+        }
+        _ => {
+            return Err(ValidationError::TypeMismatch {
+                node: 0,
+                expected: format!("{def:?}"),
+                actual: "variant".to_string(),
+            })
+        }
+    };
+
+    if tag >= variant.cases.len() {
+        return Err(ValidationError::VariantTagOutOfRange {
+            node: 0,
+            tag: tag as u32,
+            max: variant.cases.len(),
+        });
+    }
+    let case = &variant.cases[tag];
+    match (&case.payload, payload) {
+        (None, None) => Ok(()),
+        (Some(payload_ty), Some(payload_value)) => {
+            validate_value(payload_value, payload_ty, Some(&variant.name), types)
+        }
+        _ => Err(ValidationError::VariantPayloadMismatch {
+            node: 0,
+            tag: tag as u32,
+        }),
     }
 }
 

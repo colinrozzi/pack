@@ -1,6 +1,7 @@
 use composite::abi::{encode, GraphBuffer, Node, NodeKind};
 use composite::wit_plus::{
-    decode_with_schema, parse_interface, validate_graph_against_type, Type, ValidationError,
+    decode_with_schema, encode_with_schema, parse_interface, validate_graph_against_type, Type,
+    ValidationError,
 };
 use composite::abi::Value;
 
@@ -176,4 +177,27 @@ fn validate_flags_mask() {
         &Type::Named("mode".to_string()),
     )
     .expect("schema validate");
+}
+
+#[test]
+fn encode_with_schema_rejects_record_field_order() {
+    let src = r#"
+        interface api {
+            record config { name: string, enabled: bool }
+        }
+    "#;
+    let interface = parse_interface(src).expect("parse");
+
+    let value = Value::Record(vec![
+        ("enabled".to_string(), Value::Bool(true)),
+        ("name".to_string(), Value::String("x".to_string())),
+    ]);
+
+    let err = encode_with_schema(&interface.types, &value, &Type::Named("config".to_string()))
+        .expect_err("expected error");
+
+    match err {
+        ValidationError::TypeMismatch { .. } => {}
+        _ => panic!("unexpected error: {err:?}"),
+    }
 }
