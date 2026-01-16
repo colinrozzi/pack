@@ -166,6 +166,94 @@ impl GraphBuffer {
 
         Ok(Self { nodes, root })
     }
+
+    pub fn validate_basic(&self) -> Result<(), AbiError> {
+        let node_count = self.nodes.len();
+        if (self.root as usize) >= node_count {
+            return Err(AbiError::InvalidEncoding("Root index out of range".to_string()));
+        }
+
+        for (index, node) in self.nodes.iter().enumerate() {
+            let mut cursor = Cursor::new(&node.payload);
+            match node.kind {
+                NodeKind::Bool => {
+                    let value = cursor.read_u8()?;
+                    if value > 1 {
+                        return Err(AbiError::InvalidEncoding(format!(
+                            "Invalid bool payload at node {index}"
+                        )));
+                    }
+                }
+                NodeKind::S32 | NodeKind::F32 => {
+                    cursor.read_bytes(4)?;
+                }
+                NodeKind::S64 | NodeKind::F64 => {
+                    cursor.read_bytes(8)?;
+                }
+                NodeKind::String => {
+                    let len = cursor.read_u32()? as usize;
+                    let bytes = cursor.read_bytes(len)?;
+                    std::str::from_utf8(bytes).map_err(|_| {
+                        AbiError::InvalidEncoding(format!(
+                            "Invalid UTF-8 string at node {index}"
+                        ))
+                    })?;
+                }
+                NodeKind::List | NodeKind::Record | NodeKind::Tuple => {
+                    let count = cursor.read_u32()? as usize;
+                    for _ in 0..count {
+                        let child = cursor.read_u32()? as usize;
+                        if child >= node_count {
+                            return Err(AbiError::InvalidEncoding(format!(
+                                "Child index out of range at node {index}"
+                            )));
+                        }
+                    }
+                }
+                NodeKind::Option => {
+                    let has_value = cursor.read_u8()?;
+                    if has_value > 1 {
+                        return Err(AbiError::InvalidEncoding(format!(
+                            "Invalid option flag at node {index}"
+                        )));
+                    }
+                    if has_value == 1 {
+                        let child = cursor.read_u32()? as usize;
+                        if child >= node_count {
+                            return Err(AbiError::InvalidEncoding(format!(
+                                "Child index out of range at node {index}"
+                            )));
+                        }
+                    }
+                }
+                NodeKind::Variant => {
+                    cursor.read_u32()?;
+                    let has_payload = cursor.read_u8()?;
+                    if has_payload > 1 {
+                        return Err(AbiError::InvalidEncoding(format!(
+                            "Invalid variant payload flag at node {index}"
+                        )));
+                    }
+                    if has_payload == 1 {
+                        let child = cursor.read_u32()? as usize;
+                        if child >= node_count {
+                            return Err(AbiError::InvalidEncoding(format!(
+                                "Child index out of range at node {index}"
+                            )));
+                        }
+                    }
+                }
+            }
+
+            if !cursor.is_eof() {
+                return Err(AbiError::InvalidEncoding(format!(
+                    "Trailing payload bytes at node {index}"
+                )));
+            }
+        }
+
+        Ok(())
+    }
 }
 
 struct Cursor<'a> {
