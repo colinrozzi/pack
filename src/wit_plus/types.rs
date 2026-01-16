@@ -1,6 +1,6 @@
 //! WIT+ Type Definitions
 //!
-//! Supports all standard WIT types plus recursive types.
+//! Supports WIT+ types with recursion allowed by default.
 
 use serde::{Deserialize, Serialize};
 
@@ -22,9 +22,6 @@ pub enum TypeDef {
     /// flags foo { ... }
     Flags(FlagsDef),
 
-    /// rec variant foo { ... }
-    /// Recursive types - the key extension!
-    Recursive(RecursiveDef),
 }
 
 impl TypeDef {
@@ -35,12 +32,7 @@ impl TypeDef {
             TypeDef::Variant(v) => &v.name,
             TypeDef::Enum(e) => &e.name,
             TypeDef::Flags(f) => &f.name,
-            TypeDef::Recursive(r) => &r.name,
         }
-    }
-
-    pub fn is_recursive(&self) -> bool {
-        matches!(self, TypeDef::Recursive(_))
     }
 }
 
@@ -74,7 +66,7 @@ pub enum Type {
     // Named type reference
     Named(String),
 
-    // Self-reference within a recursive type
+    // Self-reference within a type definition
     SelfRef,
 }
 
@@ -144,49 +136,33 @@ pub struct FlagsDef {
     pub flags: Vec<String>,
 }
 
-/// rec variant name { ... }
-/// A recursive type definition - uses serialization ABI instead of fixed layout
-#[derive(Debug, Clone)]
-pub struct RecursiveDef {
-    pub name: String,
-    pub cases: Vec<VariantCase>,
-}
-
-impl RecursiveDef {
-    /// Create a new recursive variant definition
-    pub fn new(name: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            cases: Vec::new(),
-        }
-    }
-
-    /// Add a case with no payload
-    pub fn add_case(&mut self, name: impl Into<String>) {
-        self.cases.push(VariantCase {
-            name: name.into(),
-            payload: None,
-        });
-    }
-
-    /// Add a case with a payload type
-    pub fn add_case_with_payload(&mut self, name: impl Into<String>, payload: Type) {
-        self.cases.push(VariantCase {
-            name: name.into(),
-            payload: Some(payload),
-        });
-    }
-}
-
 /// Helper to build an sexpr type (common use case)
-pub fn sexpr_type() -> RecursiveDef {
-    let mut def = RecursiveDef::new("sexpr");
-    def.add_case_with_payload("sym", Type::String);
-    def.add_case_with_payload("num", Type::S64);
-    def.add_case_with_payload("flt", Type::F64);
-    def.add_case_with_payload("str", Type::String);
-    def.add_case_with_payload("lst", Type::list(Type::SelfRef));
-    def
+pub fn sexpr_type() -> VariantDef {
+    VariantDef {
+        name: "sexpr".to_string(),
+        cases: vec![
+            VariantCase {
+                name: "sym".to_string(),
+                payload: Some(Type::String),
+            },
+            VariantCase {
+                name: "num".to_string(),
+                payload: Some(Type::S64),
+            },
+            VariantCase {
+                name: "flt".to_string(),
+                payload: Some(Type::F64),
+            },
+            VariantCase {
+                name: "str".to_string(),
+                payload: Some(Type::String),
+            },
+            VariantCase {
+                name: "lst".to_string(),
+                payload: Some(Type::list(Type::SelfRef)),
+            },
+        ],
+    }
 }
 
 #[cfg(test)]

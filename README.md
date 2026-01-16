@@ -14,14 +14,15 @@ The WebAssembly Component Model's WIT interface definition language doesn't supp
 
 The standard workaround is to use **resources** (opaque handles) and manipulate trees through indirection. This works but is awkward for message-passing architectures where data is serialized anyway.
 
-**Composite** extends WIT with recursive types, using a serialization-based ABI that naturally handles arbitrary-depth structures.
+**Composite** defines a WIT+ dialect with recursion allowed by default and a
+graph-encoded ABI that naturally handles arbitrary-depth structures.
 
 ## Design Goals
 
-1. **Superset of WIT** - Standard WIT files work unchanged
-2. **Recursive types** - First-class support via `rec` keyword
+1. **WIT+ dialect** - Recursion is allowed by default
+2. **Simple authoring** - No `rec` keywords or blocks
 3. **Compatible execution** - Uses standard WASM runtimes (wasmi, wasmtime)
-4. **Clean ABI** - Recursive types serialize; standard types use canonical ABI
+4. **Single ABI** - Graph-encoded schema-aware serialization for all values
 
 ## Extended WIT Syntax
 
@@ -37,8 +38,8 @@ variant color {
     named(string),
 }
 
-// NEW: Recursive types
-rec variant sexpr {
+// NEW: Recursive types (implicit)
+variant sexpr {
     sym(string),
     num(s64),
     flt(f64),
@@ -47,16 +48,14 @@ rec variant sexpr {
 }
 
 // NEW: Mutually recursive types
-rec group {
-    variant expr {
-        literal(lit),
-        binary(string, expr, expr),
-    }
+variant expr {
+    literal(lit),
+    binary(string, expr, expr),
+}
 
-    variant lit {
-        number(f64),
-        quoted(expr),  // Cross-reference within group
-    }
+variant lit {
+    number(f64),
+    quoted(expr),  // Cross-reference across types
 }
 ```
 
@@ -78,9 +77,8 @@ rec group {
 │  ┌─────────────────────────────────────────────────────┐   │
 │  │                    ABI Layer                         │   │
 │  │                                                      │   │
-│  │   Standard types    │    Recursive types            │   │
-│  │   → Canonical ABI   │    → Serialization ABI        │   │
-│  │   (fixed layout)    │    (length-prefixed bytes)    │   │
+│  │   Graph-encoded ABI for all values                  │   │
+│  │   (schema-aware arena encoding)                     │   │
 │  └─────────────────────────────────────────────────────┘   │
 │                           │                                 │
 │                           │                                 │
@@ -92,44 +90,28 @@ rec group {
 └─────────────────────────────────────────────────────────────┘
 ```
 
-## ABI for Recursive Types
+## ABI for WIT+
 
-Recursive types use a tagged, length-prefixed binary encoding:
-
-```
-value ::=
-    | 0x00 <bool>                           -- bool
-    | 0x01 <i32>                            -- s32
-    | 0x02 <i64>                            -- s64
-    | 0x03 <f32>                            -- f32
-    | 0x04 <f64>                            -- f64
-    | 0x05 <len:u32> <bytes:utf8[len]>      -- string
-    | 0x06 <len:u32> <items:value[len]>     -- list
-    | 0x07 <tag:u32> <has_payload:u8> [value]  -- variant
-    ...
-```
-
-When a function parameter or return type involves a recursive type, the runtime:
-1. Serializes the value to bytes
+All values use a schema-aware graph encoding. The runtime:
+1. Encodes the value into a graph buffer
 2. Writes bytes to linear memory
 3. Passes (pointer, length) to the WASM function
-4. Deserializes the result
+4. Decodes the buffer using the expected schema
+
+This format supports shared subtrees and cycles and enables future zero/low-copy
+views over the arena.
 
 ## Compatibility
 
-| Component Type | Standard Runtime | Composite |
-|----------------|------------------|-----------|
-| Standard WIT only | ✓ | ✓ |
-| Uses recursive types | ✗ | ✓ |
-
-Components that only use standard WIT types are fully compatible with other runtimes. Components using recursive types require Composite.
+WIT+ is a new dialect and is not wire-compatible with canonical ABI components.
+Interop requires explicit adapters at the boundary.
 
 ## Use Cases
 
 ### Wisp Compiler (S-expressions)
 
 ```wit
-rec variant sexpr {
+variant sexpr {
     sym(string),
     num(s64),
     lst(list<sexpr>),
@@ -143,7 +125,7 @@ interface macro {
 ### Tree Transformations
 
 ```wit
-rec variant tree {
+variant tree {
     leaf(string),
     node(list<tree>),
 }
@@ -157,7 +139,7 @@ interface transform {
 ### Configuration/Data
 
 ```wit
-rec variant json {
+variant json {
     null,
     bool(bool),
     number(f64),

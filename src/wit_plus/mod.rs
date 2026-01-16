@@ -1,6 +1,6 @@
 //! WIT+ Parser and Type System
 //!
-//! Extends standard WIT with recursive type support.
+//! Defines a WIT+ dialect with recursion allowed by default.
 
 mod types;
 
@@ -16,8 +16,6 @@ pub enum ParseError {
     UnexpectedEof,
     #[error("Invalid type reference: {0}")]
     InvalidTypeRef(String),
-    #[error("Recursive type outside of rec block: {0}")]
-    RecursiveTypeOutsideRec(String),
 }
 
 /// A parsed WIT+ interface

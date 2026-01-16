@@ -2,8 +2,7 @@
 //!
 //! Handles marshaling data between host and WASM components.
 //!
-//! - Standard types use canonical ABI (fixed layout)
-//! - Recursive types use serialization ABI (length-prefixed bytes)
+//! - All types use a graph-encoded ABI (schema-aware)
 
 mod value;
 
@@ -26,12 +25,12 @@ pub enum AbiError {
     InvalidTag(u8),
 }
 
-/// Encode a value to bytes (for recursive types)
+/// Encode a value to bytes (graph-encoded ABI)
 pub fn encode(_value: &Value) -> Vec<u8> {
     todo!("Serialization encoding")
 }
 
-/// Decode bytes to a value (for recursive types)
+/// Decode bytes to a value (graph-encoded ABI)
 pub fn decode(_bytes: &[u8]) -> Result<Value, AbiError> {
     todo!("Serialization decoding")
 }

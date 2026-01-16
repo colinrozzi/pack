@@ -21,11 +21,10 @@
 //!
 //! ## Extended WIT Types
 //!
-//! Standard WIT types work as expected. Additionally, recursive types
-//! are supported with the `rec` keyword:
+//! WIT+ allows recursive types by default:
 //!
 //! ```wit
-//! rec variant sexpr {
+//! variant sexpr {
 //!     sym(string),
 //!     num(s64),
 //!     lst(list<sexpr>),
