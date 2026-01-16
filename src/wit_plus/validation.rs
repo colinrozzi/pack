@@ -325,13 +325,19 @@ fn validate_enum(
 }
 
 fn validate_flags(
-    _buffer: &GraphBuffer,
+    buffer: &GraphBuffer,
     index: u32,
-    _flags: &FlagsDef,
+    flags: &FlagsDef,
 ) -> Result<(), ValidationError> {
-    Err(ValidationError::UnsupportedType(format!(
-        "flags at node {index}"
-    )))
+    let node = &buffer.nodes[index as usize];
+    expect_kind(index, node.kind, NodeKind::Flags)?;
+    if flags.flags.len() > 64 {
+        return Err(ValidationError::UnsupportedType(format!(
+            "flags size {} exceeds 64",
+            flags.flags.len()
+        )));
+    }
+    Ok(())
 }
 
 fn expect_kind(

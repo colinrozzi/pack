@@ -26,6 +26,7 @@ pub enum Value {
     Tuple(Vec<Value>),
     Record(Vec<(String, Value)>),
     Variant { tag: usize, payload: Option<Box<Value>> },
+    Flags(u64),
 }
 
 impl Value {

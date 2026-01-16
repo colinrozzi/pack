@@ -69,6 +69,7 @@ pub enum NodeKind {
     S8 = 0x10,
     S16 = 0x11,
     Char = 0x12,
+    Flags = 0x13,
 }
 
 #[derive(Debug, Clone)]
@@ -268,6 +269,9 @@ impl GraphBuffer {
                     })?;
                     let _ = ch;
                 }
+                NodeKind::Flags => {
+                    cursor.read_bytes(8)?;
+                }
                 NodeKind::String => {
                     let len = cursor.read_u32()? as usize;
                     let bytes = cursor.read_bytes(len)?;
@@ -408,6 +412,7 @@ fn node_kind_from_u8(value: u8) -> Result<NodeKind, AbiError> {
         0x10 => Ok(NodeKind::S8),
         0x11 => Ok(NodeKind::S16),
         0x12 => Ok(NodeKind::Char),
+        0x13 => Ok(NodeKind::Flags),
         _ => Err(AbiError::InvalidTag(value)),
     }
 }
@@ -462,6 +467,10 @@ impl GraphCodec for Value {
             Value::Char(value) => Ok(encoder.push_node(Node {
                 kind: NodeKind::Char,
                 payload: (*value as u32).to_le_bytes().to_vec(),
+            })),
+            Value::Flags(mask) => Ok(encoder.push_node(Node {
+                kind: NodeKind::Flags,
+                payload: mask.to_le_bytes().to_vec(),
             })),
             Value::String(value) => {
                 let bytes = value.as_bytes();
@@ -618,6 +627,10 @@ fn decode_value(
             let ch = char::from_u32(raw)
                 .ok_or_else(|| AbiError::InvalidEncoding("Invalid char scalar".to_string()))?;
             Value::Char(ch)
+        }
+        NodeKind::Flags => {
+            let raw = cursor.read_u64()?;
+            Value::Flags(raw)
         }
         NodeKind::String => {
             let len = cursor.read_u32()? as usize;

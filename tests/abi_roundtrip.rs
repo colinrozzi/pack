@@ -15,6 +15,7 @@ fn roundtrip_primitives() {
         Value::F32(3.5),
         Value::F64(-1.25),
         Value::Char('z'),
+        Value::Flags(0b1011),
         Value::String("hello".to_string()),
     ];
 

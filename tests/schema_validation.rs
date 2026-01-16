@@ -156,3 +156,24 @@ fn decode_with_schema_rejects_mismatch() {
         _ => panic!("unexpected error: {err:?}"),
     }
 }
+
+#[test]
+fn validate_flags_mask() {
+    let src = r#"
+        interface api {
+            flags mode { read, write, exec }
+        }
+    "#;
+    let interface = parse_interface(src).expect("parse");
+
+    let value = Value::Flags(0b101);
+    let bytes = encode(&value).expect("encode");
+    let buffer = GraphBuffer::from_bytes(&bytes).expect("from_bytes");
+
+    validate_graph_against_type(
+        &interface.types,
+        &buffer,
+        &Type::Named("mode".to_string()),
+    )
+    .expect("schema validate");
+}

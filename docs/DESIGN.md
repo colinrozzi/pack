@@ -221,6 +221,7 @@ tag     type        encoding
 0x10    s8          i8
 0x11    s16         i16 little-endian
 0x12    char        u32 Unicode scalar
+0x13    flags       u64 bitmask (0..63)
 ```
 
 ### Validation Rules
