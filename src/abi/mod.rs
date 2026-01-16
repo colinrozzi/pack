@@ -8,6 +8,8 @@ mod value;
 
 pub use value::Value;
 
+use std::collections::{HashMap, HashSet};
+
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -100,13 +102,19 @@ pub trait GraphCodec {
 }
 
 /// Encode a value to bytes (graph-encoded ABI)
-pub fn encode(_value: &Value) -> Vec<u8> {
-    todo!("Serialization encoding")
+pub fn encode(value: &Value) -> Result<Vec<u8>, AbiError> {
+    let mut encoder = Encoder::new();
+    let root = value.encode_graph(&mut encoder)?;
+    let buffer = encoder.finish(root);
+    Ok(buffer.to_bytes())
 }
 
 /// Decode bytes to a value (graph-encoded ABI)
-pub fn decode(_bytes: &[u8]) -> Result<Value, AbiError> {
-    todo!("Serialization decoding")
+pub fn decode(bytes: &[u8]) -> Result<Value, AbiError> {
+    let buffer = GraphBuffer::from_bytes(bytes)?;
+    buffer.validate_basic()?;
+    let decoder = Decoder::new(&buffer);
+    Value::decode_graph(&decoder, buffer.root)
 }
 
 impl GraphBuffer {
@@ -296,6 +304,13 @@ impl<'a> Cursor<'a> {
         let bytes = self.read_bytes(4)?;
         Ok(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
     }
+
+    fn read_u64(&mut self) -> Result<u64, AbiError> {
+        let bytes = self.read_bytes(8)?;
+        Ok(u64::from_le_bytes([
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+        ]))
+    }
 }
 
 fn node_kind_from_u8(value: u8) -> Result<NodeKind, AbiError> {
@@ -313,4 +328,225 @@ fn node_kind_from_u8(value: u8) -> Result<NodeKind, AbiError> {
         0x0B => Ok(NodeKind::Tuple),
         _ => Err(AbiError::InvalidTag(value)),
     }
+}
+
+impl GraphCodec for Value {
+    fn encode_graph(&self, encoder: &mut Encoder) -> Result<u32, AbiError> {
+        match self {
+            Value::Bool(value) => Ok(encoder.push_node(Node {
+                kind: NodeKind::Bool,
+                payload: vec![u8::from(*value)],
+            })),
+            Value::S32(value) => Ok(encoder.push_node(Node {
+                kind: NodeKind::S32,
+                payload: value.to_le_bytes().to_vec(),
+            })),
+            Value::S64(value) => Ok(encoder.push_node(Node {
+                kind: NodeKind::S64,
+                payload: value.to_le_bytes().to_vec(),
+            })),
+            Value::F32(value) => Ok(encoder.push_node(Node {
+                kind: NodeKind::F32,
+                payload: value.to_le_bytes().to_vec(),
+            })),
+            Value::F64(value) => Ok(encoder.push_node(Node {
+                kind: NodeKind::F64,
+                payload: value.to_le_bytes().to_vec(),
+            })),
+            Value::String(value) => {
+                let bytes = value.as_bytes();
+                let mut payload = Vec::with_capacity(4 + bytes.len());
+                payload.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+                payload.extend_from_slice(bytes);
+                Ok(encoder.push_node(Node {
+                    kind: NodeKind::String,
+                    payload,
+                }))
+            }
+            Value::List(items) => {
+                let mut child_indices = Vec::with_capacity(items.len());
+                for item in items {
+                    child_indices.push(item.encode_graph(encoder)?);
+                }
+                let mut payload = Vec::with_capacity(4 + 4 * child_indices.len());
+                payload.extend_from_slice(&(child_indices.len() as u32).to_le_bytes());
+                for child in child_indices {
+                    payload.extend_from_slice(&child.to_le_bytes());
+                }
+                Ok(encoder.push_node(Node {
+                    kind: NodeKind::List,
+                    payload,
+                }))
+            }
+            Value::Option(value) => {
+                let mut payload = Vec::new();
+                if let Some(inner) = value {
+                    payload.push(1);
+                    let child = inner.encode_graph(encoder)?;
+                    payload.extend_from_slice(&child.to_le_bytes());
+                } else {
+                    payload.push(0);
+                }
+                Ok(encoder.push_node(Node {
+                    kind: NodeKind::Option,
+                    payload,
+                }))
+            }
+            Value::Record(fields) => {
+                let mut child_indices = Vec::with_capacity(fields.len());
+                for (_, value) in fields {
+                    child_indices.push(value.encode_graph(encoder)?);
+                }
+                let mut payload = Vec::with_capacity(4 + 4 * child_indices.len());
+                payload.extend_from_slice(&(child_indices.len() as u32).to_le_bytes());
+                for child in child_indices {
+                    payload.extend_from_slice(&child.to_le_bytes());
+                }
+                Ok(encoder.push_node(Node {
+                    kind: NodeKind::Record,
+                    payload,
+                }))
+            }
+            Value::Variant { tag, payload } => {
+                let tag = u32::try_from(*tag).map_err(|_| AbiError::InvalidEncoding(
+                    "Variant tag exceeds u32".to_string(),
+                ))?;
+                let mut payload_bytes = Vec::new();
+                payload_bytes.extend_from_slice(&tag.to_le_bytes());
+                if let Some(inner) = payload {
+                    payload_bytes.push(1);
+                    let child = inner.encode_graph(encoder)?;
+                    payload_bytes.extend_from_slice(&child.to_le_bytes());
+                } else {
+                    payload_bytes.push(0);
+                }
+                Ok(encoder.push_node(Node {
+                    kind: NodeKind::Variant,
+                    payload: payload_bytes,
+                }))
+            }
+            Value::U8(_)
+            | Value::U16(_)
+            | Value::U32(_)
+            | Value::U64(_)
+            | Value::S8(_)
+            | Value::S16(_) => Err(AbiError::TypeMismatch {
+                expected: "supported Value variant".to_string(),
+                got: format!("{self:?}"),
+            }),
+        }
+    }
+
+    fn decode_graph(decoder: &Decoder<'_>, root: u32) -> Result<Self, AbiError> {
+        let mut cache = HashMap::new();
+        let mut visiting = HashSet::new();
+        decode_value(decoder, root, &mut cache, &mut visiting)
+    }
+}
+
+fn decode_value(
+    decoder: &Decoder<'_>,
+    index: u32,
+    cache: &mut HashMap<u32, Value>,
+    visiting: &mut HashSet<u32>,
+) -> Result<Value, AbiError> {
+    if let Some(value) = cache.get(&index) {
+        return Ok(value.clone());
+    }
+
+    if !visiting.insert(index) {
+        return Err(AbiError::InvalidEncoding(
+            "Cycle detected in graph buffer".to_string(),
+        ));
+    }
+
+    let node = decoder.node(index).ok_or_else(|| {
+        AbiError::InvalidEncoding(format!("Node index {index} out of range"))
+    })?;
+    let mut cursor = Cursor::new(&node.payload);
+    let value = match node.kind {
+        NodeKind::Bool => Value::Bool(cursor.read_u8()? == 1),
+        NodeKind::S32 => {
+            let raw = cursor.read_u32()?;
+            Value::S32(i32::from_le_bytes(raw.to_le_bytes()))
+        }
+        NodeKind::S64 => {
+            let raw = cursor.read_u64()?;
+            Value::S64(i64::from_le_bytes(raw.to_le_bytes()))
+        }
+        NodeKind::F32 => {
+            let raw = cursor.read_u32()?;
+            Value::F32(f32::from_le_bytes(raw.to_le_bytes()))
+        }
+        NodeKind::F64 => {
+            let raw = cursor.read_u64()?;
+            Value::F64(f64::from_le_bytes(raw.to_le_bytes()))
+        }
+        NodeKind::String => {
+            let len = cursor.read_u32()? as usize;
+            let bytes = cursor.read_bytes(len)?;
+            let value = std::str::from_utf8(bytes)
+                .map_err(|_| AbiError::InvalidEncoding("Invalid UTF-8".to_string()))?;
+            Value::String(value.to_string())
+        }
+        NodeKind::List => {
+            let count = cursor.read_u32()? as usize;
+            let mut items = Vec::with_capacity(count);
+            for _ in 0..count {
+                let child = cursor.read_u32()?;
+                items.push(decode_value(decoder, child, cache, visiting)?);
+            }
+            Value::List(items)
+        }
+        NodeKind::Record => {
+            let count = cursor.read_u32()? as usize;
+            let mut fields = Vec::with_capacity(count);
+            for idx in 0..count {
+                let child = cursor.read_u32()?;
+                let value = decode_value(decoder, child, cache, visiting)?;
+                fields.push((format!("field{idx}"), value));
+            }
+            Value::Record(fields)
+        }
+        NodeKind::Tuple => {
+            let count = cursor.read_u32()? as usize;
+            let mut items = Vec::with_capacity(count);
+            for _ in 0..count {
+                let child = cursor.read_u32()?;
+                items.push(decode_value(decoder, child, cache, visiting)?);
+            }
+            Value::List(items)
+        }
+        NodeKind::Option => {
+            let has_value = cursor.read_u8()?;
+            let payload = if has_value == 1 {
+                let child = cursor.read_u32()?;
+                Some(Box::new(decode_value(decoder, child, cache, visiting)?))
+            } else {
+                None
+            };
+            Value::Option(payload)
+        }
+        NodeKind::Variant => {
+            let tag = cursor.read_u32()? as usize;
+            let has_payload = cursor.read_u8()?;
+            let payload = if has_payload == 1 {
+                let child = cursor.read_u32()?;
+                Some(Box::new(decode_value(decoder, child, cache, visiting)?))
+            } else {
+                None
+            };
+            Value::Variant { tag, payload }
+        }
+    };
+
+    if !cursor.is_eof() {
+        return Err(AbiError::InvalidEncoding(format!(
+            "Trailing payload bytes at node {index}"
+        )));
+    }
+
+    visiting.remove(&index);
+    cache.insert(index, value.clone());
+    Ok(value)
 }
