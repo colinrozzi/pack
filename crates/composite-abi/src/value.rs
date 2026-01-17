@@ -129,6 +129,12 @@ impl<T: Into<Value>> From<Option<T>> for Value {
     }
 }
 
+impl<T: Into<Value>> From<Box<T>> for Value {
+    fn from(v: Box<T>) -> Self {
+        (*v).into()
+    }
+}
+
 // ============================================================================
 // TryFrom implementations for primitives
 // ============================================================================

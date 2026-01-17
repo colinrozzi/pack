@@ -649,3 +649,281 @@ fn host_imports_clear_logs() {
     // Should only have logs from second call
     assert!(logs2.len() < logs1.len() * 2, "Should only have logs from second call");
 }
+
+// ============================================================================
+// S-expression evaluator tests
+// ============================================================================
+
+/// Load the Rust-compiled sexpr component
+fn load_rust_sexpr_component() -> Vec<u8> {
+    let wasm_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("components/sexpr/target/wasm32-unknown-unknown/release/sexpr_component.wasm");
+    std::fs::read(&wasm_path).unwrap_or_else(|e| {
+        panic!(
+            "Failed to read sexpr component at {}: {}. Run: cd components/sexpr && cargo build --target wasm32-unknown-unknown --release",
+            wasm_path.display(),
+            e
+        )
+    })
+}
+
+/// Helper to create an SExpr value for testing
+#[allow(dead_code)]
+mod sexpr {
+    use composite::abi::Value;
+
+    pub fn sym(s: &str) -> Value {
+        Value::Variant {
+            tag: 0,
+            payload: Some(Box::new(Value::String(s.to_string()))),
+        }
+    }
+
+    pub fn num(n: i64) -> Value {
+        Value::Variant {
+            tag: 1,
+            payload: Some(Box::new(Value::S64(n))),
+        }
+    }
+
+    pub fn float(f: f64) -> Value {
+        Value::Variant {
+            tag: 2,
+            payload: Some(Box::new(Value::F64(f))),
+        }
+    }
+
+    pub fn boolean(b: bool) -> Value {
+        Value::Variant {
+            tag: 4,
+            payload: Some(Box::new(Value::Bool(b))),
+        }
+    }
+
+    pub fn nil() -> Value {
+        Value::Variant { tag: 5, payload: None }
+    }
+
+    pub fn cons(head: Value, tail: Value) -> Value {
+        Value::Variant {
+            tag: 6,
+            payload: Some(Box::new(Value::Tuple(vec![head, tail]))),
+        }
+    }
+
+    pub fn list(items: Vec<Value>) -> Value {
+        let mut result = nil();
+        for item in items.into_iter().rev() {
+            result = cons(item, result);
+        }
+        result
+    }
+
+    pub fn err(msg: &str) -> Value {
+        Value::Variant {
+            tag: 7,
+            payload: Some(Box::new(Value::String(msg.to_string()))),
+        }
+    }
+}
+
+#[test]
+fn sexpr_eval_simple_addition() {
+    let wasm_bytes = load_rust_sexpr_component();
+
+    let runtime = Runtime::new();
+    let module = runtime.load_module(&wasm_bytes).expect("failed to load sexpr component");
+    let mut instance = module.instantiate().expect("failed to instantiate");
+
+    // (+ 1 2 3) => 6
+    let input = sexpr::list(vec![
+        sexpr::sym("+"),
+        sexpr::num(1),
+        sexpr::num(2),
+        sexpr::num(3),
+    ]);
+
+    let output = instance
+        .call_with_value("evaluate", &input, 0)
+        .expect("failed to call evaluate");
+
+    assert_eq!(output, sexpr::num(6));
+}
+
+#[test]
+fn sexpr_eval_nested_arithmetic() {
+    let wasm_bytes = load_rust_sexpr_component();
+
+    let runtime = Runtime::new();
+    let module = runtime.load_module(&wasm_bytes).expect("failed to load sexpr component");
+    let mut instance = module.instantiate().expect("failed to instantiate");
+
+    // (* (+ 2 3) (- 10 4)) => 5 * 6 = 30
+    let input = sexpr::list(vec![
+        sexpr::sym("*"),
+        sexpr::list(vec![sexpr::sym("+"), sexpr::num(2), sexpr::num(3)]),
+        sexpr::list(vec![sexpr::sym("-"), sexpr::num(10), sexpr::num(4)]),
+    ]);
+
+    let output = instance
+        .call_with_value("evaluate", &input, 0)
+        .expect("failed to call evaluate");
+
+    assert_eq!(output, sexpr::num(30));
+}
+
+#[test]
+fn sexpr_eval_comparison() {
+    let wasm_bytes = load_rust_sexpr_component();
+
+    let runtime = Runtime::new();
+    let module = runtime.load_module(&wasm_bytes).expect("failed to load sexpr component");
+    let mut instance = module.instantiate().expect("failed to instantiate");
+
+    // (< 5 10) => true
+    let input = sexpr::list(vec![
+        sexpr::sym("<"),
+        sexpr::num(5),
+        sexpr::num(10),
+    ]);
+
+    let output = instance
+        .call_with_value("evaluate", &input, 0)
+        .expect("failed to call evaluate");
+
+    assert_eq!(output, sexpr::boolean(true));
+}
+
+#[test]
+fn sexpr_eval_if_true() {
+    let wasm_bytes = load_rust_sexpr_component();
+
+    let runtime = Runtime::new();
+    let module = runtime.load_module(&wasm_bytes).expect("failed to load sexpr component");
+    let mut instance = module.instantiate().expect("failed to instantiate");
+
+    // (if (> 10 5) 42 0) => 42
+    let input = sexpr::list(vec![
+        sexpr::sym("if"),
+        sexpr::list(vec![sexpr::sym(">"), sexpr::num(10), sexpr::num(5)]),
+        sexpr::num(42),
+        sexpr::num(0),
+    ]);
+
+    let output = instance
+        .call_with_value("evaluate", &input, 0)
+        .expect("failed to call evaluate");
+
+    assert_eq!(output, sexpr::num(42));
+}
+
+#[test]
+fn sexpr_eval_if_false() {
+    let wasm_bytes = load_rust_sexpr_component();
+
+    let runtime = Runtime::new();
+    let module = runtime.load_module(&wasm_bytes).expect("failed to load sexpr component");
+    let mut instance = module.instantiate().expect("failed to instantiate");
+
+    // (if (< 10 5) 42 0) => 0
+    let input = sexpr::list(vec![
+        sexpr::sym("if"),
+        sexpr::list(vec![sexpr::sym("<"), sexpr::num(10), sexpr::num(5)]),
+        sexpr::num(42),
+        sexpr::num(0),
+    ]);
+
+    let output = instance
+        .call_with_value("evaluate", &input, 0)
+        .expect("failed to call evaluate");
+
+    assert_eq!(output, sexpr::num(0));
+}
+
+#[test]
+fn sexpr_eval_list_operations() {
+    let wasm_bytes = load_rust_sexpr_component();
+
+    let runtime = Runtime::new();
+    let module = runtime.load_module(&wasm_bytes).expect("failed to load sexpr component");
+    let mut instance = module.instantiate().expect("failed to instantiate");
+
+    // (car (list 1 2 3)) => 1
+    let input = sexpr::list(vec![
+        sexpr::sym("car"),
+        sexpr::list(vec![
+            sexpr::sym("list"),
+            sexpr::num(1),
+            sexpr::num(2),
+            sexpr::num(3),
+        ]),
+    ]);
+
+    let output = instance
+        .call_with_value("evaluate", &input, 0)
+        .expect("failed to call evaluate");
+
+    assert_eq!(output, sexpr::num(1));
+}
+
+#[test]
+fn sexpr_eval_length() {
+    let wasm_bytes = load_rust_sexpr_component();
+
+    let runtime = Runtime::new();
+    let module = runtime.load_module(&wasm_bytes).expect("failed to load sexpr component");
+    let mut instance = module.instantiate().expect("failed to instantiate");
+
+    // (length (list 1 2 3 4 5)) => 5
+    let input = sexpr::list(vec![
+        sexpr::sym("length"),
+        sexpr::list(vec![
+            sexpr::sym("list"),
+            sexpr::num(1),
+            sexpr::num(2),
+            sexpr::num(3),
+            sexpr::num(4),
+            sexpr::num(5),
+        ]),
+    ]);
+
+    let output = instance
+        .call_with_value("evaluate", &input, 0)
+        .expect("failed to call evaluate");
+
+    assert_eq!(output, sexpr::num(5));
+}
+
+#[test]
+fn sexpr_eval_complex_expression() {
+    let wasm_bytes = load_rust_sexpr_component();
+
+    let runtime = Runtime::new();
+    let module = runtime.load_module(&wasm_bytes).expect("failed to load sexpr component");
+    let mut instance = module.instantiate().expect("failed to instantiate");
+
+    // (if (and (> 10 5) (< 3 7))
+    //     (+ (* 2 3) (/ 10 2))
+    //     0)
+    // => (6 + 5) = 11
+    let input = sexpr::list(vec![
+        sexpr::sym("if"),
+        sexpr::list(vec![
+            sexpr::sym("and"),
+            sexpr::list(vec![sexpr::sym(">"), sexpr::num(10), sexpr::num(5)]),
+            sexpr::list(vec![sexpr::sym("<"), sexpr::num(3), sexpr::num(7)]),
+        ]),
+        sexpr::list(vec![
+            sexpr::sym("+"),
+            sexpr::list(vec![sexpr::sym("*"), sexpr::num(2), sexpr::num(3)]),
+            sexpr::list(vec![sexpr::sym("/"), sexpr::num(10), sexpr::num(2)]),
+        ]),
+        sexpr::num(0),
+    ]);
+
+    let output = instance
+        .call_with_value("evaluate", &input, 0)
+        .expect("failed to call evaluate");
+
+    assert_eq!(output, sexpr::num(11));
+}

@@ -1,0 +1,14 @@
+[package]
+name = "sexpr-component"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+composite-abi = { path = "../../crates/composite-abi", default-features = false, features = ["derive"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
