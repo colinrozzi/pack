@@ -329,3 +329,133 @@ async fn test_func_async_registration() {
 
     assert_eq!(output, Value::S64(42)); // 21 * 2 = 42
 }
+
+#[tokio::test]
+async fn test_async_ctx_state_access() {
+    use composite::AsyncRuntime;
+
+    /// State that holds a multiplier
+    #[derive(Clone)]
+    struct MultiplierState {
+        multiplier: i64,
+    }
+
+    // Module that calls an async host function
+    let module_wat = r#"
+    (module
+        (import "math" "multiply" (func $multiply (param i32 i32) (result i64)))
+        (memory (export "memory") 1)
+
+        (func $call_multiply (param $in_ptr i32) (param $in_len i32) (result i64)
+            (call $multiply (local.get $in_ptr) (local.get $in_len))
+        )
+
+        (export "call_multiply" (func $call_multiply))
+    )
+    "#;
+
+    let wasm_bytes = wat::parse_str(module_wat).expect("parse WAT");
+    let runtime = AsyncRuntime::new();
+    let module = runtime.load_module(&wasm_bytes).expect("load module");
+
+    // Create state with a multiplier of 10
+    let state = MultiplierState { multiplier: 10 };
+
+    let mut instance = module
+        .instantiate_with_host_async(state, |builder| {
+            builder.interface("math")?.func_async(
+                "multiply",
+                |ctx: composite::AsyncCtx<MultiplierState>, input: Value| async move {
+                    // Access state through ctx.data()
+                    let multiplier = ctx.data().multiplier;
+                    match input {
+                        Value::S64(n) => Value::S64(n * multiplier),
+                        other => other,
+                    }
+                },
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("instantiate");
+
+    // 7 * 10 (from state) = 70
+    let input = Value::S64(7);
+    let output = instance
+        .call_with_value_async("call_multiply", &input, 0)
+        .await
+        .expect("call");
+
+    assert_eq!(output, Value::S64(70));
+}
+
+#[test]
+fn test_error_handler_callback() {
+    use composite::{HostFunctionError, HostFunctionErrorKind};
+    use std::sync::{Arc, Mutex};
+
+    // Track errors via a shared vec
+    let errors: Arc<Mutex<Vec<HostFunctionError>>> = Arc::new(Mutex::new(Vec::new()));
+    let errors_clone = errors.clone();
+
+    // Module that:
+    // 1. Has a host function that uses typed interface
+    // 2. Exports a function that writes bad data and calls the host function
+    let module_wat = r#"
+    (module
+        (import "test" "process" (func $process (param i32 i32) (result i64)))
+        (memory (export "memory") 1)
+
+        ;; Write garbage data to memory and call the host function
+        ;; Returns i32 (truncating the i64 result)
+        (func $trigger_error (param $unused i32) (param $unused2 i32) (result i32)
+            ;; Write invalid Graph ABI data at offset 100
+            (i32.store (i32.const 100) (i32.const 0xDEADBEEF))
+            ;; Call host function with bad data, wrap result to i32
+            (i32.wrap_i64 (call $process (i32.const 100) (i32.const 4)))
+        )
+
+        (export "trigger_error" (func $trigger_error))
+    )
+    "#;
+
+    let wasm_bytes = wat::parse_str(module_wat).expect("parse WAT");
+    let runtime = Runtime::new();
+    let module = runtime.load_module(&wasm_bytes).expect("load module");
+
+    let mut instance = module
+        .instantiate_with_host((), |builder| {
+            // Set custom error handler
+            builder.on_error(move |err| {
+                errors_clone.lock().unwrap().push(err.clone());
+            });
+
+            builder.interface("test")?.func_typed(
+                "process",
+                |_ctx: &mut composite::Ctx<'_, ()>, input: Value| -> Value {
+                    // This will never be reached due to decode error
+                    input
+                },
+            )?;
+            Ok(())
+        })
+        .expect("instantiate");
+
+    // Call the function that writes bad data and triggers the host call
+    let result = instance
+        .call_i32_i32_to_i32("trigger_error", 0, 0)
+        .expect("call");
+
+    // Should return 0 (error indicator from host function, wrapped to i32)
+    assert_eq!(result, 0);
+
+    // Check that our error handler was called
+    let captured_errors = errors.lock().unwrap();
+    assert_eq!(captured_errors.len(), 1);
+    assert_eq!(captured_errors[0].interface, "test");
+    assert_eq!(captured_errors[0].function, "process");
+    assert!(matches!(
+        captured_errors[0].kind,
+        HostFunctionErrorKind::Decode(_)
+    ));
+}

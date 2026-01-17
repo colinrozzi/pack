@@ -6,8 +6,8 @@ mod host;
 mod interface_check;
 
 pub use host::{
-    AsyncCtx, Ctx, DefaultHostProvider, HostFunctionProvider, HostLinkerBuilder, InterfaceBuilder,
-    LinkerError,
+    AsyncCtx, Ctx, DefaultHostProvider, ErrorHandler, HostFunctionError, HostFunctionErrorKind,
+    HostFunctionProvider, HostLinkerBuilder, InterfaceBuilder, LinkerError,
 };
 pub use interface_check::{
     validate_instance_implements_interface, ExpectedSignature, InterfaceError,

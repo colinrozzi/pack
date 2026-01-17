@@ -24,8 +24,77 @@ use crate::abi::{decode, encode, Value};
 use crate::runtime::RuntimeError;
 use std::future::Future;
 use std::marker::PhantomData;
+use std::sync::Arc;
 use thiserror::Error;
 use wasmtime::{Caller, Engine, Linker};
+
+// ============================================================================
+// Error Handling Infrastructure
+// ============================================================================
+
+/// Error that occurred during host function execution.
+///
+/// This provides context about where and why an error occurred,
+/// useful for debugging and logging.
+#[derive(Debug, Clone)]
+pub struct HostFunctionError {
+    /// The interface/module name (e.g., "theater:simple/runtime")
+    pub interface: String,
+    /// The function name (e.g., "log")
+    pub function: String,
+    /// The kind of error that occurred
+    pub kind: HostFunctionErrorKind,
+}
+
+impl std::fmt::Display for HostFunctionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "host function error in {}::{}: {}",
+            self.interface, self.function, self.kind
+        )
+    }
+}
+
+impl std::error::Error for HostFunctionError {}
+
+/// The specific kind of error that occurred in a host function.
+#[derive(Debug, Clone)]
+pub enum HostFunctionErrorKind {
+    /// Failed to read from WASM memory
+    MemoryRead(String),
+    /// Failed to decode Graph ABI data
+    Decode(String),
+    /// Failed to convert Value to the expected type
+    TypeConversion(String),
+    /// Failed to write to WASM memory
+    MemoryWrite(String),
+    /// Failed to encode output as Graph ABI
+    Encode(String),
+}
+
+impl std::fmt::Display for HostFunctionErrorKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MemoryRead(e) => write!(f, "memory read failed: {}", e),
+            Self::Decode(e) => write!(f, "decode failed: {}", e),
+            Self::TypeConversion(e) => write!(f, "type conversion failed: {}", e),
+            Self::MemoryWrite(e) => write!(f, "memory write failed: {}", e),
+            Self::Encode(e) => write!(f, "encode failed: {}", e),
+        }
+    }
+}
+
+/// Handler function for host function errors.
+///
+/// This is called whenever an error occurs in a typed host function,
+/// allowing for logging, metrics, or other error handling.
+pub type ErrorHandler = Arc<dyn Fn(&HostFunctionError) + Send + Sync>;
+
+/// Default error handler that logs to stderr.
+fn default_error_handler(err: &HostFunctionError) {
+    eprintln!("[composite] {}", err);
+}
 
 /// Errors from linker operations
 #[derive(Error, Debug)]
@@ -152,17 +221,40 @@ impl<'a, T> Ctx<'a, T> {
 pub struct HostLinkerBuilder<'a, T> {
     linker: &'a mut Linker<T>,
     engine: &'a Engine,
+    error_handler: Option<ErrorHandler>,
     _marker: PhantomData<T>,
 }
 
 impl<'a, T> HostLinkerBuilder<'a, T> {
-    /// Create a new builder wrapping a wasmi Linker
+    /// Create a new builder wrapping a wasmtime Linker
     pub fn new(engine: &'a Engine, linker: &'a mut Linker<T>) -> Self {
         Self {
             linker,
             engine,
+            error_handler: None,
             _marker: PhantomData,
         }
+    }
+
+    /// Set a custom error handler for host function errors.
+    ///
+    /// The handler is called whenever an error occurs in a typed host function
+    /// (e.g., decode failure, type conversion error, memory write failure).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// builder.on_error(|err| {
+    ///     tracing::error!("Host function error: {}", err);
+    ///     metrics::increment("host_function_errors");
+    /// });
+    /// ```
+    pub fn on_error<F>(&mut self, handler: F) -> &mut Self
+    where
+        F: Fn(&HostFunctionError) + Send + Sync + 'static,
+    {
+        self.error_handler = Some(Arc::new(handler));
+        self
     }
 
     /// Start defining an interface with the given name.
@@ -178,9 +270,11 @@ impl<'a, T> HostLinkerBuilder<'a, T> {
     ///     .func_raw("log", |caller, ptr: i32, len: i32| { ... })?;
     /// ```
     pub fn interface(&mut self, name: &str) -> Result<InterfaceBuilder<'_, 'a, T>, LinkerError> {
+        let error_handler = self.error_handler.clone();
         Ok(InterfaceBuilder {
             linker: self,
             module_name: name.to_string(),
+            error_handler,
         })
     }
 
@@ -196,7 +290,7 @@ impl<'a, T> HostLinkerBuilder<'a, T> {
         Ok(self)
     }
 
-    /// Get the underlying wasmi Linker for advanced operations
+    /// Get the underlying wasmtime Linker for advanced operations
     pub fn inner(&mut self) -> &mut Linker<T> {
         self.linker
     }
@@ -211,7 +305,9 @@ impl<'a, T> HostLinkerBuilder<'a, T> {
 pub struct InterfaceBuilder<'a, 'b, T> {
     linker: &'a mut HostLinkerBuilder<'b, T>,
     module_name: String,
+    error_handler: Option<ErrorHandler>,
 }
+
 
 impl<'a, 'b, T: 'static> InterfaceBuilder<'a, 'b, T> {
     /// Register a raw host function with direct WASM-level parameters.
@@ -251,6 +347,9 @@ impl<'a, 'b, T: 'static> InterfaceBuilder<'a, 'b, T> {
     /// - Input: ptr/len point to Graph ABI encoded input value
     /// - Output: packed i64 containing (out_len << 32 | out_ptr)
     ///
+    /// Errors during decode/encode are logged via the error handler (see
+    /// `HostLinkerBuilder::on_error`). On error, returns 0.
+    ///
     /// # Example
     ///
     /// ```ignore
@@ -268,7 +367,10 @@ impl<'a, 'b, T: 'static> InterfaceBuilder<'a, 'b, T> {
         R: Into<Value> + 'static,
         F: Fn(&mut Ctx<'_, T>, P) -> R + Send + Sync + 'static,
     {
-        let func = std::sync::Arc::new(func);
+        let func = Arc::new(func);
+        let error_handler = self.error_handler.clone();
+        let interface_name = self.module_name.clone();
+        let func_name = name.to_string();
 
         self.linker
             .linker
@@ -277,6 +379,23 @@ impl<'a, 'b, T: 'static> InterfaceBuilder<'a, 'b, T> {
                 name,
                 move |caller: Caller<'_, T>, ptr: i32, len: i32| -> i64 {
                     let func = func.clone();
+                    let error_handler = error_handler.clone();
+                    let interface_name = interface_name.clone();
+                    let func_name = func_name.clone();
+
+                    // Helper to report errors
+                    let report = |kind: HostFunctionErrorKind| {
+                        let error = HostFunctionError {
+                            interface: interface_name.clone(),
+                            function: func_name.clone(),
+                            kind,
+                        };
+                        if let Some(handler) = &error_handler {
+                            handler(&error);
+                        } else {
+                            default_error_handler(&error);
+                        }
+                    };
 
                     // Create context - we keep ownership throughout
                     let mut ctx = Ctx::new(caller);
@@ -284,13 +403,19 @@ impl<'a, 'b, T: 'static> InterfaceBuilder<'a, 'b, T> {
                     // Read and decode input
                     let input_value = match ctx.read_value(ptr, len) {
                         Ok(v) => v,
-                        Err(_) => return 0,
+                        Err(e) => {
+                            report(HostFunctionErrorKind::Decode(e.to_string()));
+                            return 0;
+                        }
                     };
 
                     // Convert to user type
                     let input: P = match P::try_from(input_value) {
                         Ok(p) => p,
-                        Err(_) => return 0,
+                        Err(e) => {
+                            report(HostFunctionErrorKind::TypeConversion(format!("{:?}", e)));
+                            return 0;
+                        }
                     };
 
                     // Call user function
@@ -304,7 +429,10 @@ impl<'a, 'b, T: 'static> InterfaceBuilder<'a, 'b, T> {
                         Ok((out_ptr, out_len)) => {
                             ((out_len as i64) << 32) | (out_ptr as i64 & 0xFFFFFFFF)
                         }
-                        Err(_) => 0,
+                        Err(e) => {
+                            report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
+                            0
+                        }
                     }
                 },
             )
@@ -319,6 +447,8 @@ impl<'a, 'b, T: 'static> InterfaceBuilder<'a, 'b, T> {
     /// The result is encoded as a WIT result type:
     /// - `Ok(value)` → `Variant { tag: 0, payload: Some(value) }`
     /// - `Err(error)` → `Variant { tag: 1, payload: Some(error) }`
+    ///
+    /// Errors during decode/encode are logged via the error handler.
     ///
     /// # Example
     ///
@@ -339,7 +469,10 @@ impl<'a, 'b, T: 'static> InterfaceBuilder<'a, 'b, T> {
         E: Into<Value> + 'static,
         F: Fn(&mut Ctx<'_, T>, P) -> Result<R, E> + Send + Sync + 'static,
     {
-        let func = std::sync::Arc::new(func);
+        let func = Arc::new(func);
+        let error_handler = self.error_handler.clone();
+        let interface_name = self.module_name.clone();
+        let func_name = name.to_string();
 
         self.linker
             .linker
@@ -348,19 +481,42 @@ impl<'a, 'b, T: 'static> InterfaceBuilder<'a, 'b, T> {
                 name,
                 move |caller: Caller<'_, T>, ptr: i32, len: i32| -> i64 {
                     let func = func.clone();
+                    let error_handler = error_handler.clone();
+                    let interface_name = interface_name.clone();
+                    let func_name = func_name.clone();
+
+                    // Helper to report errors
+                    let report = |kind: HostFunctionErrorKind| {
+                        let error = HostFunctionError {
+                            interface: interface_name.clone(),
+                            function: func_name.clone(),
+                            kind,
+                        };
+                        if let Some(handler) = &error_handler {
+                            handler(&error);
+                        } else {
+                            default_error_handler(&error);
+                        }
+                    };
 
                     let mut ctx = Ctx::new(caller);
 
                     // Read and decode input
                     let input_value = match ctx.read_value(ptr, len) {
                         Ok(v) => v,
-                        Err(_) => return 0,
+                        Err(e) => {
+                            report(HostFunctionErrorKind::Decode(e.to_string()));
+                            return 0;
+                        }
                     };
 
                     // Convert to user type
                     let input: P = match P::try_from(input_value) {
                         Ok(p) => p,
-                        Err(_) => return 0,
+                        Err(e) => {
+                            report(HostFunctionErrorKind::TypeConversion(format!("{:?}", e)));
+                            return 0;
+                        }
                     };
 
                     // Call user function
@@ -383,7 +539,10 @@ impl<'a, 'b, T: 'static> InterfaceBuilder<'a, 'b, T> {
                         Ok((out_ptr, out_len)) => {
                             ((out_len as i64) << 32) | (out_ptr as i64 & 0xFFFFFFFF)
                         }
-                        Err(_) => 0,
+                        Err(e) => {
+                            report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
+                            0
+                        }
                     }
                 },
             )
@@ -402,23 +561,26 @@ impl<'a, 'b, T: 'static> InterfaceBuilder<'a, 'b, T> {
 // Async Host Functions (require T: Send)
 // ============================================================================
 
-impl<'a, 'b, T: Send + 'static> InterfaceBuilder<'a, 'b, T> {
+impl<'a, 'b, T: Send + Clone + 'static> InterfaceBuilder<'a, 'b, T> {
     /// Register an async host function with automatic Graph ABI encode/decode.
     ///
-    /// The closure receives parameters decoded from the Graph ABI and should
-    /// return a pinned, boxed future that resolves to the return value.
+    /// The closure receives an `AsyncCtx` containing a cloned copy of the store
+    /// state, plus the decoded input parameter. The state is cloned before
+    /// entering the async block to avoid lifetime issues.
     ///
     /// **Important**: This requires an async-enabled runtime (`AsyncRuntime`).
+    ///
+    /// Errors during decode/encode are logged via the error handler.
     ///
     /// # Example
     ///
     /// ```ignore
     /// builder.interface("theater:runtime")?
-    ///     .func_async("fetch", |ctx, url: String| {
-    ///         Box::pin(async move {
-    ///             let response = fetch_url(&url).await;
-    ///             response.body
-    ///         })
+    ///     .func_async("fetch", |ctx: AsyncCtx<MyState>, url: String| async move {
+    ///         // Access state through ctx.data()
+    ///         let base_url = ctx.data().base_url.clone();
+    ///         let response = fetch_url(&format!("{}/{}", base_url, url)).await;
+    ///         response.body
     ///     })?;
     /// ```
     pub fn func_async<P, R, F, Fut>(
@@ -433,7 +595,10 @@ impl<'a, 'b, T: Send + 'static> InterfaceBuilder<'a, 'b, T> {
         F: Fn(AsyncCtx<T>, P) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = R> + Send + 'static,
     {
-        let func = std::sync::Arc::new(func);
+        let func = Arc::new(func);
+        let error_handler = self.error_handler.clone();
+        let interface_name = self.module_name.clone();
+        let func_name = name.to_string();
 
         self.linker
             .linker
@@ -442,40 +607,87 @@ impl<'a, 'b, T: Send + 'static> InterfaceBuilder<'a, 'b, T> {
                 name,
                 move |mut caller: Caller<'_, T>, (ptr, len): (i32, i32)| {
                     let func = func.clone();
+                    let error_handler = error_handler.clone();
+                    let interface_name = interface_name.clone();
+                    let func_name = func_name.clone();
+
+                    // Clone state before entering async block
+                    let state = caller.data().clone();
 
                     Box::new(async move {
+                        // Helper to report errors
+                        let report = |kind: HostFunctionErrorKind| {
+                            let error = HostFunctionError {
+                                interface: interface_name.clone(),
+                                function: func_name.clone(),
+                                kind,
+                            };
+                            if let Some(handler) = &error_handler {
+                                handler(&error);
+                            } else {
+                                default_error_handler(&error);
+                            }
+                        };
+
                         // Read memory for input
-                        let memory = caller
+                        let memory = match caller
                             .get_export("memory")
                             .and_then(|e| e.into_memory())
-                            .expect("memory export");
+                        {
+                            Some(m) => m,
+                            None => {
+                                report(HostFunctionErrorKind::MemoryRead(
+                                    "no memory export".to_string(),
+                                ));
+                                return 0;
+                            }
+                        };
 
                         let mut buffer = vec![0u8; len as usize];
-                        memory
-                            .read(&caller, ptr as usize, &mut buffer)
-                            .expect("read memory");
+                        if let Err(e) = memory.read(&caller, ptr as usize, &mut buffer) {
+                            report(HostFunctionErrorKind::MemoryRead(e.to_string()));
+                            return 0;
+                        }
 
                         // Decode input
-                        let input_value = decode(&buffer).expect("decode input");
-                        let input: P = P::try_from(input_value).ok().expect("convert input");
-
-                        // Create async context (captures data we need)
-                        let ctx = AsyncCtx {
-                            _marker: std::marker::PhantomData,
+                        let input_value = match decode(&buffer) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                report(HostFunctionErrorKind::Decode(e.to_string()));
+                                return 0;
+                            }
                         };
+
+                        let input: P = match P::try_from(input_value) {
+                            Ok(p) => p,
+                            Err(e) => {
+                                report(HostFunctionErrorKind::TypeConversion(format!("{:?}", e)));
+                                return 0;
+                            }
+                        };
+
+                        // Create async context with cloned state
+                        let ctx = AsyncCtx::new(state);
 
                         // Call async function
                         let output: R = func(ctx, input).await;
 
                         // Encode output
                         let output_value: Value = output.into();
-                        let bytes = encode(&output_value).expect("encode output");
+                        let bytes = match encode(&output_value) {
+                            Ok(b) => b,
+                            Err(e) => {
+                                report(HostFunctionErrorKind::Encode(e.to_string()));
+                                return 0;
+                            }
+                        };
 
                         // Write output to memory
                         let out_ptr = 16 * 1024; // Fixed output location
-                        memory
-                            .write(&mut caller, out_ptr, &bytes)
-                            .expect("write memory");
+                        if let Err(e) = memory.write(&mut caller, out_ptr, &bytes) {
+                            report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
+                            return 0;
+                        }
 
                         // Return packed pointer/length
                         ((bytes.len() as i64) << 32) | (out_ptr as i64 & 0xFFFFFFFF)
@@ -490,15 +702,17 @@ impl<'a, 'b, T: Send + 'static> InterfaceBuilder<'a, 'b, T> {
     /// Register an async host function that returns a Result.
     ///
     /// Both success and error types are encoded as WIT result variants.
+    /// The `AsyncCtx` contains a cloned copy of the store state.
+    ///
+    /// Errors during decode/encode are logged via the error handler.
     ///
     /// # Example
     ///
     /// ```ignore
     /// builder.interface("theater:runtime")?
-    ///     .func_async_result("fetch", |ctx, url: String| {
-    ///         Box::pin(async move {
-    ///             fetch_url(&url).await.map_err(|e| e.to_string())
-    ///         })
+    ///     .func_async_result("fetch", |ctx: AsyncCtx<MyState>, url: String| async move {
+    ///         let base = ctx.data().base_url.clone();
+    ///         fetch_url(&format!("{}/{}", base, url)).await.map_err(|e| e.to_string())
     ///     })?;
     /// ```
     pub fn func_async_result<P, R, E, F, Fut>(
@@ -514,7 +728,10 @@ impl<'a, 'b, T: Send + 'static> InterfaceBuilder<'a, 'b, T> {
         F: Fn(AsyncCtx<T>, P) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<R, E>> + Send + 'static,
     {
-        let func = std::sync::Arc::new(func);
+        let func = Arc::new(func);
+        let error_handler = self.error_handler.clone();
+        let interface_name = self.module_name.clone();
+        let func_name = name.to_string();
 
         self.linker
             .linker
@@ -523,27 +740,67 @@ impl<'a, 'b, T: Send + 'static> InterfaceBuilder<'a, 'b, T> {
                 name,
                 move |mut caller: Caller<'_, T>, (ptr, len): (i32, i32)| {
                     let func = func.clone();
+                    let error_handler = error_handler.clone();
+                    let interface_name = interface_name.clone();
+                    let func_name = func_name.clone();
+
+                    // Clone state before entering async block
+                    let state = caller.data().clone();
 
                     Box::new(async move {
+                        // Helper to report errors
+                        let report = |kind: HostFunctionErrorKind| {
+                            let error = HostFunctionError {
+                                interface: interface_name.clone(),
+                                function: func_name.clone(),
+                                kind,
+                            };
+                            if let Some(handler) = &error_handler {
+                                handler(&error);
+                            } else {
+                                default_error_handler(&error);
+                            }
+                        };
+
                         // Read memory for input
-                        let memory = caller
+                        let memory = match caller
                             .get_export("memory")
                             .and_then(|e| e.into_memory())
-                            .expect("memory export");
+                        {
+                            Some(m) => m,
+                            None => {
+                                report(HostFunctionErrorKind::MemoryRead(
+                                    "no memory export".to_string(),
+                                ));
+                                return 0;
+                            }
+                        };
 
                         let mut buffer = vec![0u8; len as usize];
-                        memory
-                            .read(&caller, ptr as usize, &mut buffer)
-                            .expect("read memory");
+                        if let Err(e) = memory.read(&caller, ptr as usize, &mut buffer) {
+                            report(HostFunctionErrorKind::MemoryRead(e.to_string()));
+                            return 0;
+                        }
 
                         // Decode input
-                        let input_value = decode(&buffer).expect("decode input");
-                        let input: P = P::try_from(input_value).ok().expect("convert input");
-
-                        // Create async context
-                        let ctx = AsyncCtx {
-                            _marker: std::marker::PhantomData,
+                        let input_value = match decode(&buffer) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                report(HostFunctionErrorKind::Decode(e.to_string()));
+                                return 0;
+                            }
                         };
+
+                        let input: P = match P::try_from(input_value) {
+                            Ok(p) => p,
+                            Err(e) => {
+                                report(HostFunctionErrorKind::TypeConversion(format!("{:?}", e)));
+                                return 0;
+                            }
+                        };
+
+                        // Create async context with cloned state
+                        let ctx = AsyncCtx::new(state);
 
                         // Call async function
                         let result = func(ctx, input).await;
@@ -560,13 +817,20 @@ impl<'a, 'b, T: Send + 'static> InterfaceBuilder<'a, 'b, T> {
                             },
                         };
 
-                        let bytes = encode(&output_value).expect("encode output");
+                        let bytes = match encode(&output_value) {
+                            Ok(b) => b,
+                            Err(e) => {
+                                report(HostFunctionErrorKind::Encode(e.to_string()));
+                                return 0;
+                            }
+                        };
 
                         // Write output to memory
                         let out_ptr = 16 * 1024;
-                        memory
-                            .write(&mut caller, out_ptr, &bytes)
-                            .expect("write memory");
+                        if let Err(e) = memory.write(&mut caller, out_ptr, &bytes) {
+                            report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
+                            return 0;
+                        }
 
                         // Return packed pointer/length
                         ((bytes.len() as i64) << 32) | (out_ptr as i64 & 0xFFFFFFFF)
@@ -581,25 +845,47 @@ impl<'a, 'b, T: Send + 'static> InterfaceBuilder<'a, 'b, T> {
 
 /// Async context for async host functions.
 ///
-/// Provides access to state in async contexts. Note that due to Rust's
-/// borrowing rules with async, direct memory access is limited. For
-/// complex async operations, capture needed data before the async block.
+/// Provides access to a cloned copy of the store state for use in async
+/// operations. Since async functions can't hold references across await
+/// points, state is cloned before the async block.
+///
+/// # Example
+///
+/// ```ignore
+/// builder.interface("theater:runtime")?
+///     .func_async("process", |ctx: AsyncCtx<MyState>, input: Value| async move {
+///         // Access cloned state
+///         let config = ctx.data().config.clone();
+///         // Async operations...
+///         process_with_config(&config, input).await
+///     })?;
+/// ```
 pub struct AsyncCtx<T> {
-    _marker: std::marker::PhantomData<T>,
+    state: T,
 }
 
 impl<T> AsyncCtx<T> {
-    /// Create a new async context.
-    pub fn new() -> Self {
-        Self {
-            _marker: std::marker::PhantomData,
-        }
+    /// Create a new async context with the given state.
+    pub fn new(state: T) -> Self {
+        Self { state }
     }
-}
 
-impl<T> Default for AsyncCtx<T> {
-    fn default() -> Self {
-        Self::new()
+    /// Get a reference to the store state.
+    pub fn data(&self) -> &T {
+        &self.state
+    }
+
+    /// Get a mutable reference to the store state.
+    ///
+    /// Note: Changes to state in async contexts are isolated to this
+    /// cloned copy and won't affect the original store state.
+    pub fn data_mut(&mut self) -> &mut T {
+        &mut self.state
+    }
+
+    /// Consume the context and return the owned state.
+    pub fn into_inner(self) -> T {
+        self.state
     }
 }
 

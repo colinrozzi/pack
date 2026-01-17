@@ -55,7 +55,8 @@ pub mod wit_plus;
 pub use abi::{decode, encode};
 pub use runtime::{
     validate_instance_implements_interface, AsyncCompiledModule, AsyncCtx, AsyncInstance,
-    AsyncRuntime, CompiledModule, Ctx, DefaultHostProvider, HostFunctionProvider,
-    HostLinkerBuilder, Instance, InterfaceBuilder, InterfaceError, LinkerError, Runtime,
+    AsyncRuntime, CompiledModule, Ctx, DefaultHostProvider, ErrorHandler, HostFunctionError,
+    HostFunctionErrorKind, HostFunctionProvider, HostLinkerBuilder, Instance, InterfaceBuilder,
+    InterfaceError, LinkerError, Runtime,
 };
 pub use wit_plus::{Interface, TypeDef};
