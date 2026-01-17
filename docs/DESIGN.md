@@ -368,24 +368,34 @@ Serialization overhead vs fixed-layout ABI:
 
 ## Implementation Roadmap
 
-### Phase 1: Foundation
-- [ ] WIT+ parser (extend existing WIT parser or write new)
-- [ ] Type system with recursive type support
-- [ ] Basic serialization codec
+### Phase 1: Foundation ✓
+- [x] WIT+ parser (recursive and mutually recursive types)
+- [x] Type system with recursive type support
+- [x] Graph-encoded ABI (CGRF format)
+- [x] Schema-aware encoding/decoding with validation
 
-### Phase 2: Runtime
-- [ ] Wasmi integration
-- [ ] Host function binding
-- [ ] Component instantiation
+### Phase 2: Runtime ✓
+- [x] Wasmi integration (load, instantiate, call)
+- [x] Memory read/write for data passing
+- [x] Graph ABI integration (`write_value`, `read_value`, `call_with_value`)
+- [x] Host function binding (`host.log`, `host.alloc`)
+- [x] Component instantiation with imports
 
-### Phase 3: Polish
-- [ ] Error messages and diagnostics
+### Phase 3: Components ✓
+- [x] Shared `composite-abi` crate (no_std compatible)
+- [x] Rust component examples (echo, logger)
+- [x] Components calling host imports
+
+### Phase 4: In Progress
+- [ ] Component-to-component linking
+- [ ] More host functions (file I/O, networking)
+- [ ] Resource types (handles for host objects)
+- [ ] Async/streaming for large values
 - [ ] Performance optimization
-- [ ] Documentation and examples
 
-### Phase 4: Ecosystem
-- [ ] Bindgen for Rust
-- [ ] Bindgen for other languages?
+### Phase 5: Ecosystem
+- [ ] Bindgen for Rust (derive macros)
+- [ ] Bindgen for other languages
 - [ ] Integration with Theater
 - [ ] Integration with Wisp
 

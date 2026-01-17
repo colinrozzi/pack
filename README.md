@@ -156,7 +156,62 @@ interface config {
 
 ## Status
 
-**Early design phase.** This document describes the intended design, not current implementation.
+**Working prototype.** Core functionality is implemented and tested:
+
+- [x] **WIT+ Parser** - Parses recursive and mutually recursive type definitions
+- [x] **Graph ABI** - CGRF format encoding/decoding with schema validation
+- [x] **WASM Execution** - Load and run modules via wasmi
+- [x] **Memory Access** - Read/write linear memory, pass data to WASM
+- [x] **Graph ABI Integration** - `write_value`, `read_value`, `call_with_value` for passing recursive types
+- [x] **Rust Components** - no_std components using shared `composite-abi` crate
+- [x] **Host Imports** - Components can call back to host (`host.log`, `host.alloc`)
+
+### Project Structure
+
+```
+composite/
+├── src/
+│   ├── lib.rs              # Main library exports
+│   ├── abi/                # Graph-encoded ABI (CGRF format)
+│   ├── wit_plus/           # WIT+ parser and type system
+│   └── runtime/            # WASM execution and host binding
+├── crates/
+│   └── composite-abi/      # Shared ABI crate (no_std compatible)
+├── components/
+│   ├── echo/               # Example component: echo/transform values
+│   └── logger/             # Example component: uses host imports
+└── tests/
+    ├── wasm_execution.rs   # WASM runtime integration tests
+    ├── abi_roundtrip.rs    # ABI encoding tests
+    └── schema_validation.rs # Type validation tests
+```
+
+### Quick Start
+
+```rust
+use composite::{Runtime, abi::Value, runtime::HostImports};
+
+// Load a WASM component
+let runtime = Runtime::new();
+let module = runtime.load_module(&wasm_bytes)?;
+
+// Instantiate with host imports
+let imports = HostImports::new();
+let mut instance = module.instantiate_with_imports(imports)?;
+
+// Call with recursive values
+let input = Value::List(vec![
+    Value::S64(1),
+    Value::S64(2),
+    Value::Variant { tag: 0, payload: Some(Box::new(Value::String("hello".into()))) },
+]);
+let output = instance.call_with_value("process", &input, 0)?;
+
+// Check logs from component
+for msg in instance.get_logs() {
+    println!("Component logged: {}", msg);
+}
+```
 
 ## Related Projects
 
