@@ -2,8 +2,13 @@
 //!
 //! Handles component instantiation, linking, and execution.
 
+mod host;
 mod interface_check;
 
+pub use host::{
+    Ctx, DefaultHostProvider, HostFunctionProvider, HostLinkerBuilder, InterfaceBuilder,
+    LinkerError,
+};
 pub use interface_check::{
     validate_instance_implements_interface, ExpectedSignature, InterfaceError,
 };
@@ -13,7 +18,7 @@ use crate::wit_plus::{decode_with_schema, encode_with_schema, Interface, Type, T
 use std::io::Cursor;
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
-use wasmi::{Caller, Engine, Linker, Module, Store};
+use wasmi::{Engine, Linker, Module, Store};
 
 #[derive(Error, Debug)]
 pub enum RuntimeError {
@@ -176,18 +181,24 @@ impl<'a> CompiledModule<'a> {
         Ok(Instance { store, instance })
     }
 
-    /// Instantiate the module with host imports
+    /// Instantiate the module with host imports (backward compatible API)
+    ///
+    /// This method provides the default "host" module with `log` and `alloc` functions.
+    /// For custom host functions, use `instantiate_with_host()` instead.
     pub fn instantiate_with_imports(
         &self,
         imports: HostImports,
     ) -> Result<InstanceWithHost, RuntimeError> {
         let state = imports.state.clone();
-        let mut store = Store::new(self.engine, state.clone());
         let mut linker = Linker::<HostState>::new(self.engine);
 
-        // Register host functions under the "host" module
-        Self::register_host_functions(&mut linker)?;
+        // Use the new provider-based registration
+        let mut builder = HostLinkerBuilder::new(self.engine, &mut linker);
+        DefaultHostProvider
+            .register(&mut builder)
+            .map_err(|e| RuntimeError::WasmError(e.to_string()))?;
 
+        let mut store = Store::new(self.engine, state.clone());
         let instance = linker
             .instantiate(&mut store, &self.module)
             .map_err(|e| RuntimeError::WasmError(e.to_string()))?
@@ -201,38 +212,71 @@ impl<'a> CompiledModule<'a> {
         })
     }
 
-    fn register_host_functions(linker: &mut Linker<HostState>) -> Result<(), RuntimeError> {
-        // host.log(ptr: i32, len: i32) - log a string message
-        linker
-            .func_wrap("host", "log", |caller: Caller<'_, HostState>, ptr: i32, len: i32| {
-                let memory = caller.get_export("memory")
-                    .and_then(|e| e.into_memory())
-                    .expect("memory export");
+    /// Instantiate the module with a pre-configured linker.
+    ///
+    /// This is the most flexible instantiation method, allowing full control
+    /// over the linker configuration.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let mut linker = Linker::new(&engine);
+    /// let mut builder = HostLinkerBuilder::new(&engine, &mut linker);
+    ///
+    /// builder.interface("my:api/v1")?
+    ///     .func_raw("process", |caller, ptr, len| { ... })?;
+    ///
+    /// let instance = module.instantiate_with_linker(linker, MyState::new())?;
+    /// ```
+    pub fn instantiate_with_linker<T: 'static>(
+        &self,
+        linker: Linker<T>,
+        state: T,
+    ) -> Result<Instance<T>, RuntimeError> {
+        let mut store = Store::new(self.engine, state);
 
-                let ptr = ptr as usize;
-                let len = len as usize;
-                let mut buffer = vec![0u8; len];
-                memory.read(&caller, ptr, &mut buffer).expect("read memory");
-
-                if let Ok(msg) = String::from_utf8(buffer) {
-                    caller.data().log_messages.lock().unwrap().push(msg);
-                }
-            })
+        let instance = linker
+            .instantiate(&mut store, &self.module)
+            .map_err(|e| RuntimeError::WasmError(e.to_string()))?
+            .start(&mut store)
             .map_err(|e| RuntimeError::WasmError(e.to_string()))?;
 
-        // host.alloc(size: i32) -> i32 - allocate memory, returns pointer
-        linker
-            .func_wrap("host", "alloc", |caller: Caller<'_, HostState>, size: i32| -> i32 {
-                let mut offset = caller.data().alloc_offset.lock().unwrap();
-                let ptr = *offset;
-                *offset += size as usize;
-                // Align to 8 bytes
-                *offset = (*offset + 7) & !7;
-                ptr as i32
-            })
-            .map_err(|e| RuntimeError::WasmError(e.to_string()))?;
+        Ok(Instance { store, instance })
+    }
 
-        Ok(())
+    /// Instantiate the module with a builder function for configuring host functions.
+    ///
+    /// This is the recommended method for Theater-style integration, providing
+    /// an ergonomic API for registering namespaced interfaces.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let instance = module.instantiate_with_host(MyState::new(), |builder| {
+    ///     builder.interface("theater:simple/runtime")?
+    ///         .func_raw("log", |caller, ptr, len| { ... })?;
+    ///     Ok(())
+    /// })?;
+    /// ```
+    pub fn instantiate_with_host<T, F>(
+        &self,
+        state: T,
+        configure: F,
+    ) -> Result<Instance<T>, RuntimeError>
+    where
+        T: 'static,
+        F: FnOnce(&mut HostLinkerBuilder<'_, T>) -> Result<(), LinkerError>,
+    {
+        let mut linker = Linker::new(self.engine);
+        let mut builder = HostLinkerBuilder::new(self.engine, &mut linker);
+        configure(&mut builder).map_err(|e| RuntimeError::WasmError(e.to_string()))?;
+
+        self.instantiate_with_linker(linker, state)
+    }
+
+    /// Get a reference to the engine
+    pub fn engine(&self) -> &Engine {
+        self.engine
     }
 }
 

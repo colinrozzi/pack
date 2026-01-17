@@ -167,6 +167,8 @@ interface config {
 - [x] **Host Imports** - Components can call back to host (`host.log`, `host.alloc`)
 - [x] **Derive Macros** - `#[derive(GraphValue)]` for automatic Value conversion
 - [x] **S-expression Evaluator** - Full Lisp-like evaluator as demo component
+- [x] **Interface Enforcement** - Validate WASM modules implement WIT interfaces
+- [x] **Flexible Host Functions** - Namespaced interfaces, typed functions, provider pattern
 
 ### Project Structure
 
@@ -185,9 +187,11 @@ composite/
 │   ├── logger/             # Example: uses host imports
 │   └── sexpr/              # Example: S-expression evaluator
 └── tests/
-    ├── wasm_execution.rs   # WASM runtime integration tests (28 tests)
-    ├── abi_roundtrip.rs    # ABI encoding tests
-    └── schema_validation.rs # Type validation tests
+    ├── wasm_execution.rs      # WASM runtime integration tests
+    ├── interface_enforcement.rs # Interface validation tests
+    ├── host_functions.rs      # Host function API tests
+    ├── abi_roundtrip.rs       # ABI encoding tests
+    └── schema_validation.rs   # Type validation tests
 ```
 
 ### Quick Start (Host)
@@ -215,6 +219,76 @@ let output = instance.call_with_value("process", &input, 0)?;
 for msg in instance.get_logs() {
     println!("Component logged: {}", msg);
 }
+```
+
+### Custom Host Functions
+
+For advanced use cases, register custom host functions with namespaced interfaces:
+
+```rust
+use composite::{Runtime, abi::Value};
+use wasmi::Caller;
+
+struct MyState {
+    counter: i32,
+}
+
+let module = runtime.load_module(&wasm_bytes)?;
+
+let mut instance = module.instantiate_with_host(MyState { counter: 0 }, |builder| {
+    // Register functions under namespaced interfaces
+    builder.interface("myapp:api/v1")?
+        // Raw functions for direct WASM-level access
+        .func_raw("increment", |caller: Caller<'_, MyState>, amount: i32| -> i32 {
+            let state = caller.data();
+            state.counter += amount;
+            state.counter
+        })?
+        // Typed functions with automatic Graph ABI encode/decode
+        .func_typed("transform", |ctx, input: Value| -> Value {
+            match input {
+                Value::S64(n) => Value::S64(n * 2),
+                other => other,
+            }
+        })?;
+    Ok(())
+})?;
+```
+
+#### Typed Functions with Custom Types
+
+Use `#[derive(GraphValue)]` types with `func_typed`:
+
+```rust
+#[derive(GraphValue)]
+struct Point { x: i64, y: i64 }
+
+builder.interface("geometry")?
+    .func_typed("translate", |ctx, point: Point| -> Point {
+        Point { x: point.x + 10, y: point.y + 10 }
+    })?;
+```
+
+#### Reusable Function Providers
+
+Create reusable sets of host functions:
+
+```rust
+use composite::runtime::{HostFunctionProvider, HostLinkerBuilder, LinkerError};
+
+struct LoggingProvider;
+
+impl<T> HostFunctionProvider<T> for LoggingProvider {
+    fn register(&self, builder: &mut HostLinkerBuilder<'_, T>) -> Result<(), LinkerError> {
+        builder.interface("logging")?
+            .func_raw("debug", |caller, ptr, len| { /* ... */ })?
+            .func_raw("info", |caller, ptr, len| { /* ... */ })?;
+        Ok(())
+    }
+}
+
+// Use it
+builder.register_provider(&LoggingProvider)?;
 ```
 
 ## Writing Components
