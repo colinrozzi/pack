@@ -36,5 +36,7 @@ pub mod runtime;
 pub mod wit_plus;
 
 pub use abi::{decode, encode};
-pub use runtime::{CompiledModule, Instance, Runtime};
+pub use runtime::{
+    validate_instance_implements_interface, CompiledModule, Instance, InterfaceError, Runtime,
+};
 pub use wit_plus::{Interface, TypeDef};

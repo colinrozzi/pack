@@ -2,8 +2,14 @@
 //!
 //! Handles component instantiation, linking, and execution.
 
+mod interface_check;
+
+pub use interface_check::{
+    validate_instance_implements_interface, ExpectedSignature, InterfaceError,
+};
+
 use crate::abi::{decode, encode, Value};
-use crate::wit_plus::{decode_with_schema, encode_with_schema, Type, TypeDef};
+use crate::wit_plus::{decode_with_schema, encode_with_schema, Interface, Type, TypeDef};
 use std::io::Cursor;
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
@@ -244,6 +250,13 @@ pub struct InstanceWithHost {
 }
 
 impl InstanceWithHost {
+    /// Validate that this instance implements the given interface
+    ///
+    /// Checks that all required functions exist with correct signatures.
+    pub fn validate_interface(&self, interface: &Interface) -> Result<(), InterfaceError> {
+        validate_instance_implements_interface(&self.store, &self.instance, interface)
+    }
+
     /// Get the host state (for reading logs, etc.)
     pub fn host_state(&self) -> &HostState {
         &self.state
@@ -363,6 +376,13 @@ impl InstanceWithHost {
 
 // Implement Instance methods for both () and HostState
 impl<T> Instance<T> {
+    /// Validate that this instance implements the given interface
+    ///
+    /// Checks that all required functions exist with correct signatures.
+    pub fn validate_interface(&self, interface: &Interface) -> Result<(), InterfaceError> {
+        validate_instance_implements_interface(&self.store, &self.instance, interface)
+    }
+
     /// Get the exported memory (assumes it's named "memory")
     fn get_memory(&self) -> Result<wasmi::Memory, RuntimeError> {
         self.instance
