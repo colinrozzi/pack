@@ -504,3 +504,148 @@ fn rust_component_transform_preserves_strings() {
         .expect("failed to call transform");
     assert_eq!(output, input);
 }
+
+// ============================================================================
+// Host imports tests
+// ============================================================================
+
+use composite::runtime::HostImports;
+
+/// Load the Rust-compiled logger component (uses host imports)
+fn load_rust_logger_component() -> Vec<u8> {
+    let wasm_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("components/logger/target/wasm32-unknown-unknown/release/logger_component.wasm");
+    std::fs::read(&wasm_path).unwrap_or_else(|e| {
+        panic!(
+            "Failed to read logger component at {}: {}. Run: cd components/logger && cargo build --target wasm32-unknown-unknown --release",
+            wasm_path.display(),
+            e
+        )
+    })
+}
+
+#[test]
+fn host_imports_logging() {
+    let wasm_bytes = load_rust_logger_component();
+
+    let runtime = Runtime::new();
+    let module = runtime.load_module(&wasm_bytes).expect("failed to load logger component");
+
+    // Instantiate with host imports
+    let imports = HostImports::new();
+    let mut instance = module
+        .instantiate_with_imports(imports)
+        .expect("failed to instantiate with imports");
+
+    // Call process with a value - this should log messages
+    let input = Value::S64(42);
+    let output = instance
+        .call_with_value("process", &input, 0)
+        .expect("failed to call process");
+
+    // The transform doubles S64 values
+    assert_eq!(output, Value::S64(84));
+
+    // Check that we captured log messages
+    let logs = instance.get_logs();
+    assert!(!logs.is_empty(), "Expected log messages");
+
+    // Verify specific log messages
+    assert!(logs.iter().any(|m| m.contains("starting")), "Expected 'starting' log");
+    assert!(logs.iter().any(|m| m.contains("got S64")), "Expected S64 type log");
+    assert!(logs.iter().any(|m| m.contains("done")), "Expected 'done' log");
+}
+
+#[test]
+fn host_imports_logging_with_string() {
+    let wasm_bytes = load_rust_logger_component();
+
+    let runtime = Runtime::new();
+    let module = runtime.load_module(&wasm_bytes).expect("failed to load logger component");
+
+    let imports = HostImports::new();
+    let mut instance = module
+        .instantiate_with_imports(imports)
+        .expect("failed to instantiate with imports");
+
+    // Call with a string value
+    let input = Value::String("test message".to_string());
+    let output = instance
+        .call_with_value("process", &input, 0)
+        .expect("failed to call process");
+
+    // Strings pass through unchanged
+    assert_eq!(output, input);
+
+    let logs = instance.get_logs();
+    assert!(logs.iter().any(|m| m.contains("got String")), "Expected String type log");
+    assert!(logs.iter().any(|m| m.contains("test message")), "Expected the actual string in logs");
+}
+
+#[test]
+fn host_imports_transform_nested() {
+    let wasm_bytes = load_rust_logger_component();
+
+    let runtime = Runtime::new();
+    let module = runtime.load_module(&wasm_bytes).expect("failed to load logger component");
+
+    let imports = HostImports::new();
+    let mut instance = module
+        .instantiate_with_imports(imports)
+        .expect("failed to instantiate with imports");
+
+    // Test with a list of S64 values
+    let input = Value::List(vec![
+        Value::S64(10),
+        Value::S64(20),
+        Value::S64(30),
+    ]);
+
+    let expected = Value::List(vec![
+        Value::S64(20),
+        Value::S64(40),
+        Value::S64(60),
+    ]);
+
+    let output = instance
+        .call_with_value("process", &input, 0)
+        .expect("failed to call process");
+
+    assert_eq!(output, expected);
+
+    // Verify logging happened
+    let logs = instance.get_logs();
+    assert!(logs.iter().any(|m| m.contains("got List")), "Expected List type log");
+}
+
+#[test]
+fn host_imports_clear_logs() {
+    let wasm_bytes = load_rust_logger_component();
+
+    let runtime = Runtime::new();
+    let module = runtime.load_module(&wasm_bytes).expect("failed to load logger component");
+
+    let imports = HostImports::new();
+    let mut instance = module
+        .instantiate_with_imports(imports)
+        .expect("failed to instantiate with imports");
+
+    // First call
+    let input = Value::S64(1);
+    let _ = instance.call_with_value("process", &input, 0).unwrap();
+
+    let logs1 = instance.get_logs();
+    assert!(!logs1.is_empty());
+
+    // Clear logs
+    instance.clear_logs();
+    assert!(instance.get_logs().is_empty(), "Logs should be cleared");
+
+    // Second call
+    let _ = instance.call_with_value("process", &input, 0).unwrap();
+    let logs2 = instance.get_logs();
+    assert!(!logs2.is_empty());
+
+    // Should only have logs from second call
+    assert!(logs2.len() < logs1.len() * 2, "Should only have logs from second call");
+}
