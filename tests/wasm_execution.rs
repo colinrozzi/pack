@@ -76,3 +76,158 @@ fn call_missing_function() {
     let err = instance.call_i32_i32_to_i32("nonexistent", 1, 2);
     assert!(err.is_err());
 }
+
+// ============================================================================
+// Memory access tests
+// ============================================================================
+
+/// A module with memory - sums bytes in a range
+const SUM_BYTES_MODULE: &str = r#"
+(module
+    (memory (export "memory") 1)
+
+    ;; Sum bytes from ptr to ptr+len
+    (func $sum_bytes (param $ptr i32) (param $len i32) (result i32)
+        (local $sum i32)
+        (local $end i32)
+
+        ;; end = ptr + len
+        (local.set $end (i32.add (local.get $ptr) (local.get $len)))
+
+        ;; while ptr < end
+        (block $break
+            (loop $continue
+                ;; if ptr >= end, break
+                (br_if $break (i32.ge_u (local.get $ptr) (local.get $end)))
+
+                ;; sum += *ptr
+                (local.set $sum
+                    (i32.add
+                        (local.get $sum)
+                        (i32.load8_u (local.get $ptr))))
+
+                ;; ptr++
+                (local.set $ptr (i32.add (local.get $ptr) (i32.const 1)))
+
+                (br $continue)
+            )
+        )
+
+        (local.get $sum)
+    )
+    (export "sum_bytes" (func $sum_bytes))
+)
+"#;
+
+#[test]
+fn memory_read_write() {
+    let wasm_bytes = wat::parse_str(SUM_BYTES_MODULE).expect("failed to parse WAT");
+
+    let runtime = Runtime::new();
+    let module = runtime.load_module(&wasm_bytes).expect("failed to load module");
+    let mut instance = module.instantiate().expect("failed to instantiate");
+
+    // Write some bytes to memory
+    let data = [1u8, 2, 3, 4, 5];
+    instance.write_memory(0, &data).expect("failed to write memory");
+
+    // Call sum_bytes(0, 5) - should return 1+2+3+4+5 = 15
+    let result = instance
+        .call_i32_i32_to_i32("sum_bytes", 0, 5)
+        .expect("failed to call sum_bytes");
+    assert_eq!(result, 15);
+
+    // Read the bytes back
+    let read_back = instance.read_memory(0, 5).expect("failed to read memory");
+    assert_eq!(read_back, data);
+}
+
+#[test]
+fn memory_string_roundtrip() {
+    let wasm_bytes = wat::parse_str(SUM_BYTES_MODULE).expect("failed to parse WAT");
+
+    let runtime = Runtime::new();
+    let module = runtime.load_module(&wasm_bytes).expect("failed to load module");
+    let mut instance = module.instantiate().expect("failed to instantiate");
+
+    // Write a string to memory
+    let message = "Hello, WebAssembly!";
+    instance
+        .write_memory(100, message.as_bytes())
+        .expect("failed to write string");
+
+    // Read it back
+    let read_back = instance
+        .read_memory(100, message.len())
+        .expect("failed to read string");
+
+    let read_string = String::from_utf8(read_back).expect("invalid utf8");
+    assert_eq!(read_string, message);
+
+    // Sum the bytes (just to prove the module can read our string)
+    let sum: i32 = message.as_bytes().iter().map(|&b| b as i32).sum();
+    let result = instance
+        .call_i32_i32_to_i32("sum_bytes", 100, message.len() as i32)
+        .expect("failed to call sum_bytes");
+    assert_eq!(result, sum);
+}
+
+/// A module that reverses bytes in place
+const REVERSE_MODULE: &str = r#"
+(module
+    (memory (export "memory") 1)
+
+    ;; Reverse bytes from ptr to ptr+len in place
+    (func $reverse (param $ptr i32) (param $len i32)
+        (local $left i32)
+        (local $right i32)
+        (local $tmp i32)
+
+        (local.set $left (local.get $ptr))
+        (local.set $right (i32.sub (i32.add (local.get $ptr) (local.get $len)) (i32.const 1)))
+
+        (block $break
+            (loop $continue
+                ;; if left >= right, break
+                (br_if $break (i32.ge_u (local.get $left) (local.get $right)))
+
+                ;; swap *left and *right
+                (local.set $tmp (i32.load8_u (local.get $left)))
+                (i32.store8 (local.get $left) (i32.load8_u (local.get $right)))
+                (i32.store8 (local.get $right) (local.get $tmp))
+
+                ;; left++, right--
+                (local.set $left (i32.add (local.get $left) (i32.const 1)))
+                (local.set $right (i32.sub (local.get $right) (i32.const 1)))
+
+                (br $continue)
+            )
+        )
+    )
+    (export "reverse" (func $reverse))
+)
+"#;
+
+#[test]
+fn memory_reverse_string() {
+    let wasm_bytes = wat::parse_str(REVERSE_MODULE).expect("failed to parse WAT");
+
+    let runtime = Runtime::new();
+    let module = runtime.load_module(&wasm_bytes).expect("failed to load module");
+    let mut instance = module.instantiate().expect("failed to instantiate");
+
+    // Write a string
+    let message = "Hello";
+    instance
+        .write_memory(0, message.as_bytes())
+        .expect("failed to write");
+
+    // Call the WASM reverse function
+    instance
+        .call_i32_i32("reverse", 0, message.len() as i32)
+        .expect("failed to call reverse");
+
+    // Read back the reversed string
+    let result = instance.read_memory(0, 5).expect("read back");
+    assert_eq!(result, b"olleH");
+}

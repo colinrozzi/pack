@@ -27,6 +27,9 @@ pub enum RuntimeError {
 
     #[error("ABI error: {0}")]
     AbiError(String),
+
+    #[error("Memory error: {0}")]
+    MemoryError(String),
 }
 
 /// The component runtime
@@ -111,6 +114,38 @@ pub struct Instance {
 }
 
 impl Instance {
+    /// Get the exported memory (assumes it's named "memory")
+    fn get_memory(&self) -> Result<wasmi::Memory, RuntimeError> {
+        self.instance
+            .get_memory(&self.store, "memory")
+            .ok_or_else(|| RuntimeError::MemoryError("no exported memory named 'memory'".into()))
+    }
+
+    /// Write bytes to the instance's memory at the given offset
+    pub fn write_memory(&mut self, offset: usize, data: &[u8]) -> Result<(), RuntimeError> {
+        let memory = self.get_memory()?;
+        memory
+            .write(&mut self.store, offset, data)
+            .map_err(|e| RuntimeError::MemoryError(e.to_string()))
+    }
+
+    /// Read bytes from the instance's memory
+    pub fn read_memory(&self, offset: usize, len: usize) -> Result<Vec<u8>, RuntimeError> {
+        let memory = self.get_memory()?;
+        let mut buffer = vec![0u8; len];
+        memory
+            .read(&self.store, offset, &mut buffer)
+            .map_err(|e| RuntimeError::MemoryError(e.to_string()))?;
+        Ok(buffer)
+    }
+
+    /// Get the current memory size in bytes
+    pub fn memory_size(&self) -> Result<usize, RuntimeError> {
+        let memory = self.get_memory()?;
+        // wasmi returns size in pages (64KB each)
+        Ok(memory.current_pages(&self.store).to_bytes().unwrap_or(0))
+    }
+
     /// Call an exported function that takes two i32s and returns an i32
     pub fn call_i32_i32_to_i32(&mut self, name: &str, a: i32, b: i32) -> Result<i32, RuntimeError> {
         let func = self
@@ -127,6 +162,17 @@ impl Instance {
         let func = self
             .instance
             .get_typed_func::<(i64, i64), i64>(&self.store, name)
+            .map_err(|e| RuntimeError::FunctionNotFound(e.to_string()))?;
+
+        func.call(&mut self.store, (a, b))
+            .map_err(|e| RuntimeError::WasmError(e.to_string()))
+    }
+
+    /// Call an exported function that takes two i32s and returns nothing
+    pub fn call_i32_i32(&mut self, name: &str, a: i32, b: i32) -> Result<(), RuntimeError> {
+        let func = self
+            .instance
+            .get_typed_func::<(i32, i32), ()>(&self.store, name)
             .map_err(|e| RuntimeError::FunctionNotFound(e.to_string()))?;
 
         func.call(&mut self.store, (a, b))
