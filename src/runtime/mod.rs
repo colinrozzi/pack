@@ -4,7 +4,9 @@
 
 use crate::abi::{encode, Value};
 use crate::wit_plus::{decode_with_schema, encode_with_schema, Type, TypeDef};
+use std::io::Cursor;
 use thiserror::Error;
+use wasmi::{Engine, Linker, Module, Store};
 
 #[derive(Error, Debug)]
 pub enum RuntimeError {
@@ -29,12 +31,24 @@ pub enum RuntimeError {
 
 /// The component runtime
 pub struct Runtime {
-    // TODO: Implementation
+    engine: Engine,
 }
 
 impl Runtime {
     pub fn new() -> Self {
-        Self {}
+        Self {
+            engine: Engine::default(),
+        }
+    }
+
+    /// Load a WASM module from bytes
+    pub fn load_module(&self, wasm_bytes: &[u8]) -> Result<CompiledModule<'_>, RuntimeError> {
+        let module = Module::new(&self.engine, Cursor::new(wasm_bytes))
+            .map_err(|e| RuntimeError::WasmError(e.to_string()))?;
+        Ok(CompiledModule {
+            module,
+            engine: &self.engine,
+        })
     }
 
     pub fn decode_arg(
@@ -65,6 +79,58 @@ impl Runtime {
 impl Default for Runtime {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// A compiled WASM module, ready to be instantiated
+pub struct CompiledModule<'a> {
+    module: Module,
+    engine: &'a Engine,
+}
+
+impl<'a> CompiledModule<'a> {
+    /// Instantiate the module with no imports
+    pub fn instantiate(&self) -> Result<Instance, RuntimeError> {
+        let mut store = Store::new(self.engine, ());
+        let linker = Linker::<()>::new(self.engine);
+
+        let instance = linker
+            .instantiate(&mut store, &self.module)
+            .map_err(|e| RuntimeError::WasmError(e.to_string()))?
+            .start(&mut store)
+            .map_err(|e| RuntimeError::WasmError(e.to_string()))?;
+
+        Ok(Instance { store, instance })
+    }
+}
+
+/// A running WASM instance
+pub struct Instance {
+    store: Store<()>,
+    instance: wasmi::Instance,
+}
+
+impl Instance {
+    /// Call an exported function that takes two i32s and returns an i32
+    pub fn call_i32_i32_to_i32(&mut self, name: &str, a: i32, b: i32) -> Result<i32, RuntimeError> {
+        let func = self
+            .instance
+            .get_typed_func::<(i32, i32), i32>(&self.store, name)
+            .map_err(|e| RuntimeError::FunctionNotFound(e.to_string()))?;
+
+        func.call(&mut self.store, (a, b))
+            .map_err(|e| RuntimeError::WasmError(e.to_string()))
+    }
+
+    /// Call an exported function that takes two i64s and returns an i64
+    pub fn call_i64_i64_to_i64(&mut self, name: &str, a: i64, b: i64) -> Result<i64, RuntimeError> {
+        let func = self
+            .instance
+            .get_typed_func::<(i64, i64), i64>(&self.store, name)
+            .map_err(|e| RuntimeError::FunctionNotFound(e.to_string()))?;
+
+        func.call(&mut self.store, (a, b))
+            .map_err(|e| RuntimeError::WasmError(e.to_string()))
     }
 }
 
