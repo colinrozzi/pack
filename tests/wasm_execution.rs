@@ -4,6 +4,7 @@
 
 use composite::abi::Value;
 use composite::Runtime;
+use std::path::Path;
 
 /// A minimal WAT module that exports an `add` function
 const ADD_MODULE: &str = r#"
@@ -372,6 +373,67 @@ fn graph_abi_echo_nested() {
             },
         ]),
     ]);
+    let output = instance
+        .call_with_value("echo", &input, 0)
+        .expect("failed to call echo");
+    assert_eq!(output, input);
+}
+
+// ============================================================================
+// Rust component tests
+// ============================================================================
+
+/// Load the Rust-compiled echo component
+fn load_rust_echo_component() -> Vec<u8> {
+    let wasm_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("components/echo/target/wasm32-unknown-unknown/release/echo_component.wasm");
+    std::fs::read(&wasm_path).unwrap_or_else(|e| {
+        panic!(
+            "Failed to read Rust component at {}: {}. Run: cd components/echo && cargo build --target wasm32-unknown-unknown --release",
+            wasm_path.display(),
+            e
+        )
+    })
+}
+
+#[test]
+fn rust_component_echo_roundtrip() {
+    let wasm_bytes = load_rust_echo_component();
+
+    let runtime = Runtime::new();
+    let module = runtime.load_module(&wasm_bytes).expect("failed to load Rust component");
+    let mut instance = module.instantiate().expect("failed to instantiate");
+
+    // Test with a simple integer
+    let input = Value::S64(42);
+    let output = instance
+        .call_with_value("echo", &input, 0)
+        .expect("failed to call echo");
+    assert_eq!(output, input);
+}
+
+#[test]
+fn rust_component_echo_complex() {
+    let wasm_bytes = load_rust_echo_component();
+
+    let runtime = Runtime::new();
+    let module = runtime.load_module(&wasm_bytes).expect("failed to load Rust component");
+    let mut instance = module.instantiate().expect("failed to instantiate");
+
+    // Test with a nested structure
+    let input = Value::List(vec![
+        Value::String("hello".to_string()),
+        Value::Variant {
+            tag: 2,
+            payload: Some(Box::new(Value::List(vec![
+                Value::S64(1),
+                Value::S64(2),
+                Value::S64(3),
+            ]))),
+        },
+        Value::Option(Some(Box::new(Value::Bool(true)))),
+    ]);
+
     let output = instance
         .call_with_value("echo", &input, 0)
         .expect("failed to call echo");
