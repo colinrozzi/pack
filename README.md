@@ -165,6 +165,8 @@ interface config {
 - [x] **Graph ABI Integration** - `write_value`, `read_value`, `call_with_value` for passing recursive types
 - [x] **Rust Components** - no_std components using shared `composite-abi` crate
 - [x] **Host Imports** - Components can call back to host (`host.log`, `host.alloc`)
+- [x] **Derive Macros** - `#[derive(GraphValue)]` for automatic Value conversion
+- [x] **S-expression Evaluator** - Full Lisp-like evaluator as demo component
 
 ### Project Structure
 
@@ -176,17 +178,19 @@ composite/
 │   ├── wit_plus/           # WIT+ parser and type system
 │   └── runtime/            # WASM execution and host binding
 ├── crates/
-│   └── composite-abi/      # Shared ABI crate (no_std compatible)
+│   ├── composite-abi/      # Shared ABI crate (no_std compatible)
+│   └── composite-derive/   # Derive macros for Value conversion
 ├── components/
-│   ├── echo/               # Example component: echo/transform values
-│   └── logger/             # Example component: uses host imports
+│   ├── echo/               # Example: echo/transform values
+│   ├── logger/             # Example: uses host imports
+│   └── sexpr/              # Example: S-expression evaluator
 └── tests/
-    ├── wasm_execution.rs   # WASM runtime integration tests
+    ├── wasm_execution.rs   # WASM runtime integration tests (28 tests)
     ├── abi_roundtrip.rs    # ABI encoding tests
     └── schema_validation.rs # Type validation tests
 ```
 
-### Quick Start
+### Quick Start (Host)
 
 ```rust
 use composite::{Runtime, abi::Value, runtime::HostImports};
@@ -210,6 +214,107 @@ let output = instance.call_with_value("process", &input, 0)?;
 // Check logs from component
 for msg in instance.get_logs() {
     println!("Component logged: {}", msg);
+}
+```
+
+## Writing Components
+
+Components are written in Rust with `no_std` and compile to WASM.
+
+### Simple Types with Derive
+
+For non-recursive types, use the derive macro:
+
+```rust
+use composite_abi::{GraphValue, Value};
+
+#[derive(GraphValue)]
+struct Point {
+    x: i64,
+    y: i64,
+}
+
+#[derive(GraphValue)]
+enum Shape {
+    Circle(f64),
+    Rectangle(f64, f64),
+    Point,
+}
+
+// Automatic conversion
+let point = Point { x: 10, y: 20 };
+let value: Value = point.into();
+let back: Point = value.try_into().unwrap();
+```
+
+### Recursive Types (Manual)
+
+Recursive types use `Box<T>` which requires manual `From`/`TryFrom` implementations:
+
+```rust
+use composite_abi::{Value, ConversionError};
+
+enum SExpr {
+    Num(i64),
+    Cons(Box<SExpr>, Box<SExpr>),
+    Nil,
+}
+
+impl From<SExpr> for Value {
+    fn from(expr: SExpr) -> Value {
+        match expr {
+            SExpr::Num(n) => Value::Variant {
+                tag: 0,
+                payload: Some(Box::new(Value::S64(n)))
+            },
+            SExpr::Cons(head, tail) => Value::Variant {
+                tag: 1,
+                payload: Some(Box::new(Value::Tuple(vec![
+                    (*head).into(),
+                    (*tail).into(),
+                ]))),
+            },
+            SExpr::Nil => Value::Variant { tag: 2, payload: None },
+        }
+    }
+}
+
+impl TryFrom<Value> for SExpr {
+    type Error = ConversionError;
+    // ... symmetric implementation
+}
+```
+
+See `components/sexpr/` for a complete example with 25+ built-in functions.
+
+### Component Cargo.toml
+
+```toml
+[package]
+name = "my-component"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+composite-abi = { path = "../../crates/composite-abi", default-features = false, features = ["derive"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+```
+
+### Host Imports
+
+Components can call host functions:
+
+```rust
+#[link(wasm_import_module = "host")]
+extern "C" {
+    fn log(ptr: i32, len: i32);
+    fn alloc(size: i32) -> i32;
 }
 ```
 
