@@ -94,7 +94,7 @@ fn valid_module_passes_validation() {
     let wasm_bytes = wat::parse_str(VALID_PROCESS_MODULE).expect("parse WAT");
     let runtime = Runtime::new();
     let module = runtime.load_module(&wasm_bytes).expect("load module");
-    let instance = module.instantiate().expect("instantiate");
+    let mut instance = module.instantiate().expect("instantiate");
 
     // Should pass validation
     let result = instance.validate_interface(&interface);
@@ -115,7 +115,7 @@ fn wrong_signature_fails_validation() {
     let wasm_bytes = wat::parse_str(WRONG_SIGNATURE_MODULE).expect("parse WAT");
     let runtime = Runtime::new();
     let module = runtime.load_module(&wasm_bytes).expect("load module");
-    let instance = module.instantiate().expect("instantiate");
+    let mut instance = module.instantiate().expect("instantiate");
 
     let result = instance.validate_interface(&interface);
     assert!(matches!(
@@ -138,7 +138,7 @@ fn missing_function_fails_validation() {
     let wasm_bytes = wat::parse_str(MISSING_FUNCTION_MODULE).expect("parse WAT");
     let runtime = Runtime::new();
     let module = runtime.load_module(&wasm_bytes).expect("load module");
-    let instance = module.instantiate().expect("instantiate");
+    let mut instance = module.instantiate().expect("instantiate");
 
     let result = instance.validate_interface(&interface);
     assert!(matches!(
@@ -161,7 +161,7 @@ fn missing_memory_fails_validation() {
     let wasm_bytes = wat::parse_str(NO_MEMORY_MODULE).expect("parse WAT");
     let runtime = Runtime::new();
     let module = runtime.load_module(&wasm_bytes).expect("load module");
-    let instance = module.instantiate().expect("instantiate");
+    let mut instance = module.instantiate().expect("instantiate");
 
     let result = instance.validate_interface(&interface);
     assert!(matches!(result, Err(InterfaceError::MissingMemory)));
@@ -188,7 +188,7 @@ fn multi_function_interface_validation() {
     let wasm_bytes = wat::parse_str(MULTI_FUNCTION_MODULE).expect("parse WAT");
     let runtime = Runtime::new();
     let module = runtime.load_module(&wasm_bytes).expect("load module");
-    let instance = module.instantiate().expect("instantiate");
+    let mut instance = module.instantiate().expect("instantiate");
 
     let result = instance.validate_interface(&interface);
     assert!(result.is_ok(), "Expected Ok, got {:?}", result);
@@ -211,7 +211,7 @@ fn partial_implementation_fails_validation() {
     let wasm_bytes = wat::parse_str(MULTI_FUNCTION_MODULE).expect("parse WAT");
     let runtime = Runtime::new();
     let module = runtime.load_module(&wasm_bytes).expect("load module");
-    let instance = module.instantiate().expect("instantiate");
+    let mut instance = module.instantiate().expect("instantiate");
 
     let result = instance.validate_interface(&interface);
     assert!(matches!(
@@ -236,7 +236,7 @@ fn export_block_functions_validated() {
     let wasm_bytes = wat::parse_str(VALID_PROCESS_MODULE).expect("parse WAT");
     let runtime = Runtime::new();
     let module = runtime.load_module(&wasm_bytes).expect("load module");
-    let instance = module.instantiate().expect("instantiate");
+    let mut instance = module.instantiate().expect("instantiate");
 
     let result = instance.validate_interface(&interface);
     assert!(result.is_ok(), "Expected Ok, got {:?}", result);
@@ -259,7 +259,7 @@ fn export_block_missing_function_fails() {
     let wasm_bytes = wat::parse_str(VALID_PROCESS_MODULE).expect("parse WAT");
     let runtime = Runtime::new();
     let module = runtime.load_module(&wasm_bytes).expect("load module");
-    let instance = module.instantiate().expect("instantiate");
+    let mut instance = module.instantiate().expect("instantiate");
 
     let result = instance.validate_interface(&interface);
     assert!(matches!(
@@ -281,7 +281,7 @@ fn empty_interface_always_passes() {
     let wasm_bytes = wat::parse_str(VALID_PROCESS_MODULE).expect("parse WAT");
     let runtime = Runtime::new();
     let module = runtime.load_module(&wasm_bytes).expect("load module");
-    let instance = module.instantiate().expect("instantiate");
+    let mut instance = module.instantiate().expect("instantiate");
 
     let result = instance.validate_interface(&interface);
     assert!(result.is_ok(), "Expected Ok, got {:?}", result);

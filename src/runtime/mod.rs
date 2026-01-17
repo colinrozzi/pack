@@ -6,7 +6,7 @@ mod host;
 mod interface_check;
 
 pub use host::{
-    Ctx, DefaultHostProvider, HostFunctionProvider, HostLinkerBuilder, InterfaceBuilder,
+    AsyncCtx, Ctx, DefaultHostProvider, HostFunctionProvider, HostLinkerBuilder, InterfaceBuilder,
     LinkerError,
 };
 pub use interface_check::{
@@ -15,10 +15,11 @@ pub use interface_check::{
 
 use crate::abi::{decode, encode, Value};
 use crate::wit_plus::{decode_with_schema, encode_with_schema, Interface, Type, TypeDef};
-use std::io::Cursor;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
-use wasmi::{Engine, Linker, Module, Store};
+use wasmtime::{Config, Engine, Instance as WasmtimeInstance, Linker, Memory, Module, Store};
 
 #[derive(Error, Debug)]
 pub enum RuntimeError {
@@ -121,7 +122,7 @@ impl Runtime {
 
     /// Load a WASM module from bytes
     pub fn load_module(&self, wasm_bytes: &[u8]) -> Result<CompiledModule<'_>, RuntimeError> {
-        let module = Module::new(&self.engine, Cursor::new(wasm_bytes))
+        let module = Module::new(&self.engine, wasm_bytes)
             .map_err(|e| RuntimeError::WasmError(e.to_string()))?;
         Ok(CompiledModule {
             module,
@@ -160,6 +161,234 @@ impl Default for Runtime {
     }
 }
 
+// ============================================================================
+// Async Runtime
+// ============================================================================
+
+/// An async-enabled component runtime.
+///
+/// Use this when you need to register async host functions or call WASM
+/// functions asynchronously.
+///
+/// # Example
+///
+/// ```ignore
+/// let runtime = AsyncRuntime::new();
+/// let module = runtime.load_module(&wasm_bytes)?;
+///
+/// let instance = module.instantiate_with_host_async(MyState::new(), |builder| {
+///     builder.interface("theater:runtime")?
+///         .func_async("fetch", |ctx, url: String| {
+///             Box::pin(async move {
+///                 // async operation here
+///                 fetch_url(&url).await
+///             })
+///         })?;
+///     Ok(())
+/// }).await?;
+///
+/// let result = instance.call_with_value_async("process", &input, 0).await?;
+/// ```
+pub struct AsyncRuntime {
+    engine: Engine,
+}
+
+impl AsyncRuntime {
+    /// Create a new async-enabled runtime.
+    pub fn new() -> Self {
+        let mut config = Config::new();
+        config.async_support(true);
+        let engine = Engine::new(&config).expect("failed to create async engine");
+        Self { engine }
+    }
+
+    /// Load a WASM module from bytes.
+    pub fn load_module(&self, wasm_bytes: &[u8]) -> Result<AsyncCompiledModule<'_>, RuntimeError> {
+        let module = Module::new(&self.engine, wasm_bytes)
+            .map_err(|e| RuntimeError::WasmError(e.to_string()))?;
+        Ok(AsyncCompiledModule {
+            module,
+            engine: &self.engine,
+        })
+    }
+
+    /// Get a reference to the engine.
+    pub fn engine(&self) -> &Engine {
+        &self.engine
+    }
+}
+
+impl Default for AsyncRuntime {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// A compiled WASM module for async execution.
+pub struct AsyncCompiledModule<'a> {
+    module: Module,
+    engine: &'a Engine,
+}
+
+impl<'a> AsyncCompiledModule<'a> {
+    /// Instantiate the module with no imports (async).
+    pub async fn instantiate_async(&self) -> Result<AsyncInstance<()>, RuntimeError> {
+        let mut store = Store::new(self.engine, ());
+        let linker = Linker::<()>::new(self.engine);
+
+        let instance = linker
+            .instantiate_async(&mut store, &self.module)
+            .await
+            .map_err(|e| RuntimeError::WasmError(e.to_string()))?;
+
+        Ok(AsyncInstance { store, instance })
+    }
+
+    /// Instantiate the module with a builder function for configuring host functions (async).
+    ///
+    /// This is the recommended method for async Theater-style integration.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let instance = module.instantiate_with_host_async(MyState::new(), |builder| {
+    ///     builder.interface("theater:runtime")?
+    ///         .func_async("fetch", |ctx, url: String| {
+    ///             Box::pin(async move { fetch(&url).await })
+    ///         })?;
+    ///     Ok(())
+    /// }).await?;
+    /// ```
+    pub async fn instantiate_with_host_async<T, F>(
+        &self,
+        state: T,
+        configure: F,
+    ) -> Result<AsyncInstance<T>, RuntimeError>
+    where
+        T: Send + 'static,
+        F: FnOnce(&mut HostLinkerBuilder<'_, T>) -> Result<(), LinkerError>,
+    {
+        let mut linker = Linker::new(self.engine);
+        let mut builder = HostLinkerBuilder::new(self.engine, &mut linker);
+        configure(&mut builder).map_err(|e| RuntimeError::WasmError(e.to_string()))?;
+
+        let mut store = Store::new(self.engine, state);
+        let instance = linker
+            .instantiate_async(&mut store, &self.module)
+            .await
+            .map_err(|e| RuntimeError::WasmError(e.to_string()))?;
+
+        Ok(AsyncInstance { store, instance })
+    }
+
+    /// Get a reference to the engine.
+    pub fn engine(&self) -> &Engine {
+        self.engine
+    }
+}
+
+/// An async WASM instance.
+pub struct AsyncInstance<T> {
+    store: Store<T>,
+    instance: WasmtimeInstance,
+}
+
+impl<T: Send> AsyncInstance<T> {
+    /// Validate that this instance implements the given interface.
+    pub fn validate_interface(&mut self, interface: &Interface) -> Result<(), InterfaceError> {
+        validate_instance_implements_interface(&mut self.store, &self.instance, interface)
+    }
+
+    /// Get the exported memory (assumes it's named "memory").
+    fn get_memory(&mut self) -> Result<Memory, RuntimeError> {
+        self.instance
+            .get_memory(&mut self.store, "memory")
+            .ok_or_else(|| RuntimeError::MemoryError("no exported memory named 'memory'".into()))
+    }
+
+    /// Write bytes to the instance's memory at the given offset.
+    pub fn write_memory(&mut self, offset: usize, data: &[u8]) -> Result<(), RuntimeError> {
+        let memory = self.get_memory()?;
+        memory
+            .write(&mut self.store, offset, data)
+            .map_err(|e| RuntimeError::MemoryError(e.to_string()))
+    }
+
+    /// Read bytes from the instance's memory.
+    pub fn read_memory(&mut self, offset: usize, len: usize) -> Result<Vec<u8>, RuntimeError> {
+        let memory = self.get_memory()?;
+        let mut buffer = vec![0u8; len];
+        memory
+            .read(&self.store, offset, &mut buffer)
+            .map_err(|e| RuntimeError::MemoryError(e.to_string()))?;
+        Ok(buffer)
+    }
+
+    /// Get the current memory size in bytes.
+    pub fn memory_size(&mut self) -> Result<usize, RuntimeError> {
+        let memory = self.get_memory()?;
+        Ok(memory.data_size(&self.store))
+    }
+
+    /// Encode a Value and write it to memory at the given offset.
+    pub fn write_value(&mut self, offset: usize, value: &Value) -> Result<usize, RuntimeError> {
+        let bytes = encode(value).map_err(|e| RuntimeError::AbiError(e.to_string()))?;
+        self.write_memory(offset, &bytes)?;
+        Ok(bytes.len())
+    }
+
+    /// Read bytes from memory and decode them as a Value.
+    pub fn read_value(&mut self, offset: usize, len: usize) -> Result<Value, RuntimeError> {
+        let bytes = self.read_memory(offset, len)?;
+        decode(&bytes).map_err(|e| RuntimeError::AbiError(e.to_string()))
+    }
+
+    /// Call a function that takes (in_ptr, in_len) and returns (out_ptr, out_len) asynchronously.
+    pub async fn call_with_value_async(
+        &mut self,
+        name: &str,
+        input: &Value,
+        input_offset: usize,
+    ) -> Result<Value, RuntimeError> {
+        let input_len = self.write_value(input_offset, input)?;
+
+        let func = self
+            .instance
+            .get_typed_func::<(i32, i32), i64>(&mut self.store, name)
+            .map_err(|e| RuntimeError::FunctionNotFound(e.to_string()))?;
+
+        let result = func
+            .call_async(&mut self.store, (input_offset as i32, input_len as i32))
+            .await
+            .map_err(|e| RuntimeError::WasmError(e.to_string()))?;
+
+        let out_ptr = (result & 0xFFFFFFFF) as usize;
+        let out_len = ((result >> 32) & 0xFFFFFFFF) as usize;
+
+        self.read_value(out_ptr, out_len)
+    }
+
+    /// Call an exported function that takes two i32s and returns an i32 (async).
+    pub async fn call_i32_i32_to_i32_async(
+        &mut self,
+        name: &str,
+        a: i32,
+        b: i32,
+    ) -> Result<i32, RuntimeError> {
+        let func = self
+            .instance
+            .get_typed_func::<(i32, i32), i32>(&mut self.store, name)
+            .map_err(|e| RuntimeError::FunctionNotFound(e.to_string()))?;
+
+        func.call_async(&mut self.store, (a, b))
+            .await
+            .map_err(|e| RuntimeError::WasmError(e.to_string()))
+    }
+}
+
+/// Type alias for async host function return type.
+pub type AsyncHostFnResult<R> = Pin<Box<dyn Future<Output = R> + Send + 'static>>;
+
 /// A compiled WASM module, ready to be instantiated
 pub struct CompiledModule<'a> {
     module: Module,
@@ -174,8 +403,6 @@ impl<'a> CompiledModule<'a> {
 
         let instance = linker
             .instantiate(&mut store, &self.module)
-            .map_err(|e| RuntimeError::WasmError(e.to_string()))?
-            .start(&mut store)
             .map_err(|e| RuntimeError::WasmError(e.to_string()))?;
 
         Ok(Instance { store, instance })
@@ -201,8 +428,6 @@ impl<'a> CompiledModule<'a> {
         let mut store = Store::new(self.engine, state.clone());
         let instance = linker
             .instantiate(&mut store, &self.module)
-            .map_err(|e| RuntimeError::WasmError(e.to_string()))?
-            .start(&mut store)
             .map_err(|e| RuntimeError::WasmError(e.to_string()))?;
 
         Ok(InstanceWithHost {
@@ -237,8 +462,6 @@ impl<'a> CompiledModule<'a> {
 
         let instance = linker
             .instantiate(&mut store, &self.module)
-            .map_err(|e| RuntimeError::WasmError(e.to_string()))?
-            .start(&mut store)
             .map_err(|e| RuntimeError::WasmError(e.to_string()))?;
 
         Ok(Instance { store, instance })
@@ -283,13 +506,13 @@ impl<'a> CompiledModule<'a> {
 /// A running WASM instance
 pub struct Instance<T> {
     store: Store<T>,
-    instance: wasmi::Instance,
+    instance: WasmtimeInstance,
 }
 
 /// Instance with host imports - provides access to host state
 pub struct InstanceWithHost {
     store: Store<HostState>,
-    instance: wasmi::Instance,
+    instance: WasmtimeInstance,
     state: HostState,
 }
 
@@ -297,8 +520,8 @@ impl InstanceWithHost {
     /// Validate that this instance implements the given interface
     ///
     /// Checks that all required functions exist with correct signatures.
-    pub fn validate_interface(&self, interface: &Interface) -> Result<(), InterfaceError> {
-        validate_instance_implements_interface(&self.store, &self.instance, interface)
+    pub fn validate_interface(&mut self, interface: &Interface) -> Result<(), InterfaceError> {
+        validate_instance_implements_interface(&mut self.store, &self.instance, interface)
     }
 
     /// Get the host state (for reading logs, etc.)
@@ -317,9 +540,9 @@ impl InstanceWithHost {
     }
 
     /// Get the exported memory (assumes it's named "memory")
-    fn get_memory(&self) -> Result<wasmi::Memory, RuntimeError> {
+    fn get_memory(&mut self) -> Result<Memory, RuntimeError> {
         self.instance
-            .get_memory(&self.store, "memory")
+            .get_memory(&mut self.store, "memory")
             .ok_or_else(|| RuntimeError::MemoryError("no exported memory named 'memory'".into()))
     }
 
@@ -332,7 +555,7 @@ impl InstanceWithHost {
     }
 
     /// Read bytes from the instance's memory
-    pub fn read_memory(&self, offset: usize, len: usize) -> Result<Vec<u8>, RuntimeError> {
+    pub fn read_memory(&mut self, offset: usize, len: usize) -> Result<Vec<u8>, RuntimeError> {
         let memory = self.get_memory()?;
         let mut buffer = vec![0u8; len];
         memory
@@ -342,16 +565,16 @@ impl InstanceWithHost {
     }
 
     /// Get the current memory size in bytes
-    pub fn memory_size(&self) -> Result<usize, RuntimeError> {
+    pub fn memory_size(&mut self) -> Result<usize, RuntimeError> {
         let memory = self.get_memory()?;
-        Ok(memory.current_pages(&self.store).to_bytes().unwrap_or(0))
+        Ok(memory.data_size(&self.store))
     }
 
     /// Call an exported function that takes two i32s and returns an i32
     pub fn call_i32_i32_to_i32(&mut self, name: &str, a: i32, b: i32) -> Result<i32, RuntimeError> {
         let func = self
             .instance
-            .get_typed_func::<(i32, i32), i32>(&self.store, name)
+            .get_typed_func::<(i32, i32), i32>(&mut self.store, name)
             .map_err(|e| RuntimeError::FunctionNotFound(e.to_string()))?;
 
         func.call(&mut self.store, (a, b))
@@ -362,7 +585,7 @@ impl InstanceWithHost {
     pub fn call_i64_i64_to_i64(&mut self, name: &str, a: i64, b: i64) -> Result<i64, RuntimeError> {
         let func = self
             .instance
-            .get_typed_func::<(i64, i64), i64>(&self.store, name)
+            .get_typed_func::<(i64, i64), i64>(&mut self.store, name)
             .map_err(|e| RuntimeError::FunctionNotFound(e.to_string()))?;
 
         func.call(&mut self.store, (a, b))
@@ -373,7 +596,7 @@ impl InstanceWithHost {
     pub fn call_i32_i32(&mut self, name: &str, a: i32, b: i32) -> Result<(), RuntimeError> {
         let func = self
             .instance
-            .get_typed_func::<(i32, i32), ()>(&self.store, name)
+            .get_typed_func::<(i32, i32), ()>(&mut self.store, name)
             .map_err(|e| RuntimeError::FunctionNotFound(e.to_string()))?;
 
         func.call(&mut self.store, (a, b))
@@ -388,7 +611,7 @@ impl InstanceWithHost {
     }
 
     /// Read bytes from memory and decode them as a Value.
-    pub fn read_value(&self, offset: usize, len: usize) -> Result<Value, RuntimeError> {
+    pub fn read_value(&mut self, offset: usize, len: usize) -> Result<Value, RuntimeError> {
         let bytes = self.read_memory(offset, len)?;
         decode(&bytes).map_err(|e| RuntimeError::AbiError(e.to_string()))
     }
@@ -404,7 +627,7 @@ impl InstanceWithHost {
 
         let func = self
             .instance
-            .get_typed_func::<(i32, i32), i64>(&self.store, name)
+            .get_typed_func::<(i32, i32), i64>(&mut self.store, name)
             .map_err(|e| RuntimeError::FunctionNotFound(e.to_string()))?;
 
         let result = func
@@ -423,14 +646,14 @@ impl<T> Instance<T> {
     /// Validate that this instance implements the given interface
     ///
     /// Checks that all required functions exist with correct signatures.
-    pub fn validate_interface(&self, interface: &Interface) -> Result<(), InterfaceError> {
-        validate_instance_implements_interface(&self.store, &self.instance, interface)
+    pub fn validate_interface(&mut self, interface: &Interface) -> Result<(), InterfaceError> {
+        validate_instance_implements_interface(&mut self.store, &self.instance, interface)
     }
 
     /// Get the exported memory (assumes it's named "memory")
-    fn get_memory(&self) -> Result<wasmi::Memory, RuntimeError> {
+    fn get_memory(&mut self) -> Result<Memory, RuntimeError> {
         self.instance
-            .get_memory(&self.store, "memory")
+            .get_memory(&mut self.store, "memory")
             .ok_or_else(|| RuntimeError::MemoryError("no exported memory named 'memory'".into()))
     }
 
@@ -443,7 +666,7 @@ impl<T> Instance<T> {
     }
 
     /// Read bytes from the instance's memory
-    pub fn read_memory(&self, offset: usize, len: usize) -> Result<Vec<u8>, RuntimeError> {
+    pub fn read_memory(&mut self, offset: usize, len: usize) -> Result<Vec<u8>, RuntimeError> {
         let memory = self.get_memory()?;
         let mut buffer = vec![0u8; len];
         memory
@@ -453,17 +676,16 @@ impl<T> Instance<T> {
     }
 
     /// Get the current memory size in bytes
-    pub fn memory_size(&self) -> Result<usize, RuntimeError> {
+    pub fn memory_size(&mut self) -> Result<usize, RuntimeError> {
         let memory = self.get_memory()?;
-        // wasmi returns size in pages (64KB each)
-        Ok(memory.current_pages(&self.store).to_bytes().unwrap_or(0))
+        Ok(memory.data_size(&self.store))
     }
 
     /// Call an exported function that takes two i32s and returns an i32
     pub fn call_i32_i32_to_i32(&mut self, name: &str, a: i32, b: i32) -> Result<i32, RuntimeError> {
         let func = self
             .instance
-            .get_typed_func::<(i32, i32), i32>(&self.store, name)
+            .get_typed_func::<(i32, i32), i32>(&mut self.store, name)
             .map_err(|e| RuntimeError::FunctionNotFound(e.to_string()))?;
 
         func.call(&mut self.store, (a, b))
@@ -474,7 +696,7 @@ impl<T> Instance<T> {
     pub fn call_i64_i64_to_i64(&mut self, name: &str, a: i64, b: i64) -> Result<i64, RuntimeError> {
         let func = self
             .instance
-            .get_typed_func::<(i64, i64), i64>(&self.store, name)
+            .get_typed_func::<(i64, i64), i64>(&mut self.store, name)
             .map_err(|e| RuntimeError::FunctionNotFound(e.to_string()))?;
 
         func.call(&mut self.store, (a, b))
@@ -485,7 +707,7 @@ impl<T> Instance<T> {
     pub fn call_i32_i32(&mut self, name: &str, a: i32, b: i32) -> Result<(), RuntimeError> {
         let func = self
             .instance
-            .get_typed_func::<(i32, i32), ()>(&self.store, name)
+            .get_typed_func::<(i32, i32), ()>(&mut self.store, name)
             .map_err(|e| RuntimeError::FunctionNotFound(e.to_string()))?;
 
         func.call(&mut self.store, (a, b))
@@ -505,7 +727,7 @@ impl<T> Instance<T> {
     }
 
     /// Read bytes from memory and decode them as a Value.
-    pub fn read_value(&self, offset: usize, len: usize) -> Result<Value, RuntimeError> {
+    pub fn read_value(&mut self, offset: usize, len: usize) -> Result<Value, RuntimeError> {
         let bytes = self.read_memory(offset, len)?;
         decode(&bytes).map_err(|e| RuntimeError::AbiError(e.to_string()))
     }
@@ -526,7 +748,7 @@ impl<T> Instance<T> {
         // low 32 bits = out_ptr, high 32 bits = out_len
         let func = self
             .instance
-            .get_typed_func::<(i32, i32), i64>(&self.store, name)
+            .get_typed_func::<(i32, i32), i64>(&mut self.store, name)
             .map_err(|e| RuntimeError::FunctionNotFound(e.to_string()))?;
 
         let result = func

@@ -3,7 +3,7 @@
 use composite::abi::Value;
 use composite::runtime::{HostLinkerBuilder, LinkerError};
 use composite::Runtime;
-use wasmi::Caller;
+use wasmtime::Caller;
 
 /// Simple state for testing
 #[derive(Clone)]
@@ -237,4 +237,95 @@ fn test_backward_compatibility() {
 
     // Verify allocation happened (pointer should be >= 48KB base)
     assert!(ptr >= 48 * 1024);
+}
+
+// ============================================================================
+// Async Host Function Tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_async_runtime_basic() {
+    use composite::AsyncRuntime;
+
+    // Simple module that echoes input
+    let module_wat = r#"
+    (module
+        (memory (export "memory") 1)
+
+        ;; Echo function: takes (ptr, len), returns packed (ptr, len)
+        (func $echo (param $in_ptr i32) (param $in_len i32) (result i64)
+            (i64.or
+                (i64.extend_i32_u (local.get $in_ptr))
+                (i64.shl
+                    (i64.extend_i32_u (local.get $in_len))
+                    (i64.const 32)))
+        )
+        (export "echo" (func $echo))
+    )
+    "#;
+
+    let wasm_bytes = wat::parse_str(module_wat).expect("parse WAT");
+    let runtime = AsyncRuntime::new();
+    let module = runtime.load_module(&wasm_bytes).expect("load module");
+
+    let mut instance = module.instantiate_async().await.expect("instantiate");
+
+    // Call with value async
+    let input = Value::S64(42);
+    let output = instance
+        .call_with_value_async("echo", &input, 0)
+        .await
+        .expect("call");
+
+    assert_eq!(output, input);
+}
+
+#[tokio::test]
+async fn test_func_async_registration() {
+    use composite::AsyncRuntime;
+
+    // Module that calls an async host function
+    let module_wat = r#"
+    (module
+        (import "test" "async_double" (func $async_double (param i32 i32) (result i64)))
+        (memory (export "memory") 1)
+
+        ;; Wrapper that calls async host function
+        (func $call_async (param $in_ptr i32) (param $in_len i32) (result i64)
+            (call $async_double (local.get $in_ptr) (local.get $in_len))
+        )
+
+        (export "call_async" (func $call_async))
+    )
+    "#;
+
+    let wasm_bytes = wat::parse_str(module_wat).expect("parse WAT");
+    let runtime = AsyncRuntime::new();
+    let module = runtime.load_module(&wasm_bytes).expect("load module");
+
+    let mut instance = module
+        .instantiate_with_host_async((), |builder| {
+            builder.interface("test")?.func_async(
+                "async_double",
+                |_ctx: composite::AsyncCtx<()>, input: Value| async move {
+                    // Simulate async operation
+                    match input {
+                        Value::S64(n) => Value::S64(n * 2),
+                        other => other,
+                    }
+                },
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("instantiate");
+
+    // Use call_with_value_async which handles the full Graph ABI flow
+    let input = Value::S64(21);
+    let output = instance
+        .call_with_value_async("call_async", &input, 0)
+        .await
+        .expect("call");
+
+    assert_eq!(output, Value::S64(42)); // 21 * 2 = 42
 }

@@ -15,7 +15,7 @@
 //! │  runtime   - Component instantiation    │
 //! │                                         │
 //! ├─────────────────────────────────────────┤
-//! │         WASM Execution (wasmi)          │
+//! │       WASM Execution (wasmtime)         │
 //! └─────────────────────────────────────────┘
 //! ```
 //!
@@ -30,6 +30,23 @@
 //!     lst(list<sexpr>),
 //! }
 //! ```
+//!
+//! ## Async Support
+//!
+//! For async host functions, use `AsyncRuntime`:
+//!
+//! ```ignore
+//! let runtime = AsyncRuntime::new();
+//! let module = runtime.load_module(&wasm_bytes)?;
+//!
+//! let instance = module.instantiate_with_host_async(MyState::new(), |builder| {
+//!     builder.interface("theater:runtime")?
+//!         .func_async("fetch", |ctx, url: String| {
+//!             Box::pin(async move { fetch(&url).await })
+//!         })?;
+//!     Ok(())
+//! }).await?;
+//! ```
 
 pub mod abi;
 pub mod runtime;
@@ -37,8 +54,8 @@ pub mod wit_plus;
 
 pub use abi::{decode, encode};
 pub use runtime::{
-    validate_instance_implements_interface, CompiledModule, Ctx, DefaultHostProvider,
-    HostFunctionProvider, HostLinkerBuilder, Instance, InterfaceBuilder, InterfaceError,
-    LinkerError, Runtime,
+    validate_instance_implements_interface, AsyncCompiledModule, AsyncCtx, AsyncInstance,
+    AsyncRuntime, CompiledModule, Ctx, DefaultHostProvider, HostFunctionProvider,
+    HostLinkerBuilder, Instance, InterfaceBuilder, InterfaceError, LinkerError, Runtime,
 };
 pub use wit_plus::{Interface, TypeDef};

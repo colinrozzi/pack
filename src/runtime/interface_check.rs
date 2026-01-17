@@ -2,7 +2,7 @@
 
 use crate::wit_plus::{Function, Interface};
 use thiserror::Error;
-use wasmi::{Instance, Store};
+use wasmtime::{Instance, Store};
 
 /// Errors from interface validation
 #[derive(Error, Debug)]
@@ -76,12 +76,12 @@ fn expected_signature_for(func: &Function) -> ExpectedSignature {
 /// validate_instance_implements_interface(&instance.store, &instance.wasm_instance, &interface)?;
 /// ```
 pub fn validate_instance_implements_interface<T>(
-    store: &Store<T>,
+    store: &mut Store<T>,
     instance: &Instance,
     interface: &Interface,
 ) -> Result<(), InterfaceError> {
     // Check memory exists
-    if instance.get_memory(store, "memory").is_none() {
+    if instance.get_memory(&mut *store, "memory").is_none() {
         return Err(InterfaceError::MissingMemory);
     }
 
@@ -98,14 +98,14 @@ pub fn validate_instance_implements_interface<T>(
 
     // Check each required function
     for func in required_functions {
-        check_function_export(store, instance, func)?;
+        check_function_export(&mut *store, instance, func)?;
     }
 
     Ok(())
 }
 
 fn check_function_export<T>(
-    store: &Store<T>,
+    store: &mut Store<T>,
     instance: &Instance,
     func: &Function,
 ) -> Result<(), InterfaceError> {
@@ -114,11 +114,11 @@ fn check_function_export<T>(
     match expected_sig {
         ExpectedSignature::GraphAbi => {
             // Try to get the function with (i32, i32) -> i64 signature
-            match instance.get_typed_func::<(i32, i32), i64>(store, &func.name) {
+            match instance.get_typed_func::<(i32, i32), i64>(&mut *store, &func.name) {
                 Ok(_) => Ok(()),
                 Err(_) => {
                     // Check if function exists at all with wrong signature
-                    if instance.get_export(store, &func.name).is_some() {
+                    if instance.get_export(&mut *store, &func.name).is_some() {
                         Err(InterfaceError::SignatureMismatch {
                             name: func.name.clone(),
                             expected: expected_sig.description().to_string(),
@@ -133,10 +133,10 @@ fn check_function_export<T>(
             }
         }
         ExpectedSignature::NoArgsNoResults => {
-            match instance.get_typed_func::<(), ()>(store, &func.name) {
+            match instance.get_typed_func::<(), ()>(&mut *store, &func.name) {
                 Ok(_) => Ok(()),
                 Err(_) => {
-                    if instance.get_export(store, &func.name).is_some() {
+                    if instance.get_export(&mut *store, &func.name).is_some() {
                         Err(InterfaceError::SignatureMismatch {
                             name: func.name.clone(),
                             expected: expected_sig.description().to_string(),

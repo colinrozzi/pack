@@ -22,9 +22,10 @@
 
 use crate::abi::{decode, encode, Value};
 use crate::runtime::RuntimeError;
+use std::future::Future;
 use std::marker::PhantomData;
 use thiserror::Error;
-use wasmi::{Caller, Engine, Linker};
+use wasmtime::{Caller, Engine, Linker};
 
 /// Errors from linker operations
 #[derive(Error, Debug)]
@@ -85,7 +86,7 @@ impl<'a, T> Ctx<'a, T> {
     }
 
     /// Read a Value from WASM memory using the Graph ABI
-    pub fn read_value(&self, ptr: i32, len: i32) -> Result<Value, LinkerError> {
+    pub fn read_value(&mut self, ptr: i32, len: i32) -> Result<Value, LinkerError> {
         let memory = self
             .caller
             .get_export("memory")
@@ -127,7 +128,7 @@ impl<'a, T> Ctx<'a, T> {
     }
 
     /// Read a string from WASM memory
-    pub fn read_string(&self, ptr: i32, len: i32) -> Result<String, LinkerError> {
+    pub fn read_string(&mut self, ptr: i32, len: i32) -> Result<String, LinkerError> {
         let memory = self
             .caller
             .get_export("memory")
@@ -231,7 +232,7 @@ impl<'a, 'b, T: 'static> InterfaceBuilder<'a, 'b, T> {
     pub fn func_raw<Params, Results>(
         &mut self,
         name: &str,
-        func: impl wasmi::IntoFunc<T, Params, Results>,
+        func: impl wasmtime::IntoFunc<T, Params, Results>,
     ) -> Result<&mut Self, LinkerError> {
         self.linker
             .linker
@@ -397,6 +398,211 @@ impl<'a, 'b, T: 'static> InterfaceBuilder<'a, 'b, T> {
     }
 }
 
+// ============================================================================
+// Async Host Functions (require T: Send)
+// ============================================================================
+
+impl<'a, 'b, T: Send + 'static> InterfaceBuilder<'a, 'b, T> {
+    /// Register an async host function with automatic Graph ABI encode/decode.
+    ///
+    /// The closure receives parameters decoded from the Graph ABI and should
+    /// return a pinned, boxed future that resolves to the return value.
+    ///
+    /// **Important**: This requires an async-enabled runtime (`AsyncRuntime`).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// builder.interface("theater:runtime")?
+    ///     .func_async("fetch", |ctx, url: String| {
+    ///         Box::pin(async move {
+    ///             let response = fetch_url(&url).await;
+    ///             response.body
+    ///         })
+    ///     })?;
+    /// ```
+    pub fn func_async<P, R, F, Fut>(
+        &mut self,
+        name: &str,
+        func: F,
+    ) -> Result<&mut Self, LinkerError>
+    where
+        P: TryFrom<Value> + Send + 'static,
+        <P as TryFrom<Value>>::Error: std::fmt::Debug,
+        R: Into<Value> + Send + 'static,
+        F: Fn(AsyncCtx<T>, P) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = R> + Send + 'static,
+    {
+        let func = std::sync::Arc::new(func);
+
+        self.linker
+            .linker
+            .func_wrap_async(
+                &self.module_name,
+                name,
+                move |mut caller: Caller<'_, T>, (ptr, len): (i32, i32)| {
+                    let func = func.clone();
+
+                    Box::new(async move {
+                        // Read memory for input
+                        let memory = caller
+                            .get_export("memory")
+                            .and_then(|e| e.into_memory())
+                            .expect("memory export");
+
+                        let mut buffer = vec![0u8; len as usize];
+                        memory
+                            .read(&caller, ptr as usize, &mut buffer)
+                            .expect("read memory");
+
+                        // Decode input
+                        let input_value = decode(&buffer).expect("decode input");
+                        let input: P = P::try_from(input_value).ok().expect("convert input");
+
+                        // Create async context (captures data we need)
+                        let ctx = AsyncCtx {
+                            _marker: std::marker::PhantomData,
+                        };
+
+                        // Call async function
+                        let output: R = func(ctx, input).await;
+
+                        // Encode output
+                        let output_value: Value = output.into();
+                        let bytes = encode(&output_value).expect("encode output");
+
+                        // Write output to memory
+                        let out_ptr = 16 * 1024; // Fixed output location
+                        memory
+                            .write(&mut caller, out_ptr, &bytes)
+                            .expect("write memory");
+
+                        // Return packed pointer/length
+                        ((bytes.len() as i64) << 32) | (out_ptr as i64 & 0xFFFFFFFF)
+                    })
+                },
+            )
+            .map_err(|e| LinkerError::FunctionRegistration(e.to_string()))?;
+
+        Ok(self)
+    }
+
+    /// Register an async host function that returns a Result.
+    ///
+    /// Both success and error types are encoded as WIT result variants.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// builder.interface("theater:runtime")?
+    ///     .func_async_result("fetch", |ctx, url: String| {
+    ///         Box::pin(async move {
+    ///             fetch_url(&url).await.map_err(|e| e.to_string())
+    ///         })
+    ///     })?;
+    /// ```
+    pub fn func_async_result<P, R, E, F, Fut>(
+        &mut self,
+        name: &str,
+        func: F,
+    ) -> Result<&mut Self, LinkerError>
+    where
+        P: TryFrom<Value> + Send + 'static,
+        <P as TryFrom<Value>>::Error: std::fmt::Debug,
+        R: Into<Value> + Send + 'static,
+        E: Into<Value> + Send + 'static,
+        F: Fn(AsyncCtx<T>, P) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<R, E>> + Send + 'static,
+    {
+        let func = std::sync::Arc::new(func);
+
+        self.linker
+            .linker
+            .func_wrap_async(
+                &self.module_name,
+                name,
+                move |mut caller: Caller<'_, T>, (ptr, len): (i32, i32)| {
+                    let func = func.clone();
+
+                    Box::new(async move {
+                        // Read memory for input
+                        let memory = caller
+                            .get_export("memory")
+                            .and_then(|e| e.into_memory())
+                            .expect("memory export");
+
+                        let mut buffer = vec![0u8; len as usize];
+                        memory
+                            .read(&caller, ptr as usize, &mut buffer)
+                            .expect("read memory");
+
+                        // Decode input
+                        let input_value = decode(&buffer).expect("decode input");
+                        let input: P = P::try_from(input_value).ok().expect("convert input");
+
+                        // Create async context
+                        let ctx = AsyncCtx {
+                            _marker: std::marker::PhantomData,
+                        };
+
+                        // Call async function
+                        let result = func(ctx, input).await;
+
+                        // Encode result as WIT result variant
+                        let output_value: Value = match result {
+                            Ok(value) => Value::Variant {
+                                tag: 0,
+                                payload: Some(Box::new(value.into())),
+                            },
+                            Err(error) => Value::Variant {
+                                tag: 1,
+                                payload: Some(Box::new(error.into())),
+                            },
+                        };
+
+                        let bytes = encode(&output_value).expect("encode output");
+
+                        // Write output to memory
+                        let out_ptr = 16 * 1024;
+                        memory
+                            .write(&mut caller, out_ptr, &bytes)
+                            .expect("write memory");
+
+                        // Return packed pointer/length
+                        ((bytes.len() as i64) << 32) | (out_ptr as i64 & 0xFFFFFFFF)
+                    })
+                },
+            )
+            .map_err(|e| LinkerError::FunctionRegistration(e.to_string()))?;
+
+        Ok(self)
+    }
+}
+
+/// Async context for async host functions.
+///
+/// Provides access to state in async contexts. Note that due to Rust's
+/// borrowing rules with async, direct memory access is limited. For
+/// complex async operations, capture needed data before the async block.
+pub struct AsyncCtx<T> {
+    _marker: std::marker::PhantomData<T>,
+}
+
+impl<T> AsyncCtx<T> {
+    /// Create a new async context.
+    pub fn new() -> Self {
+        Self {
+            _marker: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<T> Default for AsyncCtx<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Trait for types that provide host functions.
 ///
 /// Implement this to create reusable sets of host functions that can
@@ -442,7 +648,7 @@ impl HostFunctionProvider<HostState> for DefaultHostProvider {
             .interface("host")?
             .func_raw(
                 "log",
-                |caller: Caller<'_, HostState>, ptr: i32, len: i32| {
+                |mut caller: Caller<'_, HostState>, ptr: i32, len: i32| {
                     let memory = caller
                         .get_export("memory")
                         .and_then(|e| e.into_memory())
