@@ -6,6 +6,9 @@ edition = "2021"
 [lib]
 crate-type = ["cdylib"]
 
+[dependencies]
+composite-abi = { path = "../../crates/composite-abi", default-features = false }
+
 [profile.release]
 opt-level = "s"
 lto = true

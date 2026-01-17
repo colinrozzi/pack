@@ -1,0 +1,13 @@
+[package]
+name = "composite-abi"
+version = "0.1.0"
+edition = "2021"
+description = "Graph-encoded ABI for Composite runtime - supports recursive types"
+
+[features]
+default = ["std"]
+std = []
+
+[dependencies]
+# no_std compatible hash map
+hashbrown = "0.14"

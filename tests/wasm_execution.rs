@@ -439,3 +439,68 @@ fn rust_component_echo_complex() {
         .expect("failed to call echo");
     assert_eq!(output, input);
 }
+
+#[test]
+fn rust_component_transform_doubles_s64() {
+    let wasm_bytes = load_rust_echo_component();
+
+    let runtime = Runtime::new();
+    let module = runtime.load_module(&wasm_bytes).expect("failed to load Rust component");
+    let mut instance = module.instantiate().expect("failed to instantiate");
+
+    // Test transform doubles S64
+    let input = Value::S64(21);
+    let output = instance
+        .call_with_value("transform", &input, 0)
+        .expect("failed to call transform");
+    assert_eq!(output, Value::S64(42));
+}
+
+#[test]
+fn rust_component_transform_nested() {
+    let wasm_bytes = load_rust_echo_component();
+
+    let runtime = Runtime::new();
+    let module = runtime.load_module(&wasm_bytes).expect("failed to load Rust component");
+    let mut instance = module.instantiate().expect("failed to instantiate");
+
+    // Test transform on nested structure - doubles all S64 values
+    let input = Value::List(vec![
+        Value::S64(10),
+        Value::S64(20),
+        Value::Variant {
+            tag: 1,
+            payload: Some(Box::new(Value::S64(50))),
+        },
+    ]);
+
+    let expected = Value::List(vec![
+        Value::S64(20),  // 10 * 2
+        Value::S64(40),  // 20 * 2
+        Value::Variant {
+            tag: 1,
+            payload: Some(Box::new(Value::S64(100))),  // 50 * 2
+        },
+    ]);
+
+    let output = instance
+        .call_with_value("transform", &input, 0)
+        .expect("failed to call transform");
+    assert_eq!(output, expected);
+}
+
+#[test]
+fn rust_component_transform_preserves_strings() {
+    let wasm_bytes = load_rust_echo_component();
+
+    let runtime = Runtime::new();
+    let module = runtime.load_module(&wasm_bytes).expect("failed to load Rust component");
+    let mut instance = module.instantiate().expect("failed to instantiate");
+
+    // Strings should pass through unchanged
+    let input = Value::String("hello world".to_string());
+    let output = instance
+        .call_with_value("transform", &input, 0)
+        .expect("failed to call transform");
+    assert_eq!(output, input);
+}
