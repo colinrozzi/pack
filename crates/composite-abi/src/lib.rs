@@ -3,6 +3,24 @@
 //! This crate provides encoding and decoding for recursive data types
 //! using a graph-based binary format. It's `no_std` compatible for use
 //! in WASM components.
+//!
+//! # Derive Macros
+//!
+//! Enable the `derive` feature to use `#[derive(GraphValue)]`:
+//!
+//! ```ignore
+//! use composite_abi::{GraphValue, Value};
+//!
+//! #[derive(GraphValue)]
+//! struct Point {
+//!     x: i64,
+//!     y: i64,
+//! }
+//!
+//! let point = Point { x: 10, y: 20 };
+//! let value: Value = point.into();
+//! let back: Point = value.try_into().unwrap();
+//! ```
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
@@ -11,6 +29,98 @@ extern crate alloc;
 mod value;
 
 pub use value::Value;
+
+// Re-export derive macro when feature is enabled
+#[cfg(feature = "derive")]
+pub use composite_derive::GraphValue;
+
+// ============================================================================
+// Conversion Error
+// ============================================================================
+
+use alloc::boxed::Box;
+
+/// Error type for Value conversions
+#[derive(Debug, Clone)]
+pub enum ConversionError {
+    /// Type mismatch during conversion
+    TypeMismatch { expected: String, got: String },
+    /// Missing field in record
+    MissingField(String),
+    /// Missing index in tuple/list
+    MissingIndex(usize),
+    /// Wrong number of fields
+    WrongFieldCount { expected: usize, got: usize },
+    /// Expected a record value
+    ExpectedRecord(String),
+    /// Expected a tuple value
+    ExpectedTuple(String),
+    /// Expected a variant value
+    ExpectedVariant(String),
+    /// Expected a list value
+    ExpectedList(String),
+    /// Expected an option value
+    ExpectedOption(String),
+    /// Unknown variant tag
+    UnknownTag { tag: usize, max: usize },
+    /// Missing payload for variant
+    MissingPayload,
+    /// Unexpected payload for unit variant
+    UnexpectedPayload,
+    /// Error in field conversion
+    FieldError(String, Box<ConversionError>),
+    /// Error in index conversion
+    IndexError(usize, Box<ConversionError>),
+    /// Error in payload conversion
+    PayloadError(Box<ConversionError>),
+}
+
+impl core::fmt::Display for ConversionError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::TypeMismatch { expected, got } => {
+                write!(f, "type mismatch: expected {}, got {}", expected, got)
+            }
+            Self::MissingField(name) => write!(f, "missing field: {}", name),
+            Self::MissingIndex(idx) => write!(f, "missing index: {}", idx),
+            Self::WrongFieldCount { expected, got } => {
+                write!(f, "wrong field count: expected {}, got {}", expected, got)
+            }
+            Self::ExpectedRecord(got) => write!(f, "expected record, got {}", got),
+            Self::ExpectedTuple(got) => write!(f, "expected tuple, got {}", got),
+            Self::ExpectedVariant(got) => write!(f, "expected variant, got {}", got),
+            Self::ExpectedList(got) => write!(f, "expected list, got {}", got),
+            Self::ExpectedOption(got) => write!(f, "expected option, got {}", got),
+            Self::UnknownTag { tag, max } => {
+                write!(f, "unknown variant tag {} (max {})", tag, max)
+            }
+            Self::MissingPayload => write!(f, "missing payload for variant"),
+            Self::UnexpectedPayload => write!(f, "unexpected payload for unit variant"),
+            Self::FieldError(name, e) => write!(f, "field '{}': {}", name, e),
+            Self::IndexError(idx, e) => write!(f, "index {}: {}", idx, e),
+            Self::PayloadError(e) => write!(f, "payload: {}", e),
+        }
+    }
+}
+
+// ============================================================================
+// Private module for derive macro internals
+// ============================================================================
+
+/// Private module used by the derive macro. Not part of the public API.
+#[doc(hidden)]
+pub mod __private {
+    pub use alloc::boxed::Box;
+    pub use alloc::format;
+    pub use alloc::string::String;
+    pub use alloc::vec;
+    pub use alloc::vec::Vec;
+    pub use core::convert::From;
+    pub use core::convert::TryFrom;
+    pub use core::result::Result;
+    pub use core::result::Result::{Err, Ok};
+    pub use core::option::Option::{self, None, Some};
+}
 
 use alloc::format;
 use alloc::string::String;

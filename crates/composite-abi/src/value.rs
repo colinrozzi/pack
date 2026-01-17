@@ -56,3 +56,268 @@ impl Value {
         }
     }
 }
+
+// ============================================================================
+// From implementations for primitives
+// ============================================================================
+
+impl From<bool> for Value {
+    fn from(v: bool) -> Self { Value::Bool(v) }
+}
+
+impl From<u8> for Value {
+    fn from(v: u8) -> Self { Value::U8(v) }
+}
+
+impl From<u16> for Value {
+    fn from(v: u16) -> Self { Value::U16(v) }
+}
+
+impl From<u32> for Value {
+    fn from(v: u32) -> Self { Value::U32(v) }
+}
+
+impl From<u64> for Value {
+    fn from(v: u64) -> Self { Value::U64(v) }
+}
+
+impl From<i8> for Value {
+    fn from(v: i8) -> Self { Value::S8(v) }
+}
+
+impl From<i16> for Value {
+    fn from(v: i16) -> Self { Value::S16(v) }
+}
+
+impl From<i32> for Value {
+    fn from(v: i32) -> Self { Value::S32(v) }
+}
+
+impl From<i64> for Value {
+    fn from(v: i64) -> Self { Value::S64(v) }
+}
+
+impl From<f32> for Value {
+    fn from(v: f32) -> Self { Value::F32(v) }
+}
+
+impl From<f64> for Value {
+    fn from(v: f64) -> Self { Value::F64(v) }
+}
+
+impl From<char> for Value {
+    fn from(v: char) -> Self { Value::Char(v) }
+}
+
+impl From<String> for Value {
+    fn from(v: String) -> Self { Value::String(v) }
+}
+
+impl From<&str> for Value {
+    fn from(v: &str) -> Self { Value::String(String::from(v)) }
+}
+
+impl<T: Into<Value>> From<Vec<T>> for Value {
+    fn from(v: Vec<T>) -> Self {
+        Value::List(v.into_iter().map(Into::into).collect())
+    }
+}
+
+impl<T: Into<Value>> From<Option<T>> for Value {
+    fn from(v: Option<T>) -> Self {
+        Value::Option(v.map(|x| Box::new(x.into())))
+    }
+}
+
+// ============================================================================
+// TryFrom implementations for primitives
+// ============================================================================
+
+use crate::ConversionError;
+
+impl TryFrom<Value> for bool {
+    type Error = ConversionError;
+    fn try_from(v: Value) -> Result<Self, Self::Error> {
+        match v {
+            Value::Bool(x) => Ok(x),
+            other => Err(ConversionError::TypeMismatch {
+                expected: String::from("bool"),
+                got: format!("{:?}", other),
+            }),
+        }
+    }
+}
+
+impl TryFrom<Value> for u8 {
+    type Error = ConversionError;
+    fn try_from(v: Value) -> Result<Self, Self::Error> {
+        match v {
+            Value::U8(x) => Ok(x),
+            other => Err(ConversionError::TypeMismatch {
+                expected: String::from("u8"),
+                got: format!("{:?}", other),
+            }),
+        }
+    }
+}
+
+impl TryFrom<Value> for u16 {
+    type Error = ConversionError;
+    fn try_from(v: Value) -> Result<Self, Self::Error> {
+        match v {
+            Value::U16(x) => Ok(x),
+            other => Err(ConversionError::TypeMismatch {
+                expected: String::from("u16"),
+                got: format!("{:?}", other),
+            }),
+        }
+    }
+}
+
+impl TryFrom<Value> for u32 {
+    type Error = ConversionError;
+    fn try_from(v: Value) -> Result<Self, Self::Error> {
+        match v {
+            Value::U32(x) => Ok(x),
+            other => Err(ConversionError::TypeMismatch {
+                expected: String::from("u32"),
+                got: format!("{:?}", other),
+            }),
+        }
+    }
+}
+
+impl TryFrom<Value> for u64 {
+    type Error = ConversionError;
+    fn try_from(v: Value) -> Result<Self, Self::Error> {
+        match v {
+            Value::U64(x) => Ok(x),
+            other => Err(ConversionError::TypeMismatch {
+                expected: String::from("u64"),
+                got: format!("{:?}", other),
+            }),
+        }
+    }
+}
+
+impl TryFrom<Value> for i8 {
+    type Error = ConversionError;
+    fn try_from(v: Value) -> Result<Self, Self::Error> {
+        match v {
+            Value::S8(x) => Ok(x),
+            other => Err(ConversionError::TypeMismatch {
+                expected: String::from("i8"),
+                got: format!("{:?}", other),
+            }),
+        }
+    }
+}
+
+impl TryFrom<Value> for i16 {
+    type Error = ConversionError;
+    fn try_from(v: Value) -> Result<Self, Self::Error> {
+        match v {
+            Value::S16(x) => Ok(x),
+            other => Err(ConversionError::TypeMismatch {
+                expected: String::from("i16"),
+                got: format!("{:?}", other),
+            }),
+        }
+    }
+}
+
+impl TryFrom<Value> for i32 {
+    type Error = ConversionError;
+    fn try_from(v: Value) -> Result<Self, Self::Error> {
+        match v {
+            Value::S32(x) => Ok(x),
+            other => Err(ConversionError::TypeMismatch {
+                expected: String::from("i32"),
+                got: format!("{:?}", other),
+            }),
+        }
+    }
+}
+
+impl TryFrom<Value> for i64 {
+    type Error = ConversionError;
+    fn try_from(v: Value) -> Result<Self, Self::Error> {
+        match v {
+            Value::S64(x) => Ok(x),
+            other => Err(ConversionError::TypeMismatch {
+                expected: String::from("i64"),
+                got: format!("{:?}", other),
+            }),
+        }
+    }
+}
+
+impl TryFrom<Value> for f32 {
+    type Error = ConversionError;
+    fn try_from(v: Value) -> Result<Self, Self::Error> {
+        match v {
+            Value::F32(x) => Ok(x),
+            other => Err(ConversionError::TypeMismatch {
+                expected: String::from("f32"),
+                got: format!("{:?}", other),
+            }),
+        }
+    }
+}
+
+impl TryFrom<Value> for f64 {
+    type Error = ConversionError;
+    fn try_from(v: Value) -> Result<Self, Self::Error> {
+        match v {
+            Value::F64(x) => Ok(x),
+            other => Err(ConversionError::TypeMismatch {
+                expected: String::from("f64"),
+                got: format!("{:?}", other),
+            }),
+        }
+    }
+}
+
+impl TryFrom<Value> for char {
+    type Error = ConversionError;
+    fn try_from(v: Value) -> Result<Self, Self::Error> {
+        match v {
+            Value::Char(x) => Ok(x),
+            other => Err(ConversionError::TypeMismatch {
+                expected: String::from("char"),
+                got: format!("{:?}", other),
+            }),
+        }
+    }
+}
+
+impl TryFrom<Value> for String {
+    type Error = ConversionError;
+    fn try_from(v: Value) -> Result<Self, Self::Error> {
+        match v {
+            Value::String(x) => Ok(x),
+            other => Err(ConversionError::TypeMismatch {
+                expected: String::from("String"),
+                got: format!("{:?}", other),
+            }),
+        }
+    }
+}
+
+impl<T: TryFrom<Value, Error = ConversionError>> TryFrom<Value> for Vec<T> {
+    type Error = ConversionError;
+    fn try_from(v: Value) -> Result<Self, Self::Error> {
+        match v {
+            Value::List(items) => items
+                .into_iter()
+                .enumerate()
+                .map(|(i, item)| {
+                    T::try_from(item).map_err(|e| ConversionError::IndexError(i, Box::new(e)))
+                })
+                .collect(),
+            other => Err(ConversionError::ExpectedList(format!("{:?}", other))),
+        }
+    }
+}
+
+use alloc::format;

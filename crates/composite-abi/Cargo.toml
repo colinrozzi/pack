@@ -7,7 +7,10 @@ description = "Graph-encoded ABI for Composite runtime - supports recursive type
 [features]
 default = ["std"]
 std = []
+derive = ["composite-derive"]
 
 [dependencies]
 # no_std compatible hash map
 hashbrown = "0.14"
+# Optional derive macro
+composite-derive = { path = "../composite-derive", optional = true }
