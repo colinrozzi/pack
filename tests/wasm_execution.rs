@@ -2,6 +2,7 @@
 //!
 //! These tests verify that we can load and run WASM modules through the Runtime.
 
+use composite::abi::Value;
 use composite::Runtime;
 
 /// A minimal WAT module that exports an `add` function
@@ -230,4 +231,149 @@ fn memory_reverse_string() {
     // Read back the reversed string
     let result = instance.read_memory(0, 5).expect("read back");
     assert_eq!(result, b"olleH");
+}
+
+// ============================================================================
+// Graph ABI tests
+// ============================================================================
+
+/// An echo module that copies input bytes to output location.
+/// Takes (in_ptr, in_len), copies to offset 4096, returns packed (out_ptr, out_len) as i64.
+const ECHO_MODULE: &str = r#"
+(module
+    (memory (export "memory") 1)
+
+    ;; Echo: copy input bytes to output location and return (out_ptr, out_len)
+    ;; Returns i64 where low 32 bits = out_ptr, high 32 bits = out_len
+    (func $echo (param $in_ptr i32) (param $in_len i32) (result i64)
+        (local $out_ptr i32)
+        (local $i i32)
+
+        ;; Output starts at offset 4096
+        (local.set $out_ptr (i32.const 4096))
+
+        ;; Copy loop: memcpy(out_ptr, in_ptr, in_len)
+        (local.set $i (i32.const 0))
+        (block $break
+            (loop $continue
+                (br_if $break (i32.ge_u (local.get $i) (local.get $in_len)))
+
+                (i32.store8
+                    (i32.add (local.get $out_ptr) (local.get $i))
+                    (i32.load8_u (i32.add (local.get $in_ptr) (local.get $i))))
+
+                (local.set $i (i32.add (local.get $i) (i32.const 1)))
+                (br $continue)
+            )
+        )
+
+        ;; Return (out_len << 32) | out_ptr
+        (i64.or
+            (i64.extend_i32_u (local.get $out_ptr))
+            (i64.shl
+                (i64.extend_i32_u (local.get $in_len))
+                (i64.const 32)))
+    )
+    (export "echo" (func $echo))
+)
+"#;
+
+#[test]
+fn graph_abi_echo_roundtrip() {
+    let wasm_bytes = wat::parse_str(ECHO_MODULE).expect("failed to parse WAT");
+
+    let runtime = Runtime::new();
+    let module = runtime.load_module(&wasm_bytes).expect("failed to load module");
+    let mut instance = module.instantiate().expect("failed to instantiate");
+
+    // Test with a simple integer
+    let input = Value::S64(42);
+    let output = instance
+        .call_with_value("echo", &input, 0)
+        .expect("failed to call echo");
+    assert_eq!(output, input);
+}
+
+#[test]
+fn graph_abi_echo_string() {
+    let wasm_bytes = wat::parse_str(ECHO_MODULE).expect("failed to parse WAT");
+
+    let runtime = Runtime::new();
+    let module = runtime.load_module(&wasm_bytes).expect("failed to load module");
+    let mut instance = module.instantiate().expect("failed to instantiate");
+
+    let input = Value::String("Hello, Graph ABI!".to_string());
+    let output = instance
+        .call_with_value("echo", &input, 0)
+        .expect("failed to call echo");
+    assert_eq!(output, input);
+}
+
+#[test]
+fn graph_abi_echo_list() {
+    let wasm_bytes = wat::parse_str(ECHO_MODULE).expect("failed to parse WAT");
+
+    let runtime = Runtime::new();
+    let module = runtime.load_module(&wasm_bytes).expect("failed to load module");
+    let mut instance = module.instantiate().expect("failed to instantiate");
+
+    let input = Value::List(vec![
+        Value::S64(1),
+        Value::S64(2),
+        Value::S64(3),
+    ]);
+    let output = instance
+        .call_with_value("echo", &input, 0)
+        .expect("failed to call echo");
+    assert_eq!(output, input);
+}
+
+#[test]
+fn graph_abi_echo_variant() {
+    let wasm_bytes = wat::parse_str(ECHO_MODULE).expect("failed to parse WAT");
+
+    let runtime = Runtime::new();
+    let module = runtime.load_module(&wasm_bytes).expect("failed to load module");
+    let mut instance = module.instantiate().expect("failed to instantiate");
+
+    // This is like a simple S-expression node
+    let input = Value::Variant {
+        tag: 1,
+        payload: Some(Box::new(Value::String("symbol".to_string()))),
+    };
+    let output = instance
+        .call_with_value("echo", &input, 0)
+        .expect("failed to call echo");
+    assert_eq!(output, input);
+}
+
+#[test]
+fn graph_abi_echo_nested() {
+    let wasm_bytes = wat::parse_str(ECHO_MODULE).expect("failed to parse WAT");
+
+    let runtime = Runtime::new();
+    let module = runtime.load_module(&wasm_bytes).expect("failed to load module");
+    let mut instance = module.instantiate().expect("failed to instantiate");
+
+    // A nested structure like (list (sym "a") (num 42))
+    let input = Value::List(vec![
+        Value::Variant {
+            tag: 0,
+            payload: Some(Box::new(Value::String("list".to_string()))),
+        },
+        Value::List(vec![
+            Value::Variant {
+                tag: 0,
+                payload: Some(Box::new(Value::String("a".to_string()))),
+            },
+            Value::Variant {
+                tag: 1,
+                payload: Some(Box::new(Value::S64(42))),
+            },
+        ]),
+    ]);
+    let output = instance
+        .call_with_value("echo", &input, 0)
+        .expect("failed to call echo");
+    assert_eq!(output, input);
 }

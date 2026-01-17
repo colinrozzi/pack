@@ -2,7 +2,7 @@
 //!
 //! Handles component instantiation, linking, and execution.
 
-use crate::abi::{encode, Value};
+use crate::abi::{decode, encode, Value};
 use crate::wit_plus::{decode_with_schema, encode_with_schema, Type, TypeDef};
 use std::io::Cursor;
 use thiserror::Error;
@@ -177,6 +177,55 @@ impl Instance {
 
         func.call(&mut self.store, (a, b))
             .map_err(|e| RuntimeError::WasmError(e.to_string()))
+    }
+
+    // ========================================================================
+    // Graph ABI helpers
+    // ========================================================================
+
+    /// Encode a Value and write it to memory at the given offset.
+    /// Returns the number of bytes written.
+    pub fn write_value(&mut self, offset: usize, value: &Value) -> Result<usize, RuntimeError> {
+        let bytes = encode(value).map_err(|e| RuntimeError::AbiError(e.to_string()))?;
+        self.write_memory(offset, &bytes)?;
+        Ok(bytes.len())
+    }
+
+    /// Read bytes from memory and decode them as a Value.
+    pub fn read_value(&self, offset: usize, len: usize) -> Result<Value, RuntimeError> {
+        let bytes = self.read_memory(offset, len)?;
+        decode(&bytes).map_err(|e| RuntimeError::AbiError(e.to_string()))
+    }
+
+    /// Call a function that takes (in_ptr, in_len) and returns (out_ptr, out_len).
+    /// Writes the input value to memory, calls the function, reads the output value.
+    pub fn call_with_value(
+        &mut self,
+        name: &str,
+        input: &Value,
+        input_offset: usize,
+    ) -> Result<Value, RuntimeError> {
+        // Encode and write input
+        let input_len = self.write_value(input_offset, input)?;
+
+        // Call the function - expects (ptr, len) -> (out_ptr, out_len) packed as i64
+        // We'll use a convention: function returns two i32s packed in an i64
+        // low 32 bits = out_ptr, high 32 bits = out_len
+        let func = self
+            .instance
+            .get_typed_func::<(i32, i32), i64>(&self.store, name)
+            .map_err(|e| RuntimeError::FunctionNotFound(e.to_string()))?;
+
+        let result = func
+            .call(&mut self.store, (input_offset as i32, input_len as i32))
+            .map_err(|e| RuntimeError::WasmError(e.to_string()))?;
+
+        // Unpack result: low 32 bits = ptr, high 32 bits = len
+        let out_ptr = (result & 0xFFFFFFFF) as usize;
+        let out_len = ((result >> 32) & 0xFFFFFFFF) as usize;
+
+        // Read and decode output
+        self.read_value(out_ptr, out_len)
     }
 }
 
