@@ -238,42 +238,27 @@ fn memory_reverse_string() {
 // Graph ABI tests
 // ============================================================================
 
-/// An echo module that copies input bytes to output location.
-/// Takes (in_ptr, in_len), copies to offset 4096, returns packed (out_ptr, out_len) as i64.
+/// An echo module that copies input bytes to the caller-provided output buffer.
+/// New calling convention: (in_ptr, in_len, out_ptr, out_cap) -> out_len
 const ECHO_MODULE: &str = r#"
 (module
     (memory (export "memory") 1)
 
-    ;; Echo: copy input bytes to output location and return (out_ptr, out_len)
-    ;; Returns i64 where low 32 bits = out_ptr, high 32 bits = out_len
-    (func $echo (param $in_ptr i32) (param $in_len i32) (result i64)
-        (local $out_ptr i32)
+    ;; Echo: copy input bytes to caller-provided output buffer
+    ;; Returns out_len (bytes written), or -1 if buffer too small
+    (func $echo (param $in_ptr i32) (param $in_len i32) (param $out_ptr i32) (param $out_cap i32) (result i32)
         (local $i i32)
 
-        ;; Output starts at offset 4096
-        (local.set $out_ptr (i32.const 4096))
-
-        ;; Copy loop: memcpy(out_ptr, in_ptr, in_len)
-        (local.set $i (i32.const 0))
-        (block $break
-            (loop $continue
-                (br_if $break (i32.ge_u (local.get $i) (local.get $in_len)))
-
-                (i32.store8
-                    (i32.add (local.get $out_ptr) (local.get $i))
-                    (i32.load8_u (i32.add (local.get $in_ptr) (local.get $i))))
-
-                (local.set $i (i32.add (local.get $i) (i32.const 1)))
-                (br $continue)
-            )
+        ;; Check if output buffer is large enough
+        (if (i32.gt_u (local.get $in_len) (local.get $out_cap))
+            (then (return (i32.const -1)))
         )
 
-        ;; Return (out_len << 32) | out_ptr
-        (i64.or
-            (i64.extend_i32_u (local.get $out_ptr))
-            (i64.shl
-                (i64.extend_i32_u (local.get $in_len))
-                (i64.const 32)))
+        ;; Copy input to output buffer using memory.copy
+        (memory.copy (local.get $out_ptr) (local.get $in_ptr) (local.get $in_len))
+
+        ;; Return the length
+        (local.get $in_len)
     )
     (export "echo" (func $echo))
 )

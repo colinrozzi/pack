@@ -1,6 +1,6 @@
 //! S-expression evaluator component
 //!
-//! Demonstrates the GraphValue derive macro with a recursive type.
+//! Demonstrates the composite-guest macros with a recursive type.
 //! Evaluates simple Lisp-like expressions.
 
 #![no_std]
@@ -10,8 +10,11 @@ extern crate alloc;
 use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use composite_abi::{decode, encode, ConversionError, Value};
-use core::panic::PanicInfo;
+use composite_abi::ConversionError;
+use composite_guest::{export, Value};
+
+// Set up allocator (256KB for complex expressions) and panic handler
+composite_guest::setup_guest!(256 * 1024);
 
 // ============================================================================
 // S-expression type
@@ -679,103 +682,10 @@ fn builtin_is_list(args: &[SExpr]) -> SExpr {
 // WASM interface
 // ============================================================================
 
-mod allocator {
-    use core::alloc::{GlobalAlloc, Layout};
-    use core::cell::UnsafeCell;
-
-    const HEAP_SIZE: usize = 256 * 1024; // 256KB heap for complex expressions
-
-    #[repr(C, align(16))]
-    struct Heap {
-        data: UnsafeCell<[u8; HEAP_SIZE]>,
-        offset: UnsafeCell<usize>,
-    }
-
-    unsafe impl Sync for Heap {}
-
-    static HEAP: Heap = Heap {
-        data: UnsafeCell::new([0; HEAP_SIZE]),
-        offset: UnsafeCell::new(0),
-    };
-
-    pub struct BumpAllocator;
-
-    unsafe impl GlobalAlloc for BumpAllocator {
-        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-            let offset = &mut *HEAP.offset.get();
-            let align = layout.align();
-            let size = layout.size();
-            let aligned = (*offset + align - 1) & !(align - 1);
-            let new_offset = aligned + size;
-
-            if new_offset > HEAP_SIZE {
-                core::ptr::null_mut()
-            } else {
-                *offset = new_offset;
-                (HEAP.data.get() as *mut u8).add(aligned)
-            }
-        }
-
-        unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {}
-    }
-
-    #[global_allocator]
-    static ALLOCATOR: BumpAllocator = BumpAllocator;
-}
-
-const OUTPUT_OFFSET: usize = 64 * 1024;
-
-#[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
-    loop {}
-}
-
-unsafe fn read_input(ptr: i32, len: i32) -> Vec<u8> {
-    let slice = core::slice::from_raw_parts(ptr as *const u8, len as usize);
-    slice.to_vec()
-}
-
-unsafe fn write_output(data: &[u8]) -> (i32, i32) {
-    let dst = OUTPUT_OFFSET as *mut u8;
-    core::ptr::copy_nonoverlapping(data.as_ptr(), dst, data.len());
-    (OUTPUT_OFFSET as i32, data.len() as i32)
-}
-
-fn pack_result(ptr: i32, len: i32) -> i64 {
-    (ptr as i64) | ((len as i64) << 32)
-}
-
 /// Evaluate an S-expression
 /// Input: encoded SExpr
 /// Output: encoded SExpr (result of evaluation)
-#[no_mangle]
-pub extern "C" fn evaluate(in_ptr: i32, in_len: i32) -> i64 {
-    unsafe {
-        let input_bytes = read_input(in_ptr, in_len);
-
-        // Decode as Value first
-        let value = match decode(&input_bytes) {
-            Ok(v) => v,
-            Err(_) => return pack_result(0, 0),
-        };
-
-        // Convert to SExpr
-        let expr: SExpr = match value.try_into() {
-            Ok(e) => e,
-            Err(_) => return pack_result(0, 0),
-        };
-
-        // Evaluate
-        let result = eval(&expr);
-
-        // Convert back to Value and encode
-        let result_value: Value = result.into();
-        let output_bytes = match encode(&result_value) {
-            Ok(b) => b,
-            Err(_) => return pack_result(0, 0),
-        };
-
-        let (ptr, len) = write_output(&output_bytes);
-        pack_result(ptr, len)
-    }
+#[export]
+fn evaluate(expr: SExpr) -> SExpr {
+    eval(&expr)
 }

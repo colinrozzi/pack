@@ -8,6 +8,7 @@ mod interface_check;
 pub use host::{
     AsyncCtx, Ctx, DefaultHostProvider, ErrorHandler, HostFunctionError, HostFunctionErrorKind,
     HostFunctionProvider, HostLinkerBuilder, InterfaceBuilder, LinkerError,
+    INPUT_BUFFER_OFFSET, OUTPUT_BUFFER_CAPACITY, OUTPUT_BUFFER_OFFSET,
 };
 pub use interface_check::{
     validate_instance_implements_interface, ExpectedSignature, InterfaceError,
@@ -343,7 +344,13 @@ impl<T: Send> AsyncInstance<T> {
         decode(&bytes).map_err(|e| RuntimeError::AbiError(e.to_string()))
     }
 
-    /// Call a function that takes (in_ptr, in_len) and returns (out_ptr, out_len) asynchronously.
+    /// Call a function using the caller-provides-output-buffer convention (async).
+    ///
+    /// The WASM function signature is `(in_ptr, in_len, out_ptr, out_cap) -> out_len`:
+    /// - Input: in_ptr/in_len point to Graph ABI encoded input value
+    /// - Output: caller provides out_ptr/out_cap buffer, function returns bytes written
+    ///
+    /// Returns -1 on error (buffer too small, decode error, etc.)
     pub async fn call_with_value_async(
         &mut self,
         name: &str,
@@ -352,20 +359,37 @@ impl<T: Send> AsyncInstance<T> {
     ) -> Result<Value, RuntimeError> {
         let input_len = self.write_value(input_offset, input)?;
 
+        // Use default output buffer location
+        let out_ptr = OUTPUT_BUFFER_OFFSET;
+        let out_cap = OUTPUT_BUFFER_CAPACITY;
+
         let func = self
             .instance
-            .get_typed_func::<(i32, i32), i64>(&mut self.store, name)
+            .get_typed_func::<(i32, i32, i32, i32), i32>(&mut self.store, name)
             .map_err(|e| RuntimeError::FunctionNotFound(e.to_string()))?;
 
-        let result = func
-            .call_async(&mut self.store, (input_offset as i32, input_len as i32))
+        let out_len = func
+            .call_async(
+                &mut self.store,
+                (
+                    input_offset as i32,
+                    input_len as i32,
+                    out_ptr as i32,
+                    out_cap as i32,
+                ),
+            )
             .await
             .map_err(|e| RuntimeError::WasmError(e.to_string()))?;
 
-        let out_ptr = (result & 0xFFFFFFFF) as usize;
-        let out_len = ((result >> 32) & 0xFFFFFFFF) as usize;
+        // Check for error
+        if out_len < 0 {
+            return Err(RuntimeError::WasmError(format!(
+                "function '{}' returned error code {}",
+                name, out_len
+            )));
+        }
 
-        self.read_value(out_ptr, out_len)
+        self.read_value(out_ptr, out_len as usize)
     }
 
     /// Call an exported function that takes two i32s and returns an i32 (async).
@@ -616,7 +640,13 @@ impl InstanceWithHost {
         decode(&bytes).map_err(|e| RuntimeError::AbiError(e.to_string()))
     }
 
-    /// Call a function that takes (in_ptr, in_len) and returns (out_ptr, out_len).
+    /// Call a function using the caller-provides-output-buffer convention.
+    ///
+    /// The WASM function signature is `(in_ptr, in_len, out_ptr, out_cap) -> out_len`:
+    /// - Input: in_ptr/in_len point to Graph ABI encoded input value
+    /// - Output: caller provides out_ptr/out_cap buffer, function returns bytes written
+    ///
+    /// Returns -1 on error (buffer too small, decode error, etc.)
     pub fn call_with_value(
         &mut self,
         name: &str,
@@ -625,19 +655,36 @@ impl InstanceWithHost {
     ) -> Result<Value, RuntimeError> {
         let input_len = self.write_value(input_offset, input)?;
 
+        // Use default output buffer location
+        let out_ptr = OUTPUT_BUFFER_OFFSET;
+        let out_cap = OUTPUT_BUFFER_CAPACITY;
+
         let func = self
             .instance
-            .get_typed_func::<(i32, i32), i64>(&mut self.store, name)
+            .get_typed_func::<(i32, i32, i32, i32), i32>(&mut self.store, name)
             .map_err(|e| RuntimeError::FunctionNotFound(e.to_string()))?;
 
-        let result = func
-            .call(&mut self.store, (input_offset as i32, input_len as i32))
+        let out_len = func
+            .call(
+                &mut self.store,
+                (
+                    input_offset as i32,
+                    input_len as i32,
+                    out_ptr as i32,
+                    out_cap as i32,
+                ),
+            )
             .map_err(|e| RuntimeError::WasmError(e.to_string()))?;
 
-        let out_ptr = (result & 0xFFFFFFFF) as usize;
-        let out_len = ((result >> 32) & 0xFFFFFFFF) as usize;
+        // Check for error
+        if out_len < 0 {
+            return Err(RuntimeError::WasmError(format!(
+                "function '{}' returned error code {}",
+                name, out_len
+            )));
+        }
 
-        self.read_value(out_ptr, out_len)
+        self.read_value(out_ptr, out_len as usize)
     }
 }
 
@@ -732,8 +779,13 @@ impl<T> Instance<T> {
         decode(&bytes).map_err(|e| RuntimeError::AbiError(e.to_string()))
     }
 
-    /// Call a function that takes (in_ptr, in_len) and returns (out_ptr, out_len).
-    /// Writes the input value to memory, calls the function, reads the output value.
+    /// Call a function using the caller-provides-output-buffer convention.
+    ///
+    /// The WASM function signature is `(in_ptr, in_len, out_ptr, out_cap) -> out_len`:
+    /// - Input: in_ptr/in_len point to Graph ABI encoded input value
+    /// - Output: caller provides out_ptr/out_cap buffer, function returns bytes written
+    ///
+    /// Returns -1 on error (buffer too small, decode error, etc.)
     pub fn call_with_value(
         &mut self,
         name: &str,
@@ -743,24 +795,38 @@ impl<T> Instance<T> {
         // Encode and write input
         let input_len = self.write_value(input_offset, input)?;
 
-        // Call the function - expects (ptr, len) -> (out_ptr, out_len) packed as i64
-        // We'll use a convention: function returns two i32s packed in an i64
-        // low 32 bits = out_ptr, high 32 bits = out_len
+        // Use default output buffer location
+        let out_ptr = OUTPUT_BUFFER_OFFSET;
+        let out_cap = OUTPUT_BUFFER_CAPACITY;
+
+        // Call the function with new signature: (in_ptr, in_len, out_ptr, out_cap) -> out_len
         let func = self
             .instance
-            .get_typed_func::<(i32, i32), i64>(&mut self.store, name)
+            .get_typed_func::<(i32, i32, i32, i32), i32>(&mut self.store, name)
             .map_err(|e| RuntimeError::FunctionNotFound(e.to_string()))?;
 
-        let result = func
-            .call(&mut self.store, (input_offset as i32, input_len as i32))
+        let out_len = func
+            .call(
+                &mut self.store,
+                (
+                    input_offset as i32,
+                    input_len as i32,
+                    out_ptr as i32,
+                    out_cap as i32,
+                ),
+            )
             .map_err(|e| RuntimeError::WasmError(e.to_string()))?;
 
-        // Unpack result: low 32 bits = ptr, high 32 bits = len
-        let out_ptr = (result & 0xFFFFFFFF) as usize;
-        let out_len = ((result >> 32) & 0xFFFFFFFF) as usize;
+        // Check for error
+        if out_len < 0 {
+            return Err(RuntimeError::WasmError(format!(
+                "function '{}' returned error code {}",
+                name, out_len
+            )));
+        }
 
         // Read and decode output
-        self.read_value(out_ptr, out_len)
+        self.read_value(out_ptr, out_len as usize)
     }
 }
 

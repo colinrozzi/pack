@@ -61,15 +61,16 @@ fn test_namespaced_interface_registration() {
 #[test]
 fn test_func_typed_with_value() {
     // Module that wraps a host function call - the host function uses Graph ABI
-    // but the wrapper just echoes back (for simpler testing)
+    // New calling convention: (in_ptr, in_len, out_ptr, out_cap) -> out_len
     let module_wat = r#"
     (module
-        (import "test" "double" (func $double (param i32 i32) (result i64)))
+        (import "test" "double" (func $double (param i32 i32 i32 i32) (result i32)))
         (memory (export "memory") 1)
 
-        ;; Wrapper that calls host function with Graph ABI signature
-        (func $call_double (param $in_ptr i32) (param $in_len i32) (result i64)
-            (call $double (local.get $in_ptr) (local.get $in_len))
+        ;; Wrapper that calls host function with new calling convention
+        ;; and forwards the output buffer from caller
+        (func $call_double (param $in_ptr i32) (param $in_len i32) (param $out_ptr i32) (param $out_cap i32) (result i32)
+            (call $double (local.get $in_ptr) (local.get $in_len) (local.get $out_ptr) (local.get $out_cap))
         )
 
         (export "call_double" (func $call_double))
@@ -247,18 +248,19 @@ fn test_backward_compatibility() {
 async fn test_async_runtime_basic() {
     use composite::AsyncRuntime;
 
-    // Simple module that echoes input
+    // Simple module that echoes input - new calling convention
+    // Copies input to output buffer and returns the length
     let module_wat = r#"
     (module
         (memory (export "memory") 1)
 
-        ;; Echo function: takes (ptr, len), returns packed (ptr, len)
-        (func $echo (param $in_ptr i32) (param $in_len i32) (result i64)
-            (i64.or
-                (i64.extend_i32_u (local.get $in_ptr))
-                (i64.shl
-                    (i64.extend_i32_u (local.get $in_len))
-                    (i64.const 32)))
+        ;; Echo function: copies input to output buffer
+        ;; (in_ptr, in_len, out_ptr, out_cap) -> out_len
+        (func $echo (param $in_ptr i32) (param $in_len i32) (param $out_ptr i32) (param $out_cap i32) (result i32)
+            ;; Copy in_len bytes from in_ptr to out_ptr
+            (memory.copy (local.get $out_ptr) (local.get $in_ptr) (local.get $in_len))
+            ;; Return the length
+            (local.get $in_len)
         )
         (export "echo" (func $echo))
     )
@@ -284,15 +286,15 @@ async fn test_async_runtime_basic() {
 async fn test_func_async_registration() {
     use composite::AsyncRuntime;
 
-    // Module that calls an async host function
+    // Module that calls an async host function - new calling convention
     let module_wat = r#"
     (module
-        (import "test" "async_double" (func $async_double (param i32 i32) (result i64)))
+        (import "test" "async_double" (func $async_double (param i32 i32 i32 i32) (result i32)))
         (memory (export "memory") 1)
 
-        ;; Wrapper that calls async host function
-        (func $call_async (param $in_ptr i32) (param $in_len i32) (result i64)
-            (call $async_double (local.get $in_ptr) (local.get $in_len))
+        ;; Wrapper that calls async host function with new signature
+        (func $call_async (param $in_ptr i32) (param $in_len i32) (param $out_ptr i32) (param $out_cap i32) (result i32)
+            (call $async_double (local.get $in_ptr) (local.get $in_len) (local.get $out_ptr) (local.get $out_cap))
         )
 
         (export "call_async" (func $call_async))
@@ -340,14 +342,14 @@ async fn test_async_ctx_state_access() {
         multiplier: i64,
     }
 
-    // Module that calls an async host function
+    // Module that calls an async host function - new calling convention
     let module_wat = r#"
     (module
-        (import "math" "multiply" (func $multiply (param i32 i32) (result i64)))
+        (import "math" "multiply" (func $multiply (param i32 i32 i32 i32) (result i32)))
         (memory (export "memory") 1)
 
-        (func $call_multiply (param $in_ptr i32) (param $in_len i32) (result i64)
-            (call $multiply (local.get $in_ptr) (local.get $in_len))
+        (func $call_multiply (param $in_ptr i32) (param $in_len i32) (param $out_ptr i32) (param $out_cap i32) (result i32)
+            (call $multiply (local.get $in_ptr) (local.get $in_len) (local.get $out_ptr) (local.get $out_cap))
         )
 
         (export "call_multiply" (func $call_multiply))
@@ -399,20 +401,21 @@ fn test_error_handler_callback() {
     let errors_clone = errors.clone();
 
     // Module that:
-    // 1. Has a host function that uses typed interface
+    // 1. Has a host function that uses typed interface (new calling convention)
     // 2. Exports a function that writes bad data and calls the host function
     let module_wat = r#"
     (module
-        (import "test" "process" (func $process (param i32 i32) (result i64)))
+        (import "test" "process" (func $process (param i32 i32 i32 i32) (result i32)))
         (memory (export "memory") 1)
 
         ;; Write garbage data to memory and call the host function
-        ;; Returns i32 (truncating the i64 result)
+        ;; Returns i32 result directly (new calling convention)
         (func $trigger_error (param $unused i32) (param $unused2 i32) (result i32)
             ;; Write invalid Graph ABI data at offset 100
             (i32.store (i32.const 100) (i32.const 0xDEADBEEF))
-            ;; Call host function with bad data, wrap result to i32
-            (i32.wrap_i64 (call $process (i32.const 100) (i32.const 4)))
+            ;; Call host function with bad data
+            ;; Args: in_ptr=100, in_len=4, out_ptr=200, out_cap=100
+            (call $process (i32.const 100) (i32.const 4) (i32.const 200) (i32.const 100))
         )
 
         (export "trigger_error" (func $trigger_error))
@@ -446,8 +449,8 @@ fn test_error_handler_callback() {
         .call_i32_i32_to_i32("trigger_error", 0, 0)
         .expect("call");
 
-    // Should return 0 (error indicator from host function, wrapped to i32)
-    assert_eq!(result, 0);
+    // Should return -1 (error indicator from host function)
+    assert_eq!(result, -1);
 
     // Check that our error handler was called
     let captured_errors = errors.lock().unwrap();
