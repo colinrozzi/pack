@@ -3,8 +3,8 @@
 //! Parses top-level type definitions and validates named references.
 
 use super::{
-    EnumDef, FlagsDef, Interface, InterfaceExport, InterfaceImport, ParseError, RecordDef, Type,
-    TypeDef, VariantCase, VariantDef,
+    EnumDef, FlagsDef, Interface, InterfaceExport, InterfaceImport, InterfacePath, ParseError,
+    RecordDef, Type, TypeDef, VariantCase, VariantDef, World, WorldItem,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -34,6 +34,121 @@ pub fn parse_interface(src: &str) -> Result<Interface, ParseError> {
     parser.expect_eof()?;
     interface.validate()?;
     Ok(interface)
+}
+
+/// Parse a WIT+ world definition.
+///
+/// # Example
+///
+/// ```
+/// use composite::wit_plus::parse_world;
+///
+/// let src = r#"
+///     world my-component {
+///         import wasi:cli/stdin
+///         import log: func(msg: string)
+///         export run: func() -> string
+///     }
+/// "#;
+///
+/// let world = parse_world(src).expect("parse");
+/// assert_eq!(world.name, "my-component");
+/// assert_eq!(world.imports.len(), 2);
+/// assert_eq!(world.exports.len(), 1);
+/// ```
+pub fn parse_world(src: &str) -> Result<World, ParseError> {
+    let tokens = tokenize(src)?;
+    let mut parser = Parser::new(tokens);
+
+    parser.expect_ident_value("world")?;
+    let name = parser.expect_ident()?;
+    parser.expect_symbol('{')?;
+
+    let mut world = World::new(name);
+    parse_world_body(&mut parser, &mut world)?;
+
+    parser.expect_symbol('}')?;
+    parser.expect_eof()?;
+    world.validate()?;
+    Ok(world)
+}
+
+fn parse_world_body(parser: &mut Parser, world: &mut World) -> Result<(), ParseError> {
+    while !parser.is_eof() {
+        if parser.accept_symbol(';') {
+            continue;
+        }
+
+        if matches!(parser.peek(), Token::Symbol('}')) {
+            break;
+        }
+
+        let keyword = parser.expect_ident()?;
+        match keyword.as_str() {
+            "import" => {
+                let item = parse_world_item(parser)?;
+                world.add_import(item);
+            }
+            "export" => {
+                let item = parse_world_item(parser)?;
+                world.add_export(item);
+            }
+            _ => return Err(ParseError::UnexpectedToken(keyword)),
+        }
+    }
+
+    Ok(())
+}
+
+fn parse_world_item(parser: &mut Parser) -> Result<WorldItem, ParseError> {
+    // Look ahead to determine what kind of item this is:
+    // 1. `name: func(...)` - standalone function
+    // 2. `name { ... }` - inline interface
+    // 3. `name` or `ns:pkg/name` - interface reference
+
+    let first = parser.expect_ident()?;
+
+    // Check for colon - could be function or namespace
+    if parser.accept_symbol(':') {
+        // Check if next token is `func` keyword (standalone function)
+        if parser.accept_ident("func") {
+            let func = parse_func(parser, Some(first))?;
+            return Ok(WorldItem::Function(func));
+        }
+
+        // Otherwise it's a namespace:package/interface path
+        // We already consumed the colon, so parse package/interface
+        let package = parser.expect_ident()?;
+        parser.expect_symbol('/')?;
+        let interface = parser.expect_ident()?;
+
+        return Ok(WorldItem::InterfacePath(InterfacePath::qualified(
+            first, package, interface,
+        )));
+    }
+
+    // Check for opening brace (inline interface)
+    if parser.accept_symbol('{') {
+        let functions = parse_function_block(parser)?;
+        parser.expect_symbol('}')?;
+        return Ok(WorldItem::InlineInterface {
+            name: first,
+            functions,
+        });
+    }
+
+    // Check for slash (package/interface without namespace)
+    if parser.accept_symbol('/') {
+        let interface = parser.expect_ident()?;
+        return Ok(WorldItem::InterfacePath(InterfacePath {
+            namespace: None,
+            package: Some(first),
+            interface,
+        }));
+    }
+
+    // Simple interface reference
+    Ok(WorldItem::InterfacePath(InterfacePath::simple(first)))
 }
 
 struct Parser {
@@ -94,6 +209,18 @@ impl Parser {
                 self.pos += 1;
                 true
             }
+    }
+
+    fn expect_ident_value(&mut self, expected: &str) -> Result<(), ParseError> {
+        match self.peek() {
+            Token::Ident(name) if name == expected => {
+                self.pos += 1;
+                Ok(())
+            }
+            Token::Ident(name) => Err(ParseError::UnexpectedToken(name.clone())),
+            Token::Symbol(ch) => Err(ParseError::UnexpectedToken(ch.to_string())),
+            Token::Eof => Err(ParseError::UnexpectedEof),
+        }
     }
 
     fn peek_n(&self, offset: usize) -> &Token {
@@ -425,6 +552,7 @@ fn tokenize(src: &str) -> Result<Vec<Token>, ParseError> {
 
         if ch == '/' {
             chars.next();
+            // Check for // line comment
             if matches!(chars.peek(), Some('/')) {
                 while let Some(next) = chars.next() {
                     if next == '\n' {
@@ -433,6 +561,7 @@ fn tokenize(src: &str) -> Result<Vec<Token>, ParseError> {
                 }
                 continue;
             }
+            // Check for /* block comment */
             if matches!(chars.peek(), Some('*')) {
                 chars.next();
                 while let Some(next) = chars.next() {
@@ -443,7 +572,9 @@ fn tokenize(src: &str) -> Result<Vec<Token>, ParseError> {
                 }
                 continue;
             }
-            return Err(ParseError::UnexpectedToken("/".to_string()));
+            // Standalone / is a symbol (used in interface paths like wasi:cli/stdin)
+            tokens.push(Token::Symbol('/'));
+            continue;
         }
 
         if is_ident_start(ch) {
@@ -576,5 +707,122 @@ mod tests {
         assert_eq!(interface.imports.len(), 1);
         assert_eq!(interface.exports.len(), 1);
         assert_eq!(interface.types.len(), 1);
+    }
+
+    // ========================================================================
+    // World parsing tests
+    // ========================================================================
+
+    #[test]
+    fn parse_world_basic() {
+        let src = r#"
+            world my-component {
+                import logging
+                export run: func() -> string
+            }
+        "#;
+
+        let world = parse_world(src).expect("parse");
+        assert_eq!(world.name, "my-component");
+        assert_eq!(world.imports.len(), 1);
+        assert_eq!(world.exports.len(), 1);
+
+        // Check import is a simple interface reference
+        match &world.imports[0] {
+            WorldItem::InterfacePath(path) => {
+                assert_eq!(path.interface, "logging");
+                assert!(path.namespace.is_none());
+            }
+            _ => panic!("Expected InterfacePath"),
+        }
+
+        // Check export is a function
+        match &world.exports[0] {
+            WorldItem::Function(func) => {
+                assert_eq!(func.name, "run");
+                assert_eq!(func.results.len(), 1);
+            }
+            _ => panic!("Expected Function"),
+        }
+    }
+
+    #[test]
+    fn parse_world_with_namespaced_imports() {
+        let src = r#"
+            world wasi-cli {
+                import wasi:cli/stdin
+                import wasi:cli/stdout
+                import wasi:filesystem/types
+                export main: func() -> result<_, string>
+            }
+        "#;
+
+        let world = parse_world(src).expect("parse");
+        assert_eq!(world.name, "wasi-cli");
+        assert_eq!(world.imports.len(), 3);
+        assert_eq!(world.exports.len(), 1);
+
+        // Check first import has namespace
+        match &world.imports[0] {
+            WorldItem::InterfacePath(path) => {
+                assert_eq!(path.namespace, Some("wasi".to_string()));
+                assert_eq!(path.package, Some("cli".to_string()));
+                assert_eq!(path.interface, "stdin");
+            }
+            _ => panic!("Expected InterfacePath"),
+        }
+    }
+
+    #[test]
+    fn parse_world_with_inline_interface() {
+        let src = r#"
+            world my-app {
+                import host {
+                    log: func(msg: string)
+                    get-time: func() -> u64
+                }
+                export api {
+                    process: func(input: string) -> string
+                }
+            }
+        "#;
+
+        let world = parse_world(src).expect("parse");
+        assert_eq!(world.imports.len(), 1);
+        assert_eq!(world.exports.len(), 1);
+
+        // Check import is inline interface
+        match &world.imports[0] {
+            WorldItem::InlineInterface { name, functions } => {
+                assert_eq!(name, "host");
+                assert_eq!(functions.len(), 2);
+            }
+            _ => panic!("Expected InlineInterface"),
+        }
+    }
+
+    #[test]
+    fn parse_world_mixed_items() {
+        let src = r#"
+            world theater-actor {
+                // Namespaced interface imports
+                import wasi:io/streams
+
+                // Standalone function imports
+                import send-message: func(target: string, msg: string) -> result<_, string>
+
+                // Inline interface import
+                import runtime {
+                    get-actor-id: func() -> string
+                }
+
+                // Function export
+                export handle: func(msg: string) -> string
+            }
+        "#;
+
+        let world = parse_world(src).expect("parse");
+        assert_eq!(world.imports.len(), 3);
+        assert_eq!(world.exports.len(), 1);
     }
 }

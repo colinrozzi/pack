@@ -7,7 +7,7 @@ mod parser;
 mod validation;
 
 pub use types::*;
-pub use parser::parse_interface;
+pub use parser::{parse_interface, parse_world};
 pub use validation::{
     decode_with_schema, encode_with_schema, validate_graph_against_type, ValidationError,
 };
@@ -144,6 +144,156 @@ pub struct InterfaceImport {
 pub struct InterfaceExport {
     pub name: String,
     pub functions: Vec<Function>,
+}
+
+// ============================================================================
+// World Definitions
+// ============================================================================
+
+/// A parsed WIT+ world definition.
+///
+/// Worlds define the imports and exports for a component, specifying which
+/// interfaces it requires (imports) and provides (exports).
+///
+/// # Example
+///
+/// ```wit
+/// world my-component {
+///     import wasi:cli/stdin
+///     import wasi:cli/stdout
+///     import log: func(msg: string)
+///
+///     export run: func() -> result<_, string>
+/// }
+/// ```
+#[derive(Debug, Clone)]
+pub struct World {
+    pub name: String,
+    pub imports: Vec<WorldItem>,
+    pub exports: Vec<WorldItem>,
+}
+
+impl World {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            imports: Vec::new(),
+            exports: Vec::new(),
+        }
+    }
+
+    pub fn add_import(&mut self, item: WorldItem) {
+        self.imports.push(item);
+    }
+
+    pub fn add_export(&mut self, item: WorldItem) {
+        self.exports.push(item);
+    }
+
+    /// Validate the world definition.
+    ///
+    /// Currently performs basic validation. Interface references are not
+    /// resolved (that would require access to other parsed interfaces).
+    pub fn validate(&self) -> Result<(), ParseError> {
+        // Validate standalone functions don't use SelfRef
+        for item in self.imports.iter().chain(self.exports.iter()) {
+            if let WorldItem::Function(func) = item {
+                for (_, ty) in &func.params {
+                    validate_type_ref_no_self(ty)?;
+                }
+                for ty in &func.results {
+                    validate_type_ref_no_self(ty)?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// An item in a world's import or export list.
+#[derive(Debug, Clone)]
+pub enum WorldItem {
+    /// A reference to an interface by path (e.g., `wasi:cli/stdin`)
+    InterfacePath(InterfacePath),
+
+    /// A standalone function (e.g., `run: func() -> result<_, string>`)
+    Function(Function),
+
+    /// An inline interface definition with a name
+    /// e.g., `export api { process: func(...) }`
+    InlineInterface {
+        name: String,
+        functions: Vec<Function>,
+    },
+}
+
+/// A path to an interface (e.g., `wasi:cli/stdin` or just `logging`)
+#[derive(Debug, Clone, PartialEq)]
+pub struct InterfacePath {
+    /// Optional namespace (e.g., "wasi" in "wasi:cli/stdin")
+    pub namespace: Option<String>,
+    /// Optional package (e.g., "cli" in "wasi:cli/stdin")
+    pub package: Option<String>,
+    /// Interface name (e.g., "stdin" in "wasi:cli/stdin", or "logging" for simple refs)
+    pub interface: String,
+}
+
+impl InterfacePath {
+    /// Create a simple interface path (just the name)
+    pub fn simple(name: impl Into<String>) -> Self {
+        Self {
+            namespace: None,
+            package: None,
+            interface: name.into(),
+        }
+    }
+
+    /// Create a fully qualified interface path
+    pub fn qualified(
+        namespace: impl Into<String>,
+        package: impl Into<String>,
+        interface: impl Into<String>,
+    ) -> Self {
+        Self {
+            namespace: Some(namespace.into()),
+            package: Some(package.into()),
+            interface: interface.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for InterfacePath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match (&self.namespace, &self.package) {
+            (Some(ns), Some(pkg)) => write!(f, "{}:{}/{}", ns, pkg, self.interface),
+            (None, Some(pkg)) => write!(f, "{}/{}", pkg, self.interface),
+            _ => write!(f, "{}", self.interface),
+        }
+    }
+}
+
+/// Helper to validate that a type doesn't use SelfRef (for standalone functions)
+fn validate_type_ref_no_self(ty: &Type) -> Result<(), ParseError> {
+    match ty {
+        Type::SelfRef => Err(ParseError::SelfRefOutsideType),
+        Type::List(inner) | Type::Option(inner) => validate_type_ref_no_self(inner),
+        Type::Result { ok, err } => {
+            if let Some(inner) = ok {
+                validate_type_ref_no_self(inner)?;
+            }
+            if let Some(inner) = err {
+                validate_type_ref_no_self(inner)?;
+            }
+            Ok(())
+        }
+        Type::Tuple(items) => {
+            for item in items {
+                validate_type_ref_no_self(item)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
 }
 
 fn validate_type_ref(

@@ -59,4 +59,4 @@ pub use runtime::{
     HostFunctionErrorKind, HostFunctionProvider, HostLinkerBuilder, Instance, InterfaceBuilder,
     InterfaceError, LinkerError, Runtime,
 };
-pub use wit_plus::{Interface, TypeDef};
+pub use wit_plus::{Interface, InterfacePath, TypeDef, World, WorldItem};
