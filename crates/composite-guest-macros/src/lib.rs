@@ -61,37 +61,38 @@ impl Parse for ExportArgs {
 /// This macro transforms a Rust function into a WASM export with the
 /// signature `(in_ptr: i32, in_len: i32, out_ptr: i32, out_cap: i32) -> i32`.
 ///
-/// The input parameter type must implement `TryFrom<Value>` and the return
-/// type must implement `Into<Value>`.
+/// # Modes
+///
+/// **Value mode** (single `Value` parameter): The raw `Value` is passed directly
+/// to your function. You handle all encoding/decoding manually.
+///
+/// **Typed mode** (with `wit` attribute and typed parameters): The macro automatically
+/// extracts typed parameters from the input and wraps the result. Parameters must
+/// implement `TryFrom<Value>` and return type must implement `Into<Value>`.
 ///
 /// # Example
 ///
 /// ```ignore
 /// use composite_guest::export;
-/// use composite_abi::Value;
+/// use composite_guest::Value;
 ///
+/// // Value mode - raw Value handling
 /// #[export]
 /// fn echo(input: Value) -> Value {
 ///     input
 /// }
 ///
-/// #[export]
-/// fn double(n: i64) -> i64 {
-///     n * 2
+/// // Typed mode with WIT validation
+/// // The macro extracts the state param and wraps the Result
+/// #[export(wit = "theater:simple/actor.init")]
+/// fn init(state: Option<Vec<u8>>) -> Result<(Option<Vec<u8>>,), String> {
+///     Ok((state,))
 /// }
 ///
-/// // With a custom export name (can include any characters)
-/// #[export(name = "theater:simple/actor.init")]
-/// fn init(input: Value) -> Value {
-///     // Exported as "theater:simple/actor.init" instead of "init"
-///     input
-/// }
-///
-/// // With WIT validation - validates that "eval" exists in your wit/ world
-/// #[export(name = "my:package/interface.eval", wit = "eval")]
-/// fn eval(expr: Sexpr) -> Sexpr {
-///     // Types validated against WIT definition
-///     expr
+/// // Multiple typed parameters
+/// #[export(wit = "my:package/geo.translate")]
+/// fn translate(p: Point, dx: i32, dy: i32) -> Point {
+///     Point { x: p.x + dx, y: p.y + dy }
 /// }
 /// ```
 ///
@@ -101,7 +102,7 @@ impl Parse for ExportArgs {
 /// specified name (or the function name if not specified) that:
 /// 1. Reads input bytes from `(in_ptr, in_len)`
 /// 2. Decodes using Graph ABI
-/// 3. Converts to the parameter type via `TryFrom<Value>`
+/// 3. Extracts parameters from the input tuple (typed mode) or passes Value directly
 /// 4. Calls your function
 /// 5. Converts the result via `Into<Value>`
 /// 6. Encodes using Graph ABI
@@ -138,32 +139,44 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
     // Extract parameter info
     let params: Vec<_> = input_fn.sig.inputs.iter().collect();
 
-    if params.len() != 1 {
-        return syn::Error::new_spanned(
-            &input_fn.sig,
-            "exported functions must have exactly one parameter"
-        ).to_compile_error().into();
+    // Get all parameter names and types
+    let mut param_names = Vec::new();
+    let mut param_types = Vec::new();
+
+    for param in &params {
+        match param {
+            FnArg::Typed(pat_type) => {
+                let name = match &*pat_type.pat {
+                    Pat::Ident(ident) => ident.ident.clone(),
+                    _ => {
+                        return syn::Error::new_spanned(
+                            &pat_type.pat,
+                            "parameter must be a simple identifier"
+                        ).to_compile_error().into();
+                    }
+                };
+                param_names.push(name);
+                param_types.push((*pat_type.ty).clone());
+            }
+            FnArg::Receiver(_) => {
+                return syn::Error::new_spanned(
+                    param,
+                    "exported functions cannot have self parameter"
+                ).to_compile_error().into();
+            }
+        }
     }
 
-    // Get the parameter name and type
-    let (param_name, param_type) = match &params[0] {
-        FnArg::Typed(pat_type) => {
-            let name = match &*pat_type.pat {
-                Pat::Ident(ident) => &ident.ident,
-                _ => {
-                    return syn::Error::new_spanned(
-                        &pat_type.pat,
-                        "parameter must be a simple identifier"
-                    ).to_compile_error().into();
-                }
-            };
-            (name, &pat_type.ty)
-        }
-        FnArg::Receiver(_) => {
-            return syn::Error::new_spanned(
-                &params[0],
-                "exported functions cannot have self parameter"
-            ).to_compile_error().into();
+    // Detect if this is "Value mode" (single Value parameter) or "Typed mode"
+    let is_value_mode = param_names.len() == 1 && {
+        // Check if the type is `Value` (simple path check)
+        let ty = &param_types[0];
+        if let syn::Type::Path(type_path) = ty {
+            type_path.path.segments.last()
+                .map(|seg| seg.ident == "Value")
+                .unwrap_or(false)
+        } else {
+            false
         }
     };
 
@@ -190,13 +203,98 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
         fn_name.span()
     );
 
+    // Generate the function parameters for the inner function declaration
+    let inner_fn_params = param_names.iter().zip(param_types.iter()).map(|(name, ty)| {
+        quote! { #name: #ty }
+    });
+
+    // Generate the parameter extraction and function call based on mode
+    let call_body = if is_value_mode {
+        // Value mode - pass the Value directly (backward compatible)
+        let param_name = &param_names[0];
+        let param_type = &param_types[0];
+        quote! {
+            // Convert input Value to user's type (should be identity for Value)
+            let #param_name: #param_type = match value.try_into() {
+                Ok(v) => v,
+                Err(_) => return Err("failed to convert input"),
+            };
+
+            // Call user's function
+            let output = #inner_fn_name(#param_name);
+
+            // Convert output to Value
+            Ok(output.into())
+        }
+    } else if param_names.is_empty() {
+        // No parameters - just call the function
+        quote! {
+            // Call user's function (no parameters)
+            let output = #inner_fn_name();
+
+            // Convert output to Value
+            Ok(output.into())
+        }
+    } else if param_names.len() == 1 {
+        // Single typed parameter - extract from value directly
+        let param_name = &param_names[0];
+        let param_type = &param_types[0];
+        quote! {
+            // Extract single typed parameter
+            let #param_name: #param_type = match value.try_into() {
+                Ok(v) => v,
+                Err(_) => return Err("failed to convert parameter"),
+            };
+
+            // Call user's function
+            let output = #inner_fn_name(#param_name);
+
+            // Convert output to Value
+            Ok(output.into())
+        }
+    } else {
+        // Multiple typed parameters - extract from tuple
+        let num_params = param_names.len();
+        let indices: Vec<_> = (0..num_params).collect();
+
+        let extractions = param_names.iter().zip(param_types.iter()).zip(indices.iter()).map(|((name, ty), idx)| {
+            quote! {
+                let #name: #ty = match items.get(#idx).cloned() {
+                    Some(v) => match v.try_into() {
+                        Ok(converted) => converted,
+                        Err(_) => return Err("failed to convert parameter"),
+                    },
+                    None => return Err("missing parameter in tuple"),
+                };
+            }
+        });
+
+        let call_args = param_names.iter();
+
+        quote! {
+            // Extract multiple typed parameters from input tuple
+            let items = match value {
+                composite_guest::Value::Tuple(items) => items,
+                _ => return Err("expected tuple of parameters"),
+            };
+
+            #(#extractions)*
+
+            // Call user's function with extracted parameters
+            let output = #inner_fn_name(#(#call_args),*);
+
+            // Convert output to Value
+            Ok(output.into())
+        }
+    };
+
     // Generate the wrapper with the determined export name
     let expanded = match export_name {
         Some(custom_name) => {
             // Custom or derived name - use #[export_name] attribute
             quote! {
                 // The user's original function (renamed)
-                #fn_vis fn #inner_fn_name(#param_name: #param_type) -> #return_type
+                #fn_vis fn #inner_fn_name(#(#inner_fn_params),*) -> #return_type
                 #fn_body
 
                 // The exported wrapper with WASM calling convention
@@ -211,17 +309,7 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
                     composite_guest::__export_impl(
                         in_ptr, in_len, out_ptr, out_cap,
                         |value| {
-                            // Convert input Value to user's type
-                            let input: #param_type = match value.try_into() {
-                                Ok(v) => v,
-                                Err(_) => return Err("failed to convert input"),
-                            };
-
-                            // Call user's function
-                            let output = #inner_fn_name(input);
-
-                            // Convert output to Value
-                            Ok(output.into())
+                            #call_body
                         }
                     )
                 }
@@ -231,7 +319,7 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
             // No custom name - use #[no_mangle] with the original function name
             quote! {
                 // The user's original function (renamed)
-                #fn_vis fn #inner_fn_name(#param_name: #param_type) -> #return_type
+                #fn_vis fn #inner_fn_name(#(#inner_fn_params),*) -> #return_type
                 #fn_body
 
                 // The exported wrapper with WASM calling convention
@@ -246,17 +334,7 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
                     composite_guest::__export_impl(
                         in_ptr, in_len, out_ptr, out_cap,
                         |value| {
-                            // Convert input Value to user's type
-                            let input: #param_type = match value.try_into() {
-                                Ok(v) => v,
-                                Err(_) => return Err("failed to convert input"),
-                            };
-
-                            // Call user's function
-                            let output = #inner_fn_name(input);
-
-                            // Convert output to Value
-                            Ok(output.into())
+                            #call_body
                         }
                     )
                 }

@@ -326,4 +326,191 @@ impl<T: TryFrom<Value, Error = ConversionError>> TryFrom<Value> for Vec<T> {
     }
 }
 
+impl<T: TryFrom<Value, Error = ConversionError>> TryFrom<Value> for Option<T> {
+    type Error = ConversionError;
+    fn try_from(v: Value) -> Result<Self, Self::Error> {
+        match v {
+            Value::Option(None) => Ok(None),
+            Value::Option(Some(inner)) => {
+                let value = T::try_from(*inner)?;
+                Ok(Some(value))
+            }
+            other => Err(ConversionError::ExpectedOption(format!("{:?}", other))),
+        }
+    }
+}
+
+// ============================================================================
+// Tuple conversions (for common sizes)
+// ============================================================================
+
+// Empty tuple / unit
+impl From<()> for Value {
+    fn from(_: ()) -> Self {
+        Value::Tuple(Vec::new())
+    }
+}
+
+impl TryFrom<Value> for () {
+    type Error = ConversionError;
+    fn try_from(v: Value) -> Result<Self, Self::Error> {
+        match v {
+            Value::Tuple(items) if items.is_empty() => Ok(()),
+            other => Err(ConversionError::ExpectedTuple(format!("{:?}", other))),
+        }
+    }
+}
+
+// 1-tuple
+impl<A: Into<Value>> From<(A,)> for Value {
+    fn from((a,): (A,)) -> Self {
+        Value::Tuple(alloc::vec![a.into()])
+    }
+}
+
+impl<A: TryFrom<Value, Error = ConversionError>> TryFrom<Value> for (A,) {
+    type Error = ConversionError;
+    fn try_from(v: Value) -> Result<Self, Self::Error> {
+        match v {
+            Value::Tuple(mut items) if items.len() == 1 => {
+                let a = A::try_from(items.remove(0))
+                    .map_err(|e| ConversionError::IndexError(0, Box::new(e)))?;
+                Ok((a,))
+            }
+            other => Err(ConversionError::ExpectedTuple(format!("{:?}", other))),
+        }
+    }
+}
+
+// 2-tuple
+impl<A: Into<Value>, B: Into<Value>> From<(A, B)> for Value {
+    fn from((a, b): (A, B)) -> Self {
+        Value::Tuple(alloc::vec![a.into(), b.into()])
+    }
+}
+
+impl<A: TryFrom<Value, Error = ConversionError>, B: TryFrom<Value, Error = ConversionError>>
+    TryFrom<Value> for (A, B)
+{
+    type Error = ConversionError;
+    fn try_from(v: Value) -> Result<Self, Self::Error> {
+        match v {
+            Value::Tuple(mut items) if items.len() == 2 => {
+                let b = B::try_from(items.remove(1))
+                    .map_err(|e| ConversionError::IndexError(1, Box::new(e)))?;
+                let a = A::try_from(items.remove(0))
+                    .map_err(|e| ConversionError::IndexError(0, Box::new(e)))?;
+                Ok((a, b))
+            }
+            other => Err(ConversionError::ExpectedTuple(format!("{:?}", other))),
+        }
+    }
+}
+
+// 3-tuple
+impl<A: Into<Value>, B: Into<Value>, C: Into<Value>> From<(A, B, C)> for Value {
+    fn from((a, b, c): (A, B, C)) -> Self {
+        Value::Tuple(alloc::vec![a.into(), b.into(), c.into()])
+    }
+}
+
+impl<
+        A: TryFrom<Value, Error = ConversionError>,
+        B: TryFrom<Value, Error = ConversionError>,
+        C: TryFrom<Value, Error = ConversionError>,
+    > TryFrom<Value> for (A, B, C)
+{
+    type Error = ConversionError;
+    fn try_from(v: Value) -> Result<Self, Self::Error> {
+        match v {
+            Value::Tuple(mut items) if items.len() == 3 => {
+                let c = C::try_from(items.remove(2))
+                    .map_err(|e| ConversionError::IndexError(2, Box::new(e)))?;
+                let b = B::try_from(items.remove(1))
+                    .map_err(|e| ConversionError::IndexError(1, Box::new(e)))?;
+                let a = A::try_from(items.remove(0))
+                    .map_err(|e| ConversionError::IndexError(0, Box::new(e)))?;
+                Ok((a, b, c))
+            }
+            other => Err(ConversionError::ExpectedTuple(format!("{:?}", other))),
+        }
+    }
+}
+
+// 4-tuple
+impl<A: Into<Value>, B: Into<Value>, C: Into<Value>, D: Into<Value>> From<(A, B, C, D)> for Value {
+    fn from((a, b, c, d): (A, B, C, D)) -> Self {
+        Value::Tuple(alloc::vec![a.into(), b.into(), c.into(), d.into()])
+    }
+}
+
+impl<
+        A: TryFrom<Value, Error = ConversionError>,
+        B: TryFrom<Value, Error = ConversionError>,
+        C: TryFrom<Value, Error = ConversionError>,
+        D: TryFrom<Value, Error = ConversionError>,
+    > TryFrom<Value> for (A, B, C, D)
+{
+    type Error = ConversionError;
+    fn try_from(v: Value) -> Result<Self, Self::Error> {
+        match v {
+            Value::Tuple(mut items) if items.len() == 4 => {
+                let d = D::try_from(items.remove(3))
+                    .map_err(|e| ConversionError::IndexError(3, Box::new(e)))?;
+                let c = C::try_from(items.remove(2))
+                    .map_err(|e| ConversionError::IndexError(2, Box::new(e)))?;
+                let b = B::try_from(items.remove(1))
+                    .map_err(|e| ConversionError::IndexError(1, Box::new(e)))?;
+                let a = A::try_from(items.remove(0))
+                    .map_err(|e| ConversionError::IndexError(0, Box::new(e)))?;
+                Ok((a, b, c, d))
+            }
+            other => Err(ConversionError::ExpectedTuple(format!("{:?}", other))),
+        }
+    }
+}
+
+// ============================================================================
+// Result conversions (as WIT result type - variant with tag 0=ok, 1=err)
+// ============================================================================
+
+impl<T: Into<Value>, E: Into<Value>> From<Result<T, E>> for Value {
+    fn from(r: Result<T, E>) -> Self {
+        match r {
+            Ok(v) => Value::Variant {
+                tag: 0,
+                payload: Some(Box::new(v.into())),
+            },
+            Err(e) => Value::Variant {
+                tag: 1,
+                payload: Some(Box::new(e.into())),
+            },
+        }
+    }
+}
+
+impl<T: TryFrom<Value, Error = ConversionError>, E: TryFrom<Value, Error = ConversionError>>
+    TryFrom<Value> for Result<T, E>
+{
+    type Error = ConversionError;
+    fn try_from(v: Value) -> Result<Self, Self::Error> {
+        match v {
+            Value::Variant { tag: 0, payload } => {
+                let payload = payload.ok_or(ConversionError::MissingPayload)?;
+                let value = T::try_from(*payload)
+                    .map_err(|e| ConversionError::PayloadError(Box::new(e)))?;
+                Ok(Ok(value))
+            }
+            Value::Variant { tag: 1, payload } => {
+                let payload = payload.ok_or(ConversionError::MissingPayload)?;
+                let value = E::try_from(*payload)
+                    .map_err(|e| ConversionError::PayloadError(Box::new(e)))?;
+                Ok(Err(value))
+            }
+            Value::Variant { tag, .. } => Err(ConversionError::UnknownTag { tag, max: 1 }),
+            other => Err(ConversionError::ExpectedVariant(format!("{:?}", other))),
+        }
+    }
+}
+
 use alloc::format;
