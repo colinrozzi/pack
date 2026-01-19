@@ -2,6 +2,8 @@
 //!
 //! Provides the `#[export]` and `#[import]` attribute macros for easily
 //! exporting and importing functions with the correct WASM calling convention.
+//!
+//! Also provides the `wit!()` macro for generating types from WIT+ definitions.
 
 use proc_macro::TokenStream;
 use quote::quote;
@@ -9,28 +11,48 @@ use syn::{parse_macro_input, ItemFn, ReturnType, FnArg, Pat, LitStr, Token, Iden
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 
+mod wit_parser;
+mod codegen;
+
 /// Arguments for the #[export] attribute.
 struct ExportArgs {
+    /// Custom export name (e.g., "theater:simple/actor.init")
     name: Option<String>,
+    /// WIT function name to validate/match against (e.g., "init")
+    wit: Option<String>,
 }
 
 impl Parse for ExportArgs {
     fn parse(input: ParseStream) -> syn::Result<Self> {
+        let mut args = ExportArgs { name: None, wit: None };
+
         if input.is_empty() {
-            return Ok(ExportArgs { name: None });
+            return Ok(args);
         }
 
-        let ident: syn::Ident = input.parse()?;
-        if ident != "name" {
-            return Err(syn::Error::new(ident.span(), "expected `name`"));
+        while !input.is_empty() {
+            let ident: syn::Ident = input.parse()?;
+            input.parse::<Token![=]>()?;
+            let lit: LitStr = input.parse()?;
+
+            match ident.to_string().as_str() {
+                "name" => args.name = Some(lit.value()),
+                "wit" => args.wit = Some(lit.value()),
+                other => {
+                    return Err(syn::Error::new(
+                        ident.span(),
+                        format!("unexpected attribute `{}`, expected `name` or `wit`", other),
+                    ));
+                }
+            }
+
+            // Consume optional comma
+            if input.peek(Token![,]) {
+                input.parse::<Token![,]>()?;
+            }
         }
 
-        input.parse::<Token![=]>()?;
-        let lit: LitStr = input.parse()?;
-
-        Ok(ExportArgs {
-            name: Some(lit.value()),
-        })
+        Ok(args)
     }
 }
 
@@ -64,6 +86,13 @@ impl Parse for ExportArgs {
 ///     // Exported as "theater:simple/actor.init" instead of "init"
 ///     input
 /// }
+///
+/// // With WIT validation - validates that "eval" exists in your wit/ world
+/// #[export(name = "my:package/interface.eval", wit = "eval")]
+/// fn eval(expr: Sexpr) -> Sexpr {
+///     // Types validated against WIT definition
+///     expr
+/// }
 /// ```
 ///
 /// # Generated Code
@@ -82,6 +111,25 @@ impl Parse for ExportArgs {
 pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
     let args = parse_macro_input!(attr as ExportArgs);
     let input_fn = parse_macro_input!(item as ItemFn);
+
+    // If wit attribute is provided, validate against WIT and optionally derive export name
+    let derived_export_name = if let Some(ref wit_path) = args.wit {
+        match validate_export_against_wit(wit_path) {
+            Ok(result) => result.derived_name,
+            Err(e) => {
+                return syn::Error::new(
+                    proc_macro2::Span::call_site(),
+                    e,
+                ).to_compile_error().into();
+            }
+        }
+    } else {
+        None
+    };
+
+    // Determine the export name: explicit name > derived from wit > function name
+    let export_name = args.name.clone()
+        .or(derived_export_name);
 
     let fn_name = &input_fn.sig.ident;
     let fn_body = &input_fn.block;
@@ -142,10 +190,10 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
         fn_name.span()
     );
 
-    // Generate the wrapper with optional custom export name
-    let expanded = match &args.name {
+    // Generate the wrapper with the determined export name
+    let expanded = match export_name {
         Some(custom_name) => {
-            // Custom name provided - use #[export_name] attribute
+            // Custom or derived name - use #[export_name] attribute
             quote! {
                 // The user's original function (renamed)
                 #fn_vis fn #inner_fn_name(#param_name: #param_type) -> #return_type
@@ -217,6 +265,100 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     expanded.into()
+}
+
+/// Result of validating an export against WIT
+struct WitValidationResult {
+    /// The derived export name (from the WIT path)
+    pub derived_name: Option<String>,
+}
+
+/// Validate that a function exists in the WIT and optionally derive the export name.
+///
+/// The `wit_path` can be:
+/// - A simple function name: "init" (searches all exports)
+/// - A full path: "theater:simple/actor.init" (looks up specific interface)
+fn validate_export_against_wit(wit_path: &str) -> Result<WitValidationResult, String> {
+    // Read and parse WIT files
+    let wit_content = read_wit_files()?;
+    let registry = wit_parser::parse_wit(&wit_content)
+        .map_err(|e| format!("Failed to parse WIT: {}", e))?;
+
+    // Check if this is a full path (contains '.' or '#')
+    if let Some(func_path) = wit_parser::FunctionPath::parse(wit_path) {
+        // Full path specified - look up the specific function
+        if registry.find_function(&func_path).is_some() {
+            return Ok(WitValidationResult {
+                derived_name: Some(func_path.export_name()),
+            });
+        }
+
+        // Not found - provide helpful error
+        let available = registry.available_exports();
+        return Err(format!(
+            "Function '{}' not found in WIT interfaces. Available: {:?}",
+            wit_path, available
+        ));
+    }
+
+    // Simple function name - search in exports and interfaces
+    let func_name = wit_path;
+
+    // First, check world exports
+    for world in &registry.worlds {
+        for export in &world.exports {
+            match export {
+                wit_parser::WorldItem::Function(f) if f.name == func_name => {
+                    // Found as a bare export
+                    return Ok(WitValidationResult {
+                        derived_name: Some(func_name.to_string()),
+                    });
+                }
+                wit_parser::WorldItem::InlineInterface { name: iface_name, functions } => {
+                    if let Some(_f) = functions.iter().find(|f| f.name == func_name) {
+                        // Found in inline interface
+                        return Ok(WitValidationResult {
+                            derived_name: Some(format!("{}.{}", iface_name, func_name)),
+                        });
+                    }
+                }
+                wit_parser::WorldItem::InterfacePath { namespace, package, interface } => {
+                    // Check if this interface path is in our registry
+                    let iface_path = match (namespace, package) {
+                        (Some(ns), Some(pkg)) => format!("{}:{}/{}", ns, pkg, interface),
+                        (None, Some(pkg)) => format!("{}/{}", pkg, interface),
+                        _ => interface.clone(),
+                    };
+
+                    if let Some(iface) = registry.interfaces.get(&iface_path) {
+                        if let Some(_f) = iface.functions.iter().find(|f| f.name == func_name) {
+                            // Found in referenced interface
+                            return Ok(WitValidationResult {
+                                derived_name: Some(format!("{}.{}", iface_path, func_name)),
+                            });
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Check top-level interfaces
+    for (path, iface) in &registry.interfaces {
+        if let Some(_f) = iface.functions.iter().find(|f| f.name == func_name) {
+            return Ok(WitValidationResult {
+                derived_name: Some(format!("{}.{}", path, func_name)),
+            });
+        }
+    }
+
+    // Not found
+    let available = registry.available_exports();
+    Err(format!(
+        "Function '{}' not found in WIT exports. Available: {:?}",
+        func_name, available
+    ))
 }
 
 /// Arguments for the #[import] attribute.
@@ -425,4 +567,149 @@ pub fn import(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     expanded.into()
+}
+
+/// Generate types and bindings from WIT+ definitions.
+///
+/// This macro reads WIT+ files from the `wit/` directory in your crate and generates:
+/// - Rust types for all type definitions (records, variants, enums, flags)
+/// - `From<T> for Value` implementations for converting to Value
+/// - `TryFrom<Value> for T` implementations for converting from Value
+///
+/// # Usage
+///
+/// Create a `wit/` directory in your crate root with `.wit` files:
+///
+/// ```wit
+/// // wit/world.wit
+/// variant sexpr {
+///     sym(string),
+///     num(s64),
+///     cons(list<sexpr>),
+///     nil,
+/// }
+///
+/// world my-actor {
+///     export eval: func(expr: sexpr) -> sexpr
+/// }
+/// ```
+///
+/// Then in your Rust code:
+///
+/// ```ignore
+/// use composite_guest::wit;
+///
+/// // Generate types from wit/ directory
+/// wit!();
+///
+/// // Now you can use the generated types
+/// #[export]
+/// fn eval(expr: Sexpr) -> Sexpr {
+///     // ...
+/// }
+/// ```
+///
+/// # Alternative: Inline WIT
+///
+/// You can also provide WIT content directly:
+///
+/// ```ignore
+/// wit! {
+///     variant sexpr {
+///         sym(string),
+///         num(s64),
+///         nil,
+///     }
+///
+///     world my-actor {
+///         export eval: func(expr: sexpr) -> sexpr
+///     }
+/// }
+/// ```
+#[proc_macro]
+pub fn wit(input: TokenStream) -> TokenStream {
+    // Check if we have inline content or should read from files
+    let input_str = input.to_string();
+
+    let wit_content = if input_str.trim().is_empty() {
+        // Read from wit/ directory
+        match read_wit_files() {
+            Ok(content) => content,
+            Err(e) => {
+                return syn::Error::new(
+                    proc_macro2::Span::call_site(),
+                    format!("Failed to read WIT files: {}", e)
+                ).to_compile_error().into();
+            }
+        }
+    } else {
+        // Use inline content - parse the token stream as a raw string
+        // The input is the raw WIT content between the braces
+        input_str
+    };
+
+    // Parse the WIT content
+    let world = match wit_parser::parse_world(&wit_content) {
+        Ok(w) => w,
+        Err(e) => {
+            return syn::Error::new(
+                proc_macro2::Span::call_site(),
+                format!("Failed to parse WIT: {}", e)
+            ).to_compile_error().into();
+        }
+    };
+
+    // Generate the types
+    let generated = codegen::generate_world_types(&world);
+
+    generated.into()
+}
+
+/// Read all WIT files from the wit/ directory and wit/deps/ subdirectories
+fn read_wit_files() -> Result<String, String> {
+    // Get the manifest directory (crate root)
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
+        .map_err(|_| "CARGO_MANIFEST_DIR not set")?;
+
+    let wit_dir = std::path::Path::new(&manifest_dir).join("wit");
+
+    if !wit_dir.exists() {
+        return Err(format!("wit/ directory not found at {:?}", wit_dir));
+    }
+
+    let mut content = String::new();
+
+    // Read WIT files recursively (includes wit/deps/)
+    read_wit_files_recursive(&wit_dir, &mut content)?;
+
+    if content.is_empty() {
+        return Err("No .wit or .wit+ files found in wit/ directory".to_string());
+    }
+
+    Ok(content)
+}
+
+/// Recursively read WIT files from a directory
+fn read_wit_files_recursive(dir: &std::path::Path, content: &mut String) -> Result<(), String> {
+    let entries = std::fs::read_dir(dir)
+        .map_err(|e| format!("Failed to read directory {:?}: {}", dir, e))?;
+
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("Failed to read directory entry: {}", e))?;
+        let path = entry.path();
+
+        if path.is_dir() {
+            // Recurse into subdirectories (including deps/)
+            read_wit_files_recursive(&path, content)?;
+        } else if let Some(ext) = path.extension() {
+            if ext == "wit" || ext == "wit+" {
+                let file_content = std::fs::read_to_string(&path)
+                    .map_err(|e| format!("Failed to read {:?}: {}", path, e))?;
+                content.push_str(&file_content);
+                content.push('\n');
+            }
+        }
+    }
+
+    Ok(())
 }
