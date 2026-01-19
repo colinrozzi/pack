@@ -28,13 +28,17 @@
 
 #![no_std]
 
-extern crate alloc;
+pub extern crate alloc;
 
-// Re-export the macro
-pub use composite_guest_macros::export;
+// Re-export the macros
+pub use composite_guest_macros::{export, import};
 
 // Re-export useful types from composite-abi
 pub use composite_abi::{decode, encode, ConversionError, Value};
+
+// Re-export alloc for macro use
+#[doc(hidden)]
+pub use alloc as __alloc;
 
 /// Internal implementation for the export macro.
 ///
@@ -90,6 +94,49 @@ where
     }
 
     output_bytes.len() as i32
+}
+
+/// Default output buffer size for imports (32KB)
+const IMPORT_OUTPUT_BUFFER_SIZE: usize = 32 * 1024;
+
+/// Internal implementation for the import macro.
+///
+/// This function handles the boilerplate of encoding input, calling
+/// the raw import function, and decoding the result.
+///
+/// **Do not call this directly** - use the `#[import]` macro instead.
+#[doc(hidden)]
+pub fn __import_impl<F>(raw_fn: F, input: Value) -> Value
+where
+    F: FnOnce(i32, i32, i32, i32) -> i32,
+{
+    // Encode input
+    let input_bytes = match encode(&input) {
+        Ok(b) => b,
+        Err(_) => panic!("failed to encode import input"),
+    };
+
+    // Prepare output buffer
+    let mut output_buf = __alloc::vec![0u8; IMPORT_OUTPUT_BUFFER_SIZE];
+
+    // Call the raw import function
+    let result_len = raw_fn(
+        input_bytes.as_ptr() as i32,
+        input_bytes.len() as i32,
+        output_buf.as_mut_ptr() as i32,
+        output_buf.len() as i32,
+    );
+
+    if result_len < 0 {
+        panic!("import function returned error");
+    }
+
+    // Decode the result
+    let output_bytes = &output_buf[..result_len as usize];
+    match decode(output_bytes) {
+        Ok(v) => v,
+        Err(_) => panic!("failed to decode import result"),
+    }
 }
 
 /// A simple bump allocator for guest components.
