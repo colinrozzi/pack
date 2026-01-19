@@ -271,6 +271,8 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
 struct WitValidationResult {
     /// The derived export name (from the WIT path)
     pub derived_name: Option<String>,
+    /// The WIT function signature (params and results)
+    pub function: Option<wit_parser::Function>,
 }
 
 /// Validate that a function exists in the WIT and optionally derive the export name.
@@ -287,9 +289,10 @@ fn validate_export_against_wit(wit_path: &str) -> Result<WitValidationResult, St
     // Check if this is a full path (contains '.' or '#')
     if let Some(func_path) = wit_parser::FunctionPath::parse(wit_path) {
         // Full path specified - look up the specific function
-        if registry.find_function(&func_path).is_some() {
+        if let Some(func) = registry.find_function(&func_path) {
             return Ok(WitValidationResult {
                 derived_name: Some(func_path.export_name()),
+                function: Some(func.clone()),
             });
         }
 
@@ -312,13 +315,15 @@ fn validate_export_against_wit(wit_path: &str) -> Result<WitValidationResult, St
                     // Found as a bare export
                     return Ok(WitValidationResult {
                         derived_name: Some(func_name.to_string()),
+                        function: Some(f.clone()),
                     });
                 }
                 wit_parser::WorldItem::InlineInterface { name: iface_name, functions } => {
-                    if let Some(_f) = functions.iter().find(|f| f.name == func_name) {
+                    if let Some(f) = functions.iter().find(|f| f.name == func_name) {
                         // Found in inline interface
                         return Ok(WitValidationResult {
                             derived_name: Some(format!("{}.{}", iface_name, func_name)),
+                            function: Some(f.clone()),
                         });
                     }
                 }
@@ -331,10 +336,11 @@ fn validate_export_against_wit(wit_path: &str) -> Result<WitValidationResult, St
                     };
 
                     if let Some(iface) = registry.interfaces.get(&iface_path) {
-                        if let Some(_f) = iface.functions.iter().find(|f| f.name == func_name) {
+                        if let Some(f) = iface.functions.iter().find(|f| f.name == func_name) {
                             // Found in referenced interface
                             return Ok(WitValidationResult {
                                 derived_name: Some(format!("{}.{}", iface_path, func_name)),
+                                function: Some(f.clone()),
                             });
                         }
                     }
@@ -346,9 +352,10 @@ fn validate_export_against_wit(wit_path: &str) -> Result<WitValidationResult, St
 
     // Check top-level interfaces
     for (path, iface) in &registry.interfaces {
-        if let Some(_f) = iface.functions.iter().find(|f| f.name == func_name) {
+        if let Some(f) = iface.functions.iter().find(|f| f.name == func_name) {
             return Ok(WitValidationResult {
                 derived_name: Some(format!("{}.{}", path, func_name)),
+                function: Some(f.clone()),
             });
         }
     }
@@ -361,16 +368,69 @@ fn validate_export_against_wit(wit_path: &str) -> Result<WitValidationResult, St
     ))
 }
 
+/// Result of validating an import against WIT
+struct WitImportValidationResult {
+    /// The derived module name (interface path)
+    pub module: Option<String>,
+    /// The derived import name (function name)
+    pub import_name: Option<String>,
+}
+
+/// Validate that a function exists in the WIT imports and derive module/name.
+///
+/// The `wit_path` should be a full path like "theater:simple/runtime.log"
+fn validate_import_against_wit(wit_path: &str) -> Result<WitImportValidationResult, String> {
+    // Read and parse WIT files
+    let wit_content = read_wit_files()?;
+    let registry = wit_parser::parse_wit(&wit_content)
+        .map_err(|e| format!("Failed to parse WIT: {}", e))?;
+
+    // Parse the function path
+    let func_path = wit_parser::FunctionPath::parse(wit_path)
+        .ok_or_else(|| format!(
+            "Invalid WIT path '{}'. Expected format: 'namespace:package/interface.function'",
+            wit_path
+        ))?;
+
+    // Look up the function in the registry
+    if registry.find_import_function(&func_path).is_some() {
+        return Ok(WitImportValidationResult {
+            module: Some(func_path.interface.to_string()),
+            import_name: Some(func_path.function),
+        });
+    }
+
+    // Also check if the function exists in any interface (even if not explicitly imported)
+    if registry.find_function(&func_path).is_some() {
+        return Ok(WitImportValidationResult {
+            module: Some(func_path.interface.to_string()),
+            import_name: Some(func_path.function),
+        });
+    }
+
+    // Not found - provide helpful error
+    let available = registry.available_imports();
+    Err(format!(
+        "Function '{}' not found in WIT interfaces. Available imports: {:?}",
+        wit_path, available
+    ))
+}
+
 /// Arguments for the #[import] attribute.
 struct ImportArgs {
-    module: String,
+    /// Module name (e.g., "theater:simple/runtime")
+    module: Option<String>,
+    /// Function name override
     name: Option<String>,
+    /// WIT path for validation and auto-derivation (e.g., "theater:simple/runtime.log")
+    wit: Option<String>,
 }
 
 impl Parse for ImportArgs {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let mut module = None;
         let mut name = None;
+        let mut wit = None;
 
         while !input.is_empty() {
             let ident: Ident = input.parse()?;
@@ -380,10 +440,11 @@ impl Parse for ImportArgs {
             match ident.to_string().as_str() {
                 "module" => module = Some(lit.value()),
                 "name" => name = Some(lit.value()),
+                "wit" => wit = Some(lit.value()),
                 other => {
                     return Err(syn::Error::new(
                         ident.span(),
-                        format!("unexpected attribute `{}`, expected `module` or `name`", other),
+                        format!("unexpected attribute `{}`, expected `module`, `name`, or `wit`", other),
                     ));
                 }
             }
@@ -394,11 +455,15 @@ impl Parse for ImportArgs {
             }
         }
 
-        let module = module.ok_or_else(|| {
-            syn::Error::new(input.span(), "missing required `module` attribute")
-        })?;
+        // Either module or wit must be specified
+        if module.is_none() && wit.is_none() {
+            return Err(syn::Error::new(
+                input.span(),
+                "either `module` or `wit` attribute is required",
+            ));
+        }
 
-        Ok(ImportArgs { module, name })
+        Ok(ImportArgs { module, name, wit })
     }
 }
 
@@ -442,8 +507,12 @@ impl Parse for ImportFnSignature {
 /// ```ignore
 /// use composite_guest::import;
 ///
-/// // Import a log function from the host
+/// // Import a log function from the host (manual module specification)
 /// #[import(module = "theater:simple/runtime")]
+/// fn log(msg: String);
+///
+/// // Import with WIT path - module and name derived automatically
+/// #[import(wit = "theater:simple/runtime.log")]
 /// fn log(msg: String);
 ///
 /// // Import with a custom function name
@@ -451,8 +520,8 @@ impl Parse for ImportFnSignature {
 /// fn my_log(msg: String);
 ///
 /// // Import a function that returns a value
-/// #[import(module = "my:module/interface")]
-/// fn get_value(key: String) -> String;
+/// #[import(wit = "theater:simple/runtime.get-chain")]
+/// fn get_chain() -> Chain;
 /// ```
 ///
 /// # Generated Code
@@ -468,8 +537,31 @@ pub fn import(attr: TokenStream, item: TokenStream) -> TokenStream {
     let args = parse_macro_input!(attr as ImportArgs);
     let sig = parse_macro_input!(item as ImportFnSignature);
 
-    let module = &args.module;
-    let import_name = args.name.as_ref().unwrap_or(&sig.fn_name.to_string()).clone();
+    // If wit attribute is provided, validate and derive module/name
+    let (derived_module, derived_name) = if let Some(ref wit_path) = args.wit {
+        match validate_import_against_wit(wit_path) {
+            Ok(result) => (result.module, result.import_name),
+            Err(e) => {
+                return syn::Error::new(
+                    proc_macro2::Span::call_site(),
+                    e,
+                ).to_compile_error().into();
+            }
+        }
+    } else {
+        (None, None)
+    };
+
+    // Determine module: explicit > derived from wit
+    let module = args.module.clone()
+        .or(derived_module)
+        .expect("module should be set by either `module` or `wit` attribute");
+
+    // Determine import name: explicit > derived from wit > function name
+    let import_name = args.name.clone()
+        .or(derived_name)
+        .unwrap_or_else(|| sig.fn_name.to_string());
+
     let fn_name = &sig.fn_name;
     let fn_vis = &sig.vis;
     let output = &sig.output;

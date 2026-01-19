@@ -184,6 +184,90 @@ impl WitRegistry {
 
         names
     }
+
+    /// Get all available import names for error messages
+    pub fn available_imports(&self) -> Vec<String> {
+        let mut names = Vec::new();
+
+        for world in &self.worlds {
+            for import in &world.imports {
+                match import {
+                    WorldItem::Function(f) => names.push(f.name.clone()),
+                    WorldItem::InlineInterface { name, functions } => {
+                        for f in functions {
+                            names.push(format!("{}.{}", name, f.name));
+                        }
+                    }
+                    WorldItem::InterfacePath { namespace, package, interface } => {
+                        let path = match (namespace, package) {
+                            (Some(ns), Some(pkg)) => format!("{}:{}/{}", ns, pkg, interface),
+                            (None, Some(pkg)) => format!("{}/{}", pkg, interface),
+                            _ => interface.clone(),
+                        };
+                        // Check if this interface exists in the registry
+                        if let Some(iface) = self.interfaces.get(&path) {
+                            for f in &iface.functions {
+                                names.push(format!("{}.{}", path, f.name));
+                            }
+                        } else {
+                            names.push(format!("<{}>", path));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Add functions from top-level interfaces (could be imports)
+        for (path, iface) in &self.interfaces {
+            for f in &iface.functions {
+                names.push(format!("{}.{}", path, f.name));
+            }
+        }
+
+        names
+    }
+
+    /// Find an import function by its path
+    pub fn find_import_function(&self, path: &FunctionPath) -> Option<&Function> {
+        let iface_key = path.interface.to_string();
+
+        // Check interfaces registry
+        if let Some(iface) = self.interfaces.get(&iface_key) {
+            return iface.functions.iter().find(|f| f.name == path.function);
+        }
+
+        // Check world imports
+        for world in &self.worlds {
+            for import in &world.imports {
+                match import {
+                    WorldItem::Function(f) if f.name == path.function => return Some(f),
+                    WorldItem::InlineInterface { name, functions } => {
+                        if *name == path.interface.interface || path.interface.to_string() == *name {
+                            if let Some(f) = functions.iter().find(|f| f.name == path.function) {
+                                return Some(f);
+                            }
+                        }
+                    }
+                    WorldItem::InterfacePath { namespace, package, interface } => {
+                        let import_path = match (namespace, package) {
+                            (Some(ns), Some(pkg)) => format!("{}:{}/{}", ns, pkg, interface),
+                            (None, Some(pkg)) => format!("{}/{}", pkg, interface),
+                            _ => interface.clone(),
+                        };
+                        if import_path == iface_key {
+                            // The interface is imported but we need to look it up
+                            if let Some(iface) = self.interfaces.get(&import_path) {
+                                return iface.functions.iter().find(|f| f.name == path.function);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        None
+    }
 }
 
 /// A WIT+ type reference
@@ -379,7 +463,7 @@ impl<'a> Lexer<'a> {
             }
 
             // Symbols
-            if matches!(ch, '{' | '}' | '(' | ')' | '<' | '>' | ':' | ',' | '=' | ';' | '-') {
+            if matches!(ch, '{' | '}' | '(' | ')' | '<' | '>' | ':' | ',' | '=' | ';' | '-' | '.' | '@' | '*') {
                 tokens.push(Token::Symbol(ch));
                 self.chars.next();
                 continue;
