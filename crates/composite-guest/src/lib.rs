@@ -12,7 +12,7 @@
 //! use composite_guest::export;
 //! use composite_guest::Value;
 //!
-//! // Set up panic handler and allocator
+//! // Set up panic handler and allocator (uses dlmalloc for proper memory management)
 //! composite_guest::setup_guest!();
 //!
 //! #[export]
@@ -35,6 +35,10 @@ pub use composite_guest_macros::{export, import, wit};
 
 // Re-export useful types from composite-abi
 pub use composite_abi::{decode, encode, ConversionError, Value};
+
+// Re-export dlmalloc for the setup_guest macro
+#[doc(hidden)]
+pub use dlmalloc::GlobalDlmalloc as __GlobalDlmalloc;
 
 // Re-export alloc for macro use
 #[doc(hidden)]
@@ -141,7 +145,9 @@ where
 
 /// A simple bump allocator for guest components.
 ///
-/// Use this in `no_std` components that need heap allocation.
+/// **Note**: For most use cases, prefer `setup_guest!()` which uses dlmalloc.
+/// The bump allocator never deallocates memory, so it's only suitable for
+/// short-lived components or those with predictable memory usage.
 ///
 /// # Example
 ///
@@ -218,22 +224,21 @@ macro_rules! panic_handler {
     };
 }
 
-/// Convenience macro to set up both allocator and panic handler.
+/// Convenience macro to set up dlmalloc allocator and panic handler.
+///
+/// This uses dlmalloc which properly supports deallocation, making it
+/// suitable for long-running components that allocate and free memory.
 ///
 /// # Example
 ///
 /// ```ignore
-/// composite_guest::setup_guest!(); // Uses default 64KB heap
-/// composite_guest::setup_guest!(128 * 1024); // Custom heap size
+/// composite_guest::setup_guest!();
 /// ```
 #[macro_export]
 macro_rules! setup_guest {
     () => {
-        $crate::bump_allocator!(64 * 1024);
-        $crate::panic_handler!();
-    };
-    ($heap_size:expr) => {
-        $crate::bump_allocator!($heap_size);
+        #[global_allocator]
+        static __COMPOSITE_ALLOCATOR: $crate::__GlobalDlmalloc = $crate::__GlobalDlmalloc;
         $crate::panic_handler!();
     };
 }
