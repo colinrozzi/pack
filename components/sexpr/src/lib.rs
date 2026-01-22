@@ -13,8 +13,8 @@ use alloc::vec::Vec;
 use composite_abi::ConversionError;
 use composite_guest::{export, Value};
 
-// Set up allocator (256KB for complex expressions) and panic handler
-composite_guest::setup_guest!(256 * 1024);
+// Set up allocator and panic handler
+composite_guest::setup_guest!();
 
 // ============================================================================
 // S-expression type
