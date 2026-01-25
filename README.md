@@ -1,6 +1,6 @@
 # Composite
 
-A WebAssembly component runtime with extended WIT support for recursive data types.
+A WebAssembly package runtime with extended WIT support for recursive data types.
 
 ## Motivation
 
@@ -66,10 +66,10 @@ variant lit {
 │                    Composite Runtime                         │
 │                                                             │
 │  ┌─────────────────────────────────────────────────────┐   │
-│  │                  Component Layer                     │   │
+│  │                  Package Layer                       │   │
 │  │                                                      │   │
 │  │   • WIT+ parsing (standard + recursive)             │   │
-│  │   • Component instantiation and linking             │   │
+│  │   • Package instantiation and linking               │   │
 │  │   • Host function binding                           │   │
 │  └─────────────────────────────────────────────────────┘   │
 │                           │                                 │
@@ -163,10 +163,10 @@ interface config {
 - [x] **WASM Execution** - Load and run modules via wasmi
 - [x] **Memory Access** - Read/write linear memory, pass data to WASM
 - [x] **Graph ABI Integration** - `write_value`, `read_value`, `call_with_value` for passing recursive types
-- [x] **Rust Components** - no_std components using shared `composite-abi` crate
-- [x] **Host Imports** - Components can call back to host (`host.log`, `host.alloc`)
+- [x] **Rust Packages** - no_std packages using shared `composite-abi` crate
+- [x] **Host Imports** - Packages can call back to host (`host.log`, `host.alloc`)
 - [x] **Derive Macros** - `#[derive(GraphValue)]` for automatic Value conversion
-- [x] **S-expression Evaluator** - Full Lisp-like evaluator as demo component
+- [x] **S-expression Evaluator** - Full Lisp-like evaluator as demo package
 - [x] **Interface Enforcement** - Validate WASM modules implement WIT interfaces
 - [x] **Flexible Host Functions** - Namespaced interfaces, typed functions, provider pattern
 
@@ -182,7 +182,7 @@ composite/
 ├── crates/
 │   ├── composite-abi/      # Shared ABI crate (no_std compatible)
 │   └── composite-derive/   # Derive macros for Value conversion
-├── components/
+├── packages/
 │   ├── echo/               # Example: echo/transform values
 │   ├── logger/             # Example: uses host imports
 │   └── sexpr/              # Example: S-expression evaluator
@@ -199,7 +199,7 @@ composite/
 ```rust
 use composite::{Runtime, abi::Value, runtime::HostImports};
 
-// Load a WASM component
+// Load a WASM package
 let runtime = Runtime::new();
 let module = runtime.load_module(&wasm_bytes)?;
 
@@ -215,9 +215,9 @@ let input = Value::List(vec![
 ]);
 let output = instance.call_with_value("process", &input, 0)?;
 
-// Check logs from component
+// Check logs from package
 for msg in instance.get_logs() {
-    println!("Component logged: {}", msg);
+    println!("Package logged: {}", msg);
 }
 ```
 
@@ -291,9 +291,9 @@ impl<T> HostFunctionProvider<T> for LoggingProvider {
 builder.register_provider(&LoggingProvider)?;
 ```
 
-## Writing Components
+## Writing Packages
 
-Components are written in Rust with `no_std` and compile to WASM.
+Packages are written in Rust with `no_std` and compile to WASM.
 
 ### Simple Types with Derive
 
@@ -359,13 +359,13 @@ impl TryFrom<Value> for SExpr {
 }
 ```
 
-See `components/sexpr/` for a complete example with 25+ built-in functions.
+See `packages/sexpr/` for a complete example with 25+ built-in functions.
 
-### Component Cargo.toml
+### Package Cargo.toml
 
 ```toml
 [package]
-name = "my-component"
+name = "my-package"
 version = "0.1.0"
 edition = "2021"
 
@@ -382,7 +382,7 @@ lto = true
 
 ### Host Imports
 
-Components can call host functions:
+Packages can call host functions:
 
 ```rust
 #[link(wasm_import_module = "host")]

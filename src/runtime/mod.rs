@@ -1,6 +1,6 @@
-//! Component Runtime
+//! Package Runtime
 //!
-//! Handles component instantiation, linking, and execution.
+//! Handles package instantiation, linking, and execution.
 
 mod host;
 mod interface_check;
@@ -53,7 +53,7 @@ pub enum RuntimeError {
 /// State accessible to host functions
 #[derive(Clone)]
 pub struct HostState {
-    /// Log messages collected from the component
+    /// Log messages collected from the package
     pub log_messages: Arc<Mutex<Vec<String>>>,
     /// Simple bump allocator state (next free offset)
     alloc_offset: Arc<Mutex<usize>>,
@@ -109,7 +109,7 @@ impl Default for HostImports {
     }
 }
 
-/// The component runtime
+/// The package runtime
 pub struct Runtime {
     engine: Engine,
 }
@@ -166,7 +166,7 @@ impl Default for Runtime {
 // Async Runtime
 // ============================================================================
 
-/// An async-enabled component runtime.
+/// An async-enabled package runtime.
 ///
 /// Use this when you need to register async host functions or call WASM
 /// functions asynchronously.
@@ -553,7 +553,7 @@ impl InstanceWithHost {
         &self.state
     }
 
-    /// Get all log messages from the component
+    /// Get all log messages from the package
     pub fn get_logs(&self) -> Vec<String> {
         self.state.get_logs()
     }

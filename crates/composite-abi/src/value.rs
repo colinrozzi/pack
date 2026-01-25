@@ -4,7 +4,7 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-/// A runtime value that can be passed across component boundaries
+/// A runtime value that can be passed across package boundaries
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     // Primitives
@@ -326,13 +326,33 @@ impl<T: TryFrom<Value, Error = ConversionError>> TryFrom<Value> for Vec<T> {
     }
 }
 
-impl<T: TryFrom<Value, Error = ConversionError>> TryFrom<Value> for Option<T> {
-    type Error = ConversionError;
-    fn try_from(v: Value) -> Result<Self, Self::Error> {
+// ============================================================================
+// FromValue trait - avoids coherence issues with TryFrom for Option<T>
+// ============================================================================
+
+/// Trait for converting from a Value.
+///
+/// This trait exists to avoid coherence issues with Rust's blanket
+/// `impl<T, U> TryFrom<U> for T where U: Into<T>` when implementing
+/// conversions for generic types like `Option<T>`.
+pub trait FromValue: Sized {
+    fn from_value(v: Value) -> Result<Self, ConversionError>;
+}
+
+/// Blanket implementation for all types that implement TryFrom<Value>
+impl<T: TryFrom<Value, Error = ConversionError>> FromValue for T {
+    fn from_value(v: Value) -> Result<Self, ConversionError> {
+        T::try_from(v)
+    }
+}
+
+/// FromValue implementation for Option<T> - uses FromValue bound to avoid coherence issues
+impl<T: FromValue> FromValue for Option<T> {
+    fn from_value(v: Value) -> Result<Self, ConversionError> {
         match v {
             Value::Option(None) => Ok(None),
             Value::Option(Some(inner)) => {
-                let value = T::try_from(*inner)?;
+                let value = T::from_value(*inner)?;
                 Ok(Some(value))
             }
             other => Err(ConversionError::ExpectedOption(format!("{:?}", other))),

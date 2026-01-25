@@ -2,7 +2,7 @@
 //!
 //! This crate provides encoding and decoding for recursive data types
 //! using a graph-based binary format. It's `no_std` compatible for use
-//! in WASM components.
+//! in WASM packages.
 //!
 //! # Derive Macros
 //!
@@ -28,7 +28,7 @@ extern crate alloc;
 
 mod value;
 
-pub use value::Value;
+pub use value::{FromValue, Value};
 
 // Re-export derive macro when feature is enabled
 #[cfg(feature = "derive")]

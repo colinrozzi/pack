@@ -1,4 +1,4 @@
-//! Composite: A component runtime with extended WIT support
+//! Composite: A package runtime with extended WIT support
 //!
 //! This runtime extends the WebAssembly Component Model with support for
 //! recursive data types, enabling natural representation of tree structures
@@ -12,7 +12,7 @@
 //! │                                         │
 //! │  wit_plus  - Extended WIT parsing       │
 //! │  abi       - Type encoding/decoding     │
-//! │  runtime   - Component instantiation    │
+//! │  runtime   - Package instantiation      │
 //! │                                         │
 //! ├─────────────────────────────────────────┤
 //! │       WASM Execution (wasmtime)         │

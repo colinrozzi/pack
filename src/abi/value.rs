@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// A runtime value that can be passed across component boundaries
+/// A runtime value that can be passed across package boundaries
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Value {
     // Primitives

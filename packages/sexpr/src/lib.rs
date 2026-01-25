@@ -1,4 +1,4 @@
-//! S-expression evaluator component
+//! S-expression evaluator package
 //!
 //! Demonstrates the composite-guest macros with a recursive type.
 //! Evaluates simple Lisp-like expressions.

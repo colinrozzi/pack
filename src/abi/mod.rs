@@ -1,6 +1,6 @@
 //! ABI: Type Encoding and Decoding
 //!
-//! Handles marshaling data between host and WASM components.
+//! Handles marshaling data between host and WASM packages.
 //!
 //! - All types use a graph-encoded ABI (schema-aware)
 

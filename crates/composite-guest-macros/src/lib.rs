@@ -1,4 +1,4 @@
-//! Proc macros for Composite guest components.
+//! Proc macros for Composite guest packages.
 //!
 //! Provides the `#[export]` and `#[import]` attribute macros for easily
 //! exporting and importing functions with the correct WASM calling convention.

@@ -1,6 +1,6 @@
-//! Guest-side helpers for Composite WASM components.
+//! Guest-side helpers for Composite WASM packages.
 //!
-//! This crate provides macros and utilities for writing WASM components
+//! This crate provides macros and utilities for writing WASM packages
 //! that use the Composite calling convention.
 //!
 //! # Example
@@ -143,11 +143,11 @@ where
     }
 }
 
-/// A simple bump allocator for guest components.
+/// A simple bump allocator for guest packages.
 ///
 /// **Note**: For most use cases, prefer `setup_guest!()` which uses dlmalloc.
 /// The bump allocator never deallocates memory, so it's only suitable for
-/// short-lived components or those with predictable memory usage.
+/// short-lived packages or those with predictable memory usage.
 ///
 /// # Example
 ///
@@ -207,7 +207,7 @@ macro_rules! bump_allocator {
 
 /// Set up a panic handler that loops forever.
 ///
-/// Use this in `no_std` components.
+/// Use this in `no_std` packages.
 ///
 /// # Example
 ///
@@ -227,7 +227,7 @@ macro_rules! panic_handler {
 /// Convenience macro to set up dlmalloc allocator and panic handler.
 ///
 /// This uses dlmalloc which properly supports deallocation, making it
-/// suitable for long-running components that allocate and free memory.
+/// suitable for long-running packages that allocate and free memory.
 ///
 /// # Example
 ///

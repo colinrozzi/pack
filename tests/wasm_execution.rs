@@ -365,16 +365,16 @@ fn graph_abi_echo_nested() {
 }
 
 // ============================================================================
-// Rust component tests
+// Rust package tests
 // ============================================================================
 
-/// Load the Rust-compiled echo component
-fn load_rust_echo_component() -> Vec<u8> {
+/// Load the Rust-compiled echo package
+fn load_rust_echo_package() -> Vec<u8> {
     let wasm_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("components/echo/target/wasm32-unknown-unknown/release/echo_component.wasm");
+        .join("packages/echo/target/wasm32-unknown-unknown/release/echo_package.wasm");
     std::fs::read(&wasm_path).unwrap_or_else(|e| {
         panic!(
-            "Failed to read Rust component at {}: {}. Run: cd components/echo && cargo build --target wasm32-unknown-unknown --release",
+            "Failed to read Rust package at {}: {}. Run: cd packages/echo && cargo build --target wasm32-unknown-unknown --release",
             wasm_path.display(),
             e
         )
@@ -382,11 +382,11 @@ fn load_rust_echo_component() -> Vec<u8> {
 }
 
 #[test]
-fn rust_component_echo_roundtrip() {
-    let wasm_bytes = load_rust_echo_component();
+fn rust_package_echo_roundtrip() {
+    let wasm_bytes = load_rust_echo_package();
 
     let runtime = Runtime::new();
-    let module = runtime.load_module(&wasm_bytes).expect("failed to load Rust component");
+    let module = runtime.load_module(&wasm_bytes).expect("failed to load Rust package");
     let mut instance = module.instantiate().expect("failed to instantiate");
 
     // Test with a simple integer
@@ -398,11 +398,11 @@ fn rust_component_echo_roundtrip() {
 }
 
 #[test]
-fn rust_component_echo_complex() {
-    let wasm_bytes = load_rust_echo_component();
+fn rust_package_echo_complex() {
+    let wasm_bytes = load_rust_echo_package();
 
     let runtime = Runtime::new();
-    let module = runtime.load_module(&wasm_bytes).expect("failed to load Rust component");
+    let module = runtime.load_module(&wasm_bytes).expect("failed to load Rust package");
     let mut instance = module.instantiate().expect("failed to instantiate");
 
     // Test with a nested structure
@@ -426,11 +426,11 @@ fn rust_component_echo_complex() {
 }
 
 #[test]
-fn rust_component_transform_doubles_s64() {
-    let wasm_bytes = load_rust_echo_component();
+fn rust_package_transform_doubles_s64() {
+    let wasm_bytes = load_rust_echo_package();
 
     let runtime = Runtime::new();
-    let module = runtime.load_module(&wasm_bytes).expect("failed to load Rust component");
+    let module = runtime.load_module(&wasm_bytes).expect("failed to load Rust package");
     let mut instance = module.instantiate().expect("failed to instantiate");
 
     // Test transform doubles S64
@@ -442,11 +442,11 @@ fn rust_component_transform_doubles_s64() {
 }
 
 #[test]
-fn rust_component_transform_nested() {
-    let wasm_bytes = load_rust_echo_component();
+fn rust_package_transform_nested() {
+    let wasm_bytes = load_rust_echo_package();
 
     let runtime = Runtime::new();
-    let module = runtime.load_module(&wasm_bytes).expect("failed to load Rust component");
+    let module = runtime.load_module(&wasm_bytes).expect("failed to load Rust package");
     let mut instance = module.instantiate().expect("failed to instantiate");
 
     // Test transform on nested structure - doubles all S64 values
@@ -475,11 +475,11 @@ fn rust_component_transform_nested() {
 }
 
 #[test]
-fn rust_component_transform_preserves_strings() {
-    let wasm_bytes = load_rust_echo_component();
+fn rust_package_transform_preserves_strings() {
+    let wasm_bytes = load_rust_echo_package();
 
     let runtime = Runtime::new();
-    let module = runtime.load_module(&wasm_bytes).expect("failed to load Rust component");
+    let module = runtime.load_module(&wasm_bytes).expect("failed to load Rust package");
     let mut instance = module.instantiate().expect("failed to instantiate");
 
     // Strings should pass through unchanged
@@ -496,13 +496,13 @@ fn rust_component_transform_preserves_strings() {
 
 use composite::runtime::HostImports;
 
-/// Load the Rust-compiled logger component (uses host imports)
-fn load_rust_logger_component() -> Vec<u8> {
+/// Load the Rust-compiled logger package (uses host imports)
+fn load_rust_logger_package() -> Vec<u8> {
     let wasm_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("components/logger/target/wasm32-unknown-unknown/release/logger_component.wasm");
+        .join("packages/logger/target/wasm32-unknown-unknown/release/logger_package.wasm");
     std::fs::read(&wasm_path).unwrap_or_else(|e| {
         panic!(
-            "Failed to read logger component at {}: {}. Run: cd components/logger && cargo build --target wasm32-unknown-unknown --release",
+            "Failed to read logger package at {}: {}. Run: cd packages/logger && cargo build --target wasm32-unknown-unknown --release",
             wasm_path.display(),
             e
         )
@@ -511,10 +511,10 @@ fn load_rust_logger_component() -> Vec<u8> {
 
 #[test]
 fn host_imports_logging() {
-    let wasm_bytes = load_rust_logger_component();
+    let wasm_bytes = load_rust_logger_package();
 
     let runtime = Runtime::new();
-    let module = runtime.load_module(&wasm_bytes).expect("failed to load logger component");
+    let module = runtime.load_module(&wasm_bytes).expect("failed to load logger package");
 
     // Instantiate with host imports
     let imports = HostImports::new();
@@ -543,10 +543,10 @@ fn host_imports_logging() {
 
 #[test]
 fn host_imports_logging_with_string() {
-    let wasm_bytes = load_rust_logger_component();
+    let wasm_bytes = load_rust_logger_package();
 
     let runtime = Runtime::new();
-    let module = runtime.load_module(&wasm_bytes).expect("failed to load logger component");
+    let module = runtime.load_module(&wasm_bytes).expect("failed to load logger package");
 
     let imports = HostImports::new();
     let mut instance = module
@@ -569,10 +569,10 @@ fn host_imports_logging_with_string() {
 
 #[test]
 fn host_imports_transform_nested() {
-    let wasm_bytes = load_rust_logger_component();
+    let wasm_bytes = load_rust_logger_package();
 
     let runtime = Runtime::new();
-    let module = runtime.load_module(&wasm_bytes).expect("failed to load logger component");
+    let module = runtime.load_module(&wasm_bytes).expect("failed to load logger package");
 
     let imports = HostImports::new();
     let mut instance = module
@@ -605,10 +605,10 @@ fn host_imports_transform_nested() {
 
 #[test]
 fn host_imports_clear_logs() {
-    let wasm_bytes = load_rust_logger_component();
+    let wasm_bytes = load_rust_logger_package();
 
     let runtime = Runtime::new();
-    let module = runtime.load_module(&wasm_bytes).expect("failed to load logger component");
+    let module = runtime.load_module(&wasm_bytes).expect("failed to load logger package");
 
     let imports = HostImports::new();
     let mut instance = module
@@ -639,13 +639,13 @@ fn host_imports_clear_logs() {
 // S-expression evaluator tests
 // ============================================================================
 
-/// Load the Rust-compiled sexpr component
-fn load_rust_sexpr_component() -> Vec<u8> {
+/// Load the Rust-compiled sexpr package
+fn load_rust_sexpr_package() -> Vec<u8> {
     let wasm_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("components/sexpr/target/wasm32-unknown-unknown/release/sexpr_component.wasm");
+        .join("packages/sexpr/target/wasm32-unknown-unknown/release/sexpr_package.wasm");
     std::fs::read(&wasm_path).unwrap_or_else(|e| {
         panic!(
-            "Failed to read sexpr component at {}: {}. Run: cd components/sexpr && cargo build --target wasm32-unknown-unknown --release",
+            "Failed to read sexpr package at {}: {}. Run: cd packages/sexpr && cargo build --target wasm32-unknown-unknown --release",
             wasm_path.display(),
             e
         )
@@ -714,10 +714,10 @@ mod sexpr {
 
 #[test]
 fn sexpr_eval_simple_addition() {
-    let wasm_bytes = load_rust_sexpr_component();
+    let wasm_bytes = load_rust_sexpr_package();
 
     let runtime = Runtime::new();
-    let module = runtime.load_module(&wasm_bytes).expect("failed to load sexpr component");
+    let module = runtime.load_module(&wasm_bytes).expect("failed to load sexpr package");
     let mut instance = module.instantiate().expect("failed to instantiate");
 
     // (+ 1 2 3) => 6
@@ -737,10 +737,10 @@ fn sexpr_eval_simple_addition() {
 
 #[test]
 fn sexpr_eval_nested_arithmetic() {
-    let wasm_bytes = load_rust_sexpr_component();
+    let wasm_bytes = load_rust_sexpr_package();
 
     let runtime = Runtime::new();
-    let module = runtime.load_module(&wasm_bytes).expect("failed to load sexpr component");
+    let module = runtime.load_module(&wasm_bytes).expect("failed to load sexpr package");
     let mut instance = module.instantiate().expect("failed to instantiate");
 
     // (* (+ 2 3) (- 10 4)) => 5 * 6 = 30
@@ -759,10 +759,10 @@ fn sexpr_eval_nested_arithmetic() {
 
 #[test]
 fn sexpr_eval_comparison() {
-    let wasm_bytes = load_rust_sexpr_component();
+    let wasm_bytes = load_rust_sexpr_package();
 
     let runtime = Runtime::new();
-    let module = runtime.load_module(&wasm_bytes).expect("failed to load sexpr component");
+    let module = runtime.load_module(&wasm_bytes).expect("failed to load sexpr package");
     let mut instance = module.instantiate().expect("failed to instantiate");
 
     // (< 5 10) => true
@@ -781,10 +781,10 @@ fn sexpr_eval_comparison() {
 
 #[test]
 fn sexpr_eval_if_true() {
-    let wasm_bytes = load_rust_sexpr_component();
+    let wasm_bytes = load_rust_sexpr_package();
 
     let runtime = Runtime::new();
-    let module = runtime.load_module(&wasm_bytes).expect("failed to load sexpr component");
+    let module = runtime.load_module(&wasm_bytes).expect("failed to load sexpr package");
     let mut instance = module.instantiate().expect("failed to instantiate");
 
     // (if (> 10 5) 42 0) => 42
@@ -804,10 +804,10 @@ fn sexpr_eval_if_true() {
 
 #[test]
 fn sexpr_eval_if_false() {
-    let wasm_bytes = load_rust_sexpr_component();
+    let wasm_bytes = load_rust_sexpr_package();
 
     let runtime = Runtime::new();
-    let module = runtime.load_module(&wasm_bytes).expect("failed to load sexpr component");
+    let module = runtime.load_module(&wasm_bytes).expect("failed to load sexpr package");
     let mut instance = module.instantiate().expect("failed to instantiate");
 
     // (if (< 10 5) 42 0) => 0
@@ -827,10 +827,10 @@ fn sexpr_eval_if_false() {
 
 #[test]
 fn sexpr_eval_list_operations() {
-    let wasm_bytes = load_rust_sexpr_component();
+    let wasm_bytes = load_rust_sexpr_package();
 
     let runtime = Runtime::new();
-    let module = runtime.load_module(&wasm_bytes).expect("failed to load sexpr component");
+    let module = runtime.load_module(&wasm_bytes).expect("failed to load sexpr package");
     let mut instance = module.instantiate().expect("failed to instantiate");
 
     // (car (list 1 2 3)) => 1
@@ -853,10 +853,10 @@ fn sexpr_eval_list_operations() {
 
 #[test]
 fn sexpr_eval_length() {
-    let wasm_bytes = load_rust_sexpr_component();
+    let wasm_bytes = load_rust_sexpr_package();
 
     let runtime = Runtime::new();
-    let module = runtime.load_module(&wasm_bytes).expect("failed to load sexpr component");
+    let module = runtime.load_module(&wasm_bytes).expect("failed to load sexpr package");
     let mut instance = module.instantiate().expect("failed to instantiate");
 
     // (length (list 1 2 3 4 5)) => 5
@@ -881,10 +881,10 @@ fn sexpr_eval_length() {
 
 #[test]
 fn sexpr_eval_complex_expression() {
-    let wasm_bytes = load_rust_sexpr_component();
+    let wasm_bytes = load_rust_sexpr_package();
 
     let runtime = Runtime::new();
-    let module = runtime.load_module(&wasm_bytes).expect("failed to load sexpr component");
+    let module = runtime.load_module(&wasm_bytes).expect("failed to load sexpr package");
     let mut instance = module.instantiate().expect("failed to instantiate");
 
     // (if (and (> 10 5) (< 3 7))

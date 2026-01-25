@@ -2,7 +2,7 @@
 name = "composite"
 version = "0.1.0"
 edition = "2021"
-description = "A component runtime with extended WIT support for recursive types"
+description = "A package runtime with extended WIT support for recursive types"
 
 [dependencies]
 # WASM execution with async support

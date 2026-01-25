@@ -1,5 +1,5 @@
 [package]
-name = "sexpr-component"
+name = "logger-package"
 version = "0.1.0"
 edition = "2021"
 
@@ -8,7 +8,6 @@ crate-type = ["cdylib"]
 
 [dependencies]
 composite-guest = { path = "../../crates/composite-guest" }
-composite-abi = { path = "../../crates/composite-abi", default-features = false }
 
 [profile.release]
 opt-level = "s"

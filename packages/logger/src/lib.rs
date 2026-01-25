@@ -1,6 +1,6 @@
-//! A component that demonstrates using host imports.
+//! A package that demonstrates using host imports.
 //!
-//! This component imports `host.log` to send log messages back to the host,
+//! This package imports `host.log` to send log messages back to the host,
 //! and `host.alloc` for memory allocation.
 
 #![no_std]

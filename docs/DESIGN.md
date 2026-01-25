@@ -46,8 +46,8 @@ variant sexpr {
 }
 ```
 
-**Key insight**: The component boundary becomes a natural serialization point.
-Components internally can represent recursive data however they want; only the
+**Key insight**: The package boundary becomes a natural serialization point.
+Packages internally can represent recursive data however they want; only the
 boundary encoding is specified.
 
 ## Design Principles
@@ -66,7 +66,7 @@ explicit adapters at the boundary.
 
 ### 3. Pluggable Execution
 
-Composite doesn't reimplement WASM execution. It provides a component layer that works with existing WASM runtimes:
+Composite doesn't reimplement WASM execution. It provides a package layer that works with existing WASM runtimes:
 
 ```rust
 trait WasmExecutor {
@@ -81,8 +81,8 @@ Initial implementation uses `wasmi` for simplicity; can swap to `wasmtime` for p
 ### 4. Symmetric ABI
 
 All values use the same ABI regardless of direction:
-- Host → Component: encode to graph buffer, write to memory, pass (ptr, len)
-- Component → Host: component writes buffer, returns (ptr, len), host decodes
+- Host → Package: encode to graph buffer, write to memory, pass (ptr, len)
+- Package → Host: package writes buffer, returns (ptr, len), host decodes
 
 This symmetry simplifies the mental model and implementation.
 
@@ -135,11 +135,11 @@ type definitions in the same namespace.
 - Validated against the WIT+ schema at the boundary
 - Supports shared subtrees and cycles
 
-### Layer 4: Component Linker
+### Layer 4: Package Linker
 
 ```rust
 impl Runtime {
-    fn instantiate(&mut self, component: &Component) -> Instance {
+    fn instantiate(&mut self, package: &Package) -> Instance {
         // For each import:
         //   Bind with graph-encoded ABI wrappers
 
@@ -326,12 +326,12 @@ This keeps encoding deterministic and stable across toolchains.
 
 Values cross the boundary as (ptr, len) buffers:
 
-- Host -> Component: host allocates buffer in component memory (via allocator
+- Host -> Package: host allocates buffer in package memory (via allocator
   import), passes (ptr, len), then frees after call returns.
-- Component -> Host: component allocates buffer in its memory, returns (ptr,
+- Package -> Host: package allocates buffer in its memory, returns (ptr,
   len), and exposes a `free` export for host to release.
 
-This mirrors the established component string/list ownership pattern.
+This mirrors the established string/list ownership pattern.
 
 ### Versioning (Sketch)
 
@@ -379,15 +379,15 @@ Serialization overhead vs fixed-layout ABI:
 - [x] Memory read/write for data passing
 - [x] Graph ABI integration (`write_value`, `read_value`, `call_with_value`)
 - [x] Host function binding (`host.log`, `host.alloc`)
-- [x] Component instantiation with imports
+- [x] Package instantiation with imports
 
-### Phase 3: Components ✓
+### Phase 3: Packages ✓
 - [x] Shared `composite-abi` crate (no_std compatible)
-- [x] Rust component examples (echo, logger)
-- [x] Components calling host imports
+- [x] Rust package examples (echo, logger)
+- [x] Packages calling host imports
 
 ### Phase 4: In Progress
-- [ ] Component-to-component linking
+- [ ] Package-to-package linking
 - [ ] More host functions (file I/O, networking)
 - [ ] Resource types (handles for host objects)
 - [ ] Async/streaming for large values
@@ -403,7 +403,7 @@ Serialization overhead vs fixed-layout ABI:
 
 ### Target Use Case
 
-Round-trip a minimal recursive `node` value across the component boundary using
+Round-trip a minimal recursive `node` value across the package boundary using
 the graph-encoded ABI.
 
 Example WIT+ type:
@@ -433,10 +433,10 @@ variant lit {
 
 - Parse WIT+ with recursive and mutually recursive type definitions.
 - Encode/decode recursive values to/from the graph buffer.
-- Instantiate a component in `wasmi`.
+- Instantiate a package in `wasmi`.
 - Host calls an exported function taking a recursive type and receives a
   recursive return.
-- Component calls a host import taking a recursive type and receives a
+- Package calls a host import taking a recursive type and receives a
   recursive return.
 
 ### Acceptance Tests
@@ -445,9 +445,9 @@ variant lit {
    without error.
 2. **Round-trip encode/decode**: Encoding then decoding a deeply nested `node`
    yields structural equality.
-3. **Component -> Host**: A component returns a transformed `node` (e.g.,
+3. **Package -> Host**: A package returns a transformed `node` (e.g.,
    wraps a leaf in a list) and the host decodes it correctly.
-4. **Host -> Component**: Host passes a recursive `node` to a component
+4. **Host -> Package**: Host passes a recursive `node` to a package
    function and gets the expected response.
 5. **Validation**: Malformed buffers and type mismatches are rejected with
    stable error codes.

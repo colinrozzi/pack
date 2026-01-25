@@ -1,7 +1,7 @@
-//! A component that can decode, inspect, and re-encode graph values.
+//! A package that can decode, inspect, and re-encode graph values.
 //!
 //! This demonstrates using the composite-guest crate to simplify
-//! WASM component development.
+//! WASM package development.
 
 #![no_std]
 
@@ -14,7 +14,7 @@ use composite_guest::{export, Value};
 composite_guest::setup_guest!();
 
 /// Echo: decode input, re-encode unchanged, return result.
-/// This proves we can decode and encode values in the component.
+/// This proves we can decode and encode values in the package.
 #[export]
 fn echo(input: Value) -> Value {
     input

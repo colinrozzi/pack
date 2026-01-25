@@ -1,5 +1,5 @@
 [package]
-name = "logger-component"
+name = "echo-package"
 version = "0.1.0"
 edition = "2021"
 
