@@ -47,21 +47,58 @@ pub enum SExpr {
 impl From<SExpr> for Value {
     fn from(expr: SExpr) -> Value {
         match expr {
-            SExpr::Sym(s) => Value::Variant { tag: 0, payload: Some(Box::new(Value::String(s))) },
-            SExpr::Num(n) => Value::Variant { tag: 1, payload: Some(Box::new(Value::S64(n))) },
-            SExpr::Float(f) => Value::Variant { tag: 2, payload: Some(Box::new(Value::F64(f))) },
-            SExpr::Str(s) => Value::Variant { tag: 3, payload: Some(Box::new(Value::String(s))) },
-            SExpr::Bool(b) => Value::Variant { tag: 4, payload: Some(Box::new(Value::Bool(b))) },
-            SExpr::Nil => Value::Variant { tag: 5, payload: None },
+            SExpr::Sym(s) => Value::Variant {
+                type_name: String::from("expr"),
+                case_name: String::from("sym"),
+                tag: 0,
+                payload: alloc::vec![Value::String(s)],
+            },
+            SExpr::Num(n) => Value::Variant {
+                type_name: String::from("expr"),
+                case_name: String::from("num"),
+                tag: 1,
+                payload: alloc::vec![Value::S64(n)],
+            },
+            SExpr::Float(f) => Value::Variant {
+                type_name: String::from("expr"),
+                case_name: String::from("float"),
+                tag: 2,
+                payload: alloc::vec![Value::F64(f)],
+            },
+            SExpr::Str(s) => Value::Variant {
+                type_name: String::from("expr"),
+                case_name: String::from("str"),
+                tag: 3,
+                payload: alloc::vec![Value::String(s)],
+            },
+            SExpr::Bool(b) => Value::Variant {
+                type_name: String::from("expr"),
+                case_name: String::from("bool"),
+                tag: 4,
+                payload: alloc::vec![Value::Bool(b)],
+            },
+            SExpr::Nil => Value::Variant {
+                type_name: String::from("expr"),
+                case_name: String::from("nil"),
+                tag: 5,
+                payload: alloc::vec![],
+            },
             SExpr::Cons(head, tail) => {
                 let head_val: Value = (*head).into();
                 let tail_val: Value = (*tail).into();
                 Value::Variant {
+                    type_name: String::from("expr"),
+                    case_name: String::from("cons"),
                     tag: 6,
-                    payload: Some(Box::new(Value::Tuple(alloc::vec![head_val, tail_val]))),
+                    payload: alloc::vec![Value::Tuple(alloc::vec![head_val, tail_val])],
                 }
             }
-            SExpr::Err(msg) => Value::Variant { tag: 7, payload: Some(Box::new(Value::String(msg))) },
+            SExpr::Err(msg) => Value::Variant {
+                type_name: String::from("expr"),
+                case_name: String::from("err"),
+                tag: 7,
+                payload: alloc::vec![Value::String(msg)],
+            },
         }
     }
 }
@@ -71,11 +108,13 @@ impl TryFrom<Value> for SExpr {
 
     fn try_from(value: Value) -> Result<Self, Self::Error> {
         match value {
-            Value::Variant { tag, payload } => match tag {
+            Value::Variant { tag, payload, .. } => match tag {
                 0 => {
                     // Sym(String)
-                    let p = payload.ok_or(ConversionError::MissingPayload)?;
-                    match *p {
+                    if payload.is_empty() {
+                        return Err(ConversionError::MissingPayload);
+                    }
+                    match payload.into_iter().next().unwrap() {
                         Value::String(s) => Ok(SExpr::Sym(s)),
                         other => Err(ConversionError::TypeMismatch {
                             expected: String::from("String"),
@@ -85,8 +124,10 @@ impl TryFrom<Value> for SExpr {
                 }
                 1 => {
                     // Num(i64)
-                    let p = payload.ok_or(ConversionError::MissingPayload)?;
-                    match *p {
+                    if payload.is_empty() {
+                        return Err(ConversionError::MissingPayload);
+                    }
+                    match payload.into_iter().next().unwrap() {
                         Value::S64(n) => Ok(SExpr::Num(n)),
                         other => Err(ConversionError::TypeMismatch {
                             expected: String::from("S64"),
@@ -96,8 +137,10 @@ impl TryFrom<Value> for SExpr {
                 }
                 2 => {
                     // Float(f64)
-                    let p = payload.ok_or(ConversionError::MissingPayload)?;
-                    match *p {
+                    if payload.is_empty() {
+                        return Err(ConversionError::MissingPayload);
+                    }
+                    match payload.into_iter().next().unwrap() {
                         Value::F64(f) => Ok(SExpr::Float(f)),
                         other => Err(ConversionError::TypeMismatch {
                             expected: String::from("F64"),
@@ -107,8 +150,10 @@ impl TryFrom<Value> for SExpr {
                 }
                 3 => {
                     // Str(String)
-                    let p = payload.ok_or(ConversionError::MissingPayload)?;
-                    match *p {
+                    if payload.is_empty() {
+                        return Err(ConversionError::MissingPayload);
+                    }
+                    match payload.into_iter().next().unwrap() {
                         Value::String(s) => Ok(SExpr::Str(s)),
                         other => Err(ConversionError::TypeMismatch {
                             expected: String::from("String"),
@@ -118,8 +163,10 @@ impl TryFrom<Value> for SExpr {
                 }
                 4 => {
                     // Bool(bool)
-                    let p = payload.ok_or(ConversionError::MissingPayload)?;
-                    match *p {
+                    if payload.is_empty() {
+                        return Err(ConversionError::MissingPayload);
+                    }
+                    match payload.into_iter().next().unwrap() {
                         Value::Bool(b) => Ok(SExpr::Bool(b)),
                         other => Err(ConversionError::TypeMismatch {
                             expected: String::from("Bool"),
@@ -133,8 +180,10 @@ impl TryFrom<Value> for SExpr {
                 }
                 6 => {
                     // Cons(Box<SExpr>, Box<SExpr>)
-                    let p = payload.ok_or(ConversionError::MissingPayload)?;
-                    match *p {
+                    if payload.is_empty() {
+                        return Err(ConversionError::MissingPayload);
+                    }
+                    match payload.into_iter().next().unwrap() {
                         Value::Tuple(items) if items.len() == 2 => {
                             let mut iter = items.into_iter();
                             let head = SExpr::try_from(iter.next().unwrap())?;
@@ -149,8 +198,10 @@ impl TryFrom<Value> for SExpr {
                 }
                 7 => {
                     // Err(String)
-                    let p = payload.ok_or(ConversionError::MissingPayload)?;
-                    match *p {
+                    if payload.is_empty() {
+                        return Err(ConversionError::MissingPayload);
+                    }
+                    match payload.into_iter().next().unwrap() {
                         Value::String(s) => Ok(SExpr::Err(s)),
                         other => Err(ConversionError::TypeMismatch {
                             expected: String::from("String"),

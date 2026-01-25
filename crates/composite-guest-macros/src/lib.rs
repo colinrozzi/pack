@@ -555,6 +555,9 @@ struct ImportFnSignature {
 
 impl Parse for ImportFnSignature {
     fn parse(input: ParseStream) -> syn::Result<Self> {
+        // Skip any outer attributes (including doc comments)
+        let _ = input.call(syn::Attribute::parse_outer)?;
+
         let vis: syn::Visibility = input.parse()?;
         input.parse::<Token![fn]>()?;
         let fn_name: Ident = input.parse()?;
@@ -882,4 +885,195 @@ fn read_wit_files_recursive(dir: &std::path::Path, content: &mut String) -> Resu
     }
 
     Ok(())
+}
+
+/// Arguments for the #[import_from] attribute - just a package name.
+struct ImportFromArgs {
+    /// Package name to import from
+    package: String,
+    /// Optional function name override
+    name: Option<String>,
+}
+
+impl Parse for ImportFromArgs {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        // First argument is the package name (required)
+        let package: LitStr = input.parse()?;
+        let mut name = None;
+
+        // Optional: , name = "custom_name"
+        if input.peek(Token![,]) {
+            input.parse::<Token![,]>()?;
+            let ident: Ident = input.parse()?;
+            if ident != "name" {
+                return Err(syn::Error::new(
+                    ident.span(),
+                    format!("unexpected attribute `{}`, expected `name`", ident),
+                ));
+            }
+            input.parse::<Token![=]>()?;
+            let lit: LitStr = input.parse()?;
+            name = Some(lit.value());
+        }
+
+        Ok(ImportFromArgs {
+            package: package.value(),
+            name,
+        })
+    }
+}
+
+/// Import a function from another package in a composition.
+///
+/// This macro generates a wrapper function for calling functions exported by
+/// other packages when using `CompositionBuilder` to wire packages together.
+///
+/// Unlike `#[import]` which imports from the host runtime, `#[import_from]`
+/// imports from another composed package.
+///
+/// # Example
+///
+/// ```ignore
+/// use composite_guest::{import_from, export, Value};
+///
+/// // Import the "double" function from the "math" package
+/// #[import_from("math")]
+/// fn double(n: i64) -> i64;
+///
+/// // Use it in an export
+/// #[export]
+/// fn process(input: Value) -> Value {
+///     let n: i64 = input.try_into().unwrap();
+///     let doubled = double(n);
+///     Value::from(doubled + 1)
+/// }
+/// ```
+///
+/// # With Custom Function Name
+///
+/// ```ignore
+/// // Import "transform" from "math" but call it "double" locally
+/// #[import_from("math", name = "transform")]
+/// fn double(n: i64) -> i64;
+/// ```
+///
+/// # How It Works
+///
+/// When you use `CompositionBuilder::wire()`:
+/// ```ignore
+/// CompositionBuilder::new()
+///     .add_package("adder", adder_wasm)
+///     .add_package("math", math_wasm)
+///     .wire("adder", "math", "double", "math", "double")
+///     .build()?;
+/// ```
+///
+/// The composition wires `adder`'s import of `math::double` to `math`'s export.
+/// The `#[import_from("math")]` macro generates the import with module name "math"
+/// that the composition system can satisfy.
+#[proc_macro_attribute]
+pub fn import_from(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let args = parse_macro_input!(attr as ImportFromArgs);
+    let sig = parse_macro_input!(item as ImportFnSignature);
+
+    let package = &args.package;
+    let import_name = args.name.unwrap_or_else(|| sig.fn_name.to_string());
+
+    let fn_name = &sig.fn_name;
+    let fn_vis = &sig.vis;
+    let output = &sig.output;
+
+    // Generate a unique name for the raw import
+    let raw_fn_name = Ident::new(
+        &format!("__raw_pkg_import_{}", fn_name),
+        fn_name.span()
+    );
+
+    // Extract parameter names and types
+    let params: Vec<_> = sig.inputs.iter().collect();
+    let mut param_names = Vec::new();
+    let mut param_types = Vec::new();
+
+    for param in &params {
+        match param {
+            FnArg::Typed(pat_type) => {
+                let name = match &*pat_type.pat {
+                    Pat::Ident(ident) => &ident.ident,
+                    _ => {
+                        return syn::Error::new_spanned(
+                            &pat_type.pat,
+                            "parameter must be a simple identifier"
+                        ).to_compile_error().into();
+                    }
+                };
+                param_names.push(name.clone());
+                param_types.push((*pat_type.ty).clone());
+            }
+            FnArg::Receiver(_) => {
+                return syn::Error::new_spanned(
+                    param,
+                    "imported functions cannot have self parameter"
+                ).to_compile_error().into();
+            }
+        }
+    }
+
+    // Determine return type handling
+    let (return_type, has_return) = match output {
+        ReturnType::Default => (quote! { () }, false),
+        ReturnType::Type(_, ty) => (quote! { #ty }, true),
+    };
+
+    // Build the input value - tuple of all parameters
+    let input_construction = if param_names.is_empty() {
+        quote! { composite_guest::Value::Tuple(composite_guest::__alloc::vec![]) }
+    } else if param_names.len() == 1 {
+        let name = &param_names[0];
+        quote! { composite_guest::Value::from(#name) }
+    } else {
+        let conversions = param_names.iter().map(|name| {
+            quote! { composite_guest::Value::from(#name) }
+        });
+        quote! {
+            composite_guest::Value::Tuple(composite_guest::__alloc::vec![#(#conversions),*])
+        }
+    };
+
+    // Build the return value handling
+    let return_handling = if has_return {
+        quote! {
+            match result.try_into() {
+                Ok(v) => v,
+                Err(_) => panic!("failed to convert import result from package '{}'", #package),
+            }
+        }
+    } else {
+        quote! { () }
+    };
+
+    // Generate the function signature parameters
+    let fn_params = param_names.iter().zip(param_types.iter()).map(|(name, ty)| {
+        quote! { #name: #ty }
+    });
+
+    let expanded = quote! {
+        #[link(wasm_import_module = #package)]
+        extern "C" {
+            #[link_name = #import_name]
+            fn #raw_fn_name(in_ptr: i32, in_len: i32, out_ptr: i32, out_cap: i32) -> i32;
+        }
+
+        #fn_vis fn #fn_name(#(#fn_params),*) -> #return_type {
+            let input = #input_construction;
+            let result = composite_guest::__import_impl(
+                |in_ptr, in_len, out_ptr, out_cap| unsafe {
+                    #raw_fn_name(in_ptr, in_len, out_ptr, out_cap)
+                },
+                input,
+            );
+            #return_handling
+        }
+    };
+
+    expanded.into()
 }

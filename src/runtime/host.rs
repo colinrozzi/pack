@@ -570,12 +570,16 @@ impl<'a, 'b, T: 'static> InterfaceBuilder<'a, 'b, T> {
                     // Encode result as WIT result variant
                     let output_value: Value = match result {
                         Ok(value) => Value::Variant {
+                            type_name: "result".to_string(),
+                            case_name: "ok".to_string(),
                             tag: 0,
-                            payload: Some(Box::new(value.into())),
+                            payload: vec![value.into()],
                         },
                         Err(error) => Value::Variant {
+                            type_name: "result".to_string(),
+                            case_name: "error".to_string(),
                             tag: 1,
-                            payload: Some(Box::new(error.into())),
+                            payload: vec![error.into()],
                         },
                     };
 
@@ -863,12 +867,16 @@ impl<'a, 'b, T: Send + Clone + 'static> InterfaceBuilder<'a, 'b, T> {
                         // Encode result as WIT result variant
                         let output_value: Value = match result {
                             Ok(value) => Value::Variant {
+                                type_name: "result".to_string(),
+                                case_name: "ok".to_string(),
                                 tag: 0,
-                                payload: Some(Box::new(value.into())),
+                                payload: vec![value.into()],
                             },
                             Err(error) => Value::Variant {
+                                type_name: "result".to_string(),
+                                case_name: "error".to_string(),
                                 tag: 1,
-                                payload: Some(Box::new(error.into())),
+                                payload: vec![error.into()],
                             },
                         };
 

@@ -849,8 +849,10 @@ mod tests {
         let runtime = Runtime::new();
 
         let value = Value::Variant {
+            type_name: "node".to_string(),
+            case_name: "leaf".to_string(),
             tag: 0,
-            payload: Some(Box::new(Value::S64(7))),
+            payload: vec![Value::S64(7)],
         };
 
         let bytes = encode(&value).expect("encode");
@@ -894,7 +896,10 @@ mod tests {
         let interface = parse_interface(src).expect("parse");
         let runtime = Runtime::new();
 
-        let value = Value::Record(vec![("wrong".to_string(), Value::String("x".to_string()))]);
+        let value = Value::Record {
+            type_name: "config".to_string(),
+            fields: vec![("wrong".to_string(), Value::String("x".to_string()))],
+        };
         let err = runtime
             .encode_result_with_schema(
                 &interface.types,

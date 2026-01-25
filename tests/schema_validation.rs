@@ -1,9 +1,8 @@
-use composite::abi::{encode, GraphBuffer, Node, NodeKind};
+use composite::abi::{encode, GraphBuffer, Node, NodeKind, Value, ValueType};
 use composite::wit_plus::{
     decode_with_schema, encode_with_schema, parse_interface, validate_graph_against_type, Type,
     ValidationError,
 };
-use composite::abi::Value;
 
 #[test]
 fn validate_graph_against_schema() {
@@ -15,12 +14,19 @@ fn validate_graph_against_schema() {
     let interface = parse_interface(src).expect("parse");
 
     let leaf = Value::Variant {
+        type_name: "node".to_string(),
+        case_name: "leaf".to_string(),
         tag: 0,
-        payload: Some(Box::new(Value::S64(7))),
+        payload: vec![Value::S64(7)],
     };
     let list = Value::Variant {
+        type_name: "node".to_string(),
+        case_name: "list".to_string(),
         tag: 1,
-        payload: Some(Box::new(Value::List(vec![leaf.clone()]))),
+        payload: vec![Value::List {
+            elem_type: ValueType::Variant("node".to_string()),
+            items: vec![leaf.clone()],
+        }],
     };
 
     let bytes = encode(&list).expect("encode");
@@ -41,16 +47,24 @@ fn reject_variant_tag_out_of_range() {
 
     let mut bytes = Vec::new();
     bytes.extend_from_slice(&u32::from_le_bytes(*b"CGRF").to_le_bytes());
-    bytes.extend_from_slice(&1u16.to_le_bytes());
+    bytes.extend_from_slice(&2u16.to_le_bytes()); // VERSION 2
     bytes.extend_from_slice(&0u16.to_le_bytes());
     bytes.extend_from_slice(&1u32.to_le_bytes());
     bytes.extend_from_slice(&0u32.to_le_bytes());
     bytes.push(0x08);
     bytes.push(0);
     bytes.extend_from_slice(&0u16.to_le_bytes());
-    bytes.extend_from_slice(&5u32.to_le_bytes());
-    bytes.extend_from_slice(&99u32.to_le_bytes());
-    bytes.push(0);
+    // v2 variant payload: type_name_len + type_name + case_name_len + case_name + tag + payload_count
+    let type_name = "node";
+    let case_name = "bad";
+    let payload_len = 4 + type_name.len() + 4 + case_name.len() + 4 + 4;
+    bytes.extend_from_slice(&(payload_len as u32).to_le_bytes());
+    bytes.extend_from_slice(&(type_name.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(type_name.as_bytes());
+    bytes.extend_from_slice(&(case_name.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(case_name.as_bytes());
+    bytes.extend_from_slice(&99u32.to_le_bytes()); // bad tag
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // no payload
 
     let buffer = GraphBuffer::from_bytes(&bytes).expect("from_bytes");
     let err = validate_graph_against_type(&interface.types, &buffer, &Type::Named("node".to_string()))
@@ -121,8 +135,10 @@ fn decode_with_schema_roundtrip() {
     let interface = parse_interface(src).expect("parse");
 
     let value = Value::Variant {
+        type_name: "node".to_string(),
+        case_name: "leaf".to_string(),
         tag: 0,
-        payload: Some(Box::new(Value::S64(42))),
+        payload: vec![Value::S64(42)],
     };
     let bytes = encode(&value).expect("encode");
     let decoded =
@@ -188,10 +204,13 @@ fn encode_with_schema_rejects_record_field_order() {
     "#;
     let interface = parse_interface(src).expect("parse");
 
-    let value = Value::Record(vec![
-        ("enabled".to_string(), Value::Bool(true)),
-        ("name".to_string(), Value::String("x".to_string())),
-    ]);
+    let value = Value::Record {
+        type_name: "config".to_string(),
+        fields: vec![
+            ("enabled".to_string(), Value::Bool(true)),
+            ("name".to_string(), Value::String("x".to_string())),
+        ],
+    };
 
     let err = encode_with_schema(&interface.types, &value, &Type::Named("config".to_string()))
         .expect_err("expected error");

@@ -2,7 +2,7 @@
 //!
 //! These tests verify that we can load and run WASM modules through the Runtime.
 
-use composite::abi::Value;
+use composite::abi::{Value, ValueType};
 use composite::Runtime;
 use std::path::Path;
 
@@ -303,11 +303,14 @@ fn graph_abi_echo_list() {
     let module = runtime.load_module(&wasm_bytes).expect("failed to load module");
     let mut instance = module.instantiate().expect("failed to instantiate");
 
-    let input = Value::List(vec![
-        Value::S64(1),
-        Value::S64(2),
-        Value::S64(3),
-    ]);
+    let input = Value::List {
+        elem_type: ValueType::S64,
+        items: vec![
+            Value::S64(1),
+            Value::S64(2),
+            Value::S64(3),
+        ],
+    };
     let output = instance
         .call_with_value("echo", &input, 0)
         .expect("failed to call echo");
@@ -324,8 +327,10 @@ fn graph_abi_echo_variant() {
 
     // This is like a simple S-expression node
     let input = Value::Variant {
+        type_name: "node".to_string(),
+        case_name: "sym".to_string(),
         tag: 1,
-        payload: Some(Box::new(Value::String("symbol".to_string()))),
+        payload: vec![Value::String("symbol".to_string())],
     };
     let output = instance
         .call_with_value("echo", &input, 0)
@@ -342,22 +347,34 @@ fn graph_abi_echo_nested() {
     let mut instance = module.instantiate().expect("failed to instantiate");
 
     // A nested structure like (list (sym "a") (num 42))
-    let input = Value::List(vec![
-        Value::Variant {
-            tag: 0,
-            payload: Some(Box::new(Value::String("list".to_string()))),
-        },
-        Value::List(vec![
+    let input = Value::List {
+        elem_type: ValueType::Variant("node".to_string()),
+        items: vec![
             Value::Variant {
+                type_name: "node".to_string(),
+                case_name: "sym".to_string(),
                 tag: 0,
-                payload: Some(Box::new(Value::String("a".to_string()))),
+                payload: vec![Value::String("list".to_string())],
             },
-            Value::Variant {
-                tag: 1,
-                payload: Some(Box::new(Value::S64(42))),
+            Value::List {
+                elem_type: ValueType::Variant("node".to_string()),
+                items: vec![
+                    Value::Variant {
+                        type_name: "node".to_string(),
+                        case_name: "sym".to_string(),
+                        tag: 0,
+                        payload: vec![Value::String("a".to_string())],
+                    },
+                    Value::Variant {
+                        type_name: "node".to_string(),
+                        case_name: "num".to_string(),
+                        tag: 1,
+                        payload: vec![Value::S64(42)],
+                    },
+                ],
             },
-        ]),
-    ]);
+        ],
+    };
     let output = instance
         .call_with_value("echo", &input, 0)
         .expect("failed to call echo");
@@ -406,18 +423,29 @@ fn rust_package_echo_complex() {
     let mut instance = module.instantiate().expect("failed to instantiate");
 
     // Test with a nested structure
-    let input = Value::List(vec![
-        Value::String("hello".to_string()),
-        Value::Variant {
-            tag: 2,
-            payload: Some(Box::new(Value::List(vec![
-                Value::S64(1),
-                Value::S64(2),
-                Value::S64(3),
-            ]))),
-        },
-        Value::Option(Some(Box::new(Value::Bool(true)))),
-    ]);
+    let input = Value::List {
+        elem_type: ValueType::String, // Mixed types, use String as placeholder
+        items: vec![
+            Value::String("hello".to_string()),
+            Value::Variant {
+                type_name: "node".to_string(),
+                case_name: "list".to_string(),
+                tag: 2,
+                payload: vec![Value::List {
+                    elem_type: ValueType::S64,
+                    items: vec![
+                        Value::S64(1),
+                        Value::S64(2),
+                        Value::S64(3),
+                    ],
+                }],
+            },
+            Value::Option {
+                inner_type: ValueType::Bool,
+                value: Some(Box::new(Value::Bool(true))),
+            },
+        ],
+    };
 
     let output = instance
         .call_with_value("echo", &input, 0)
@@ -450,23 +478,33 @@ fn rust_package_transform_nested() {
     let mut instance = module.instantiate().expect("failed to instantiate");
 
     // Test transform on nested structure - doubles all S64 values
-    let input = Value::List(vec![
-        Value::S64(10),
-        Value::S64(20),
-        Value::Variant {
-            tag: 1,
-            payload: Some(Box::new(Value::S64(50))),
-        },
-    ]);
+    let input = Value::List {
+        elem_type: ValueType::S64,
+        items: vec![
+            Value::S64(10),
+            Value::S64(20),
+            Value::Variant {
+                type_name: "node".to_string(),
+                case_name: "num".to_string(),
+                tag: 1,
+                payload: vec![Value::S64(50)],
+            },
+        ],
+    };
 
-    let expected = Value::List(vec![
-        Value::S64(20),  // 10 * 2
-        Value::S64(40),  // 20 * 2
-        Value::Variant {
-            tag: 1,
-            payload: Some(Box::new(Value::S64(100))),  // 50 * 2
-        },
-    ]);
+    let expected = Value::List {
+        elem_type: ValueType::S64,
+        items: vec![
+            Value::S64(20),  // 10 * 2
+            Value::S64(40),  // 20 * 2
+            Value::Variant {
+                type_name: "node".to_string(),
+                case_name: "num".to_string(),
+                tag: 1,
+                payload: vec![Value::S64(100)],  // 50 * 2
+            },
+        ],
+    };
 
     let output = instance
         .call_with_value("transform", &input, 0)
@@ -580,17 +618,23 @@ fn host_imports_transform_nested() {
         .expect("failed to instantiate with imports");
 
     // Test with a list of S64 values
-    let input = Value::List(vec![
-        Value::S64(10),
-        Value::S64(20),
-        Value::S64(30),
-    ]);
+    let input = Value::List {
+        elem_type: ValueType::S64,
+        items: vec![
+            Value::S64(10),
+            Value::S64(20),
+            Value::S64(30),
+        ],
+    };
 
-    let expected = Value::List(vec![
-        Value::S64(20),
-        Value::S64(40),
-        Value::S64(60),
-    ]);
+    let expected = Value::List {
+        elem_type: ValueType::S64,
+        items: vec![
+            Value::S64(20),
+            Value::S64(40),
+            Value::S64(60),
+        ],
+    };
 
     let output = instance
         .call_with_value("process", &input, 0)
@@ -659,40 +703,55 @@ mod sexpr {
 
     pub fn sym(s: &str) -> Value {
         Value::Variant {
+            type_name: "expr".to_string(),
+            case_name: "sym".to_string(),
             tag: 0,
-            payload: Some(Box::new(Value::String(s.to_string()))),
+            payload: vec![Value::String(s.to_string())],
         }
     }
 
     pub fn num(n: i64) -> Value {
         Value::Variant {
+            type_name: "expr".to_string(),
+            case_name: "num".to_string(),
             tag: 1,
-            payload: Some(Box::new(Value::S64(n))),
+            payload: vec![Value::S64(n)],
         }
     }
 
     pub fn float(f: f64) -> Value {
         Value::Variant {
+            type_name: "expr".to_string(),
+            case_name: "float".to_string(),
             tag: 2,
-            payload: Some(Box::new(Value::F64(f))),
+            payload: vec![Value::F64(f)],
         }
     }
 
     pub fn boolean(b: bool) -> Value {
         Value::Variant {
+            type_name: "expr".to_string(),
+            case_name: "bool".to_string(),
             tag: 4,
-            payload: Some(Box::new(Value::Bool(b))),
+            payload: vec![Value::Bool(b)],
         }
     }
 
     pub fn nil() -> Value {
-        Value::Variant { tag: 5, payload: None }
+        Value::Variant {
+            type_name: "expr".to_string(),
+            case_name: "nil".to_string(),
+            tag: 5,
+            payload: vec![],
+        }
     }
 
     pub fn cons(head: Value, tail: Value) -> Value {
         Value::Variant {
+            type_name: "expr".to_string(),
+            case_name: "cons".to_string(),
             tag: 6,
-            payload: Some(Box::new(Value::Tuple(vec![head, tail]))),
+            payload: vec![Value::Tuple(vec![head, tail])],
         }
     }
 
@@ -706,8 +765,10 @@ mod sexpr {
 
     pub fn err(msg: &str) -> Value {
         Value::Variant {
+            type_name: "expr".to_string(),
+            case_name: "err".to_string(),
             tag: 7,
-            payload: Some(Box::new(Value::String(msg.to_string()))),
+            payload: vec![Value::String(msg.to_string())],
         }
     }
 }

@@ -13,7 +13,12 @@ fn test_wisp_variant_no_payload_red() {
     let mut instance = module.instantiate().expect("failed to instantiate");
 
     // Test color-to-num with red (tag 0) should return 1
-    let input = Value::Variant { tag: 0, payload: None };
+    let input = Value::Variant {
+        type_name: "color".to_string(),
+        case_name: "red".to_string(),
+        tag: 0,
+        payload: vec![],
+    };
     let output = instance
         .call_with_value("color-to-num", &input, 0)
         .expect("failed to call color-to-num");
@@ -28,7 +33,12 @@ fn test_wisp_variant_no_payload_green() {
     let mut instance = module.instantiate().expect("failed to instantiate");
 
     // Test color-to-num with green (tag 1) should return 2
-    let input = Value::Variant { tag: 1, payload: None };
+    let input = Value::Variant {
+        type_name: "color".to_string(),
+        case_name: "green".to_string(),
+        tag: 1,
+        payload: vec![],
+    };
     let output = instance
         .call_with_value("color-to-num", &input, 0)
         .expect("failed to call color-to-num");
@@ -43,7 +53,12 @@ fn test_wisp_variant_no_payload_blue() {
     let mut instance = module.instantiate().expect("failed to instantiate");
 
     // Test color-to-num with blue (tag 2) should return 3
-    let input = Value::Variant { tag: 2, payload: None };
+    let input = Value::Variant {
+        type_name: "color".to_string(),
+        case_name: "blue".to_string(),
+        tag: 2,
+        payload: vec![],
+    };
     let output = instance
         .call_with_value("color-to-num", &input, 0)
         .expect("failed to call color-to-num");
@@ -59,8 +74,10 @@ fn test_wisp_variant_with_payload_circle() {
 
     // Test get-dimension with circle(10) should return 10
     let input = Value::Variant {
+        type_name: "shape".to_string(),
+        case_name: "circle".to_string(),
         tag: 0,
-        payload: Some(Box::new(Value::S32(10)))
+        payload: vec![Value::S32(10)],
     };
     let output = instance
         .call_with_value("get-dimension", &input, 0)
@@ -77,8 +94,10 @@ fn test_wisp_variant_with_payload_square() {
 
     // Test get-dimension with square(5) should return 5
     let input = Value::Variant {
+        type_name: "shape".to_string(),
+        case_name: "square".to_string(),
         tag: 1,
-        payload: Some(Box::new(Value::S32(5)))
+        payload: vec![Value::S32(5)],
     };
     let output = instance
         .call_with_value("get-dimension", &input, 0)
@@ -95,8 +114,10 @@ fn test_wisp_variant_double_dimension() {
 
     // Test double-dimension with circle(7) should return 14
     let input = Value::Variant {
+        type_name: "shape".to_string(),
+        case_name: "circle".to_string(),
         tag: 0,
-        payload: Some(Box::new(Value::S32(7)))
+        payload: vec![Value::S32(7)],
     };
     let output = instance
         .call_with_value("double-dimension", &input, 0)
@@ -105,8 +126,10 @@ fn test_wisp_variant_double_dimension() {
 
     // Test double-dimension with square(8) should return 16
     let input = Value::Variant {
+        type_name: "shape".to_string(),
+        case_name: "square".to_string(),
         tag: 1,
-        payload: Some(Box::new(Value::S32(8)))
+        payload: vec![Value::S32(8)],
     };
     let output = instance
         .call_with_value("double-dimension", &input, 0)

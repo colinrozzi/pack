@@ -4,6 +4,31 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+/// Runtime type representation for CGRF v2
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ValueType {
+    Bool,
+    U8,
+    U16,
+    U32,
+    U64,
+    S8,
+    S16,
+    S32,
+    S64,
+    F32,
+    F64,
+    Char,
+    String,
+    List(Box<ValueType>),
+    Option(Box<ValueType>),
+    Result { ok: Box<ValueType>, err: Box<ValueType> },
+    Record(String),   // type name
+    Variant(String),  // type name
+    Tuple(Vec<ValueType>),
+    Flags,
+}
+
 /// A runtime value that can be passed across package boundaries
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
@@ -22,12 +47,15 @@ pub enum Value {
     Char(char),
     String(String),
 
-    // Compound
-    List(Vec<Value>),
-    Option(Option<Box<Value>>),
+    // Compound types WITH type info
+    List { elem_type: ValueType, items: Vec<Value> },
+    Option { inner_type: ValueType, value: Option<Box<Value>> },
+    Result { ok_type: ValueType, err_type: ValueType, value: core::result::Result<Box<Value>, Box<Value>> },
+    Record { type_name: String, fields: Vec<(String, Value)> },
+    Variant { type_name: String, case_name: String, tag: usize, payload: Vec<Value> },
+
+    // Keep Tuple as-is (no type info needed - positional)
     Tuple(Vec<Value>),
-    Record(Vec<(String, Value)>),
-    Variant { tag: usize, payload: Option<Box<Value>> },
     Flags(u64),
 }
 
@@ -35,24 +63,62 @@ impl Value {
     /// Helper to create a symbol (variant tag 0 with string payload)
     pub fn sym(s: impl Into<String>) -> Self {
         Value::Variant {
+            type_name: String::from("expr"),
+            case_name: String::from("sym"),
             tag: 0,
-            payload: Some(Box::new(Value::String(s.into()))),
+            payload: alloc::vec![Value::String(s.into())],
         }
     }
 
     /// Helper to create a number (variant tag 1 with s64 payload)
     pub fn num(n: i64) -> Self {
         Value::Variant {
+            type_name: String::from("expr"),
+            case_name: String::from("num"),
             tag: 1,
-            payload: Some(Box::new(Value::S64(n))),
+            payload: alloc::vec![Value::S64(n)],
         }
     }
 
     /// Helper to create a list (variant tag 4 with list payload)
     pub fn lst(items: Vec<Value>) -> Self {
         Value::Variant {
+            type_name: String::from("expr"),
+            case_name: String::from("lst"),
             tag: 4,
-            payload: Some(Box::new(Value::List(items))),
+            payload: alloc::vec![Value::List {
+                elem_type: ValueType::Variant(String::from("expr")),
+                items,
+            }],
+        }
+    }
+
+    /// Infer the ValueType from this Value
+    pub fn infer_type(&self) -> ValueType {
+        match self {
+            Value::Bool(_) => ValueType::Bool,
+            Value::U8(_) => ValueType::U8,
+            Value::U16(_) => ValueType::U16,
+            Value::U32(_) => ValueType::U32,
+            Value::U64(_) => ValueType::U64,
+            Value::S8(_) => ValueType::S8,
+            Value::S16(_) => ValueType::S16,
+            Value::S32(_) => ValueType::S32,
+            Value::S64(_) => ValueType::S64,
+            Value::F32(_) => ValueType::F32,
+            Value::F64(_) => ValueType::F64,
+            Value::Char(_) => ValueType::Char,
+            Value::String(_) => ValueType::String,
+            Value::List { elem_type, .. } => ValueType::List(Box::new(elem_type.clone())),
+            Value::Option { inner_type, .. } => ValueType::Option(Box::new(inner_type.clone())),
+            Value::Result { ok_type, err_type, .. } => ValueType::Result {
+                ok: Box::new(ok_type.clone()),
+                err: Box::new(err_type.clone()),
+            },
+            Value::Record { type_name, .. } => ValueType::Record(type_name.clone()),
+            Value::Variant { type_name, .. } => ValueType::Variant(type_name.clone()),
+            Value::Tuple(items) => ValueType::Tuple(items.iter().map(|v| v.infer_type()).collect()),
+            Value::Flags(_) => ValueType::Flags,
         }
     }
 }
@@ -119,13 +185,24 @@ impl From<&str> for Value {
 
 impl<T: Into<Value>> From<Vec<T>> for Value {
     fn from(v: Vec<T>) -> Self {
-        Value::List(v.into_iter().map(Into::into).collect())
+        let items: Vec<Value> = v.into_iter().map(Into::into).collect();
+        // Infer elem_type from first item, default to S32
+        let elem_type = items.first().map(|v| v.infer_type()).unwrap_or(ValueType::S32);
+        Value::List { elem_type, items }
     }
 }
 
 impl<T: Into<Value>> From<Option<T>> for Value {
     fn from(v: Option<T>) -> Self {
-        Value::Option(v.map(|x| Box::new(x.into())))
+        let (inner_type, value) = match v {
+            Some(x) => {
+                let val: Value = x.into();
+                let ty = val.infer_type();
+                (ty, Some(Box::new(val)))
+            }
+            None => (ValueType::S32, None), // Default type for None
+        };
+        Value::Option { inner_type, value }
     }
 }
 
@@ -314,7 +391,7 @@ impl<T: TryFrom<Value, Error = ConversionError>> TryFrom<Value> for Vec<T> {
     type Error = ConversionError;
     fn try_from(v: Value) -> Result<Self, Self::Error> {
         match v {
-            Value::List(items) => items
+            Value::List { items, .. } => items
                 .into_iter()
                 .enumerate()
                 .map(|(i, item)| {
@@ -350,8 +427,8 @@ impl<T: TryFrom<Value, Error = ConversionError>> FromValue for T {
 impl<T: FromValue> FromValue for Option<T> {
     fn from_value(v: Value) -> Result<Self, ConversionError> {
         match v {
-            Value::Option(None) => Ok(None),
-            Value::Option(Some(inner)) => {
+            Value::Option { value: None, .. } => Ok(None),
+            Value::Option { value: Some(inner), .. } => {
                 let value = T::from_value(*inner)?;
                 Ok(Some(value))
             }
@@ -491,39 +568,58 @@ impl<
 }
 
 // ============================================================================
-// Result conversions (as WIT result type - variant with tag 0=ok, 1=err)
+// Result conversions (now using Value::Result directly)
 // ============================================================================
 
-impl<T: Into<Value>, E: Into<Value>> From<Result<T, E>> for Value {
-    fn from(r: Result<T, E>) -> Self {
+impl<T: Into<Value>, E: Into<Value>> From<core::result::Result<T, E>> for Value {
+    fn from(r: core::result::Result<T, E>) -> Self {
         match r {
-            Ok(v) => Value::Variant {
-                tag: 0,
-                payload: Some(Box::new(v.into())),
-            },
-            Err(e) => Value::Variant {
-                tag: 1,
-                payload: Some(Box::new(e.into())),
-            },
+            Ok(v) => {
+                let val: Value = v.into();
+                let ok_type = val.infer_type();
+                Value::Result {
+                    ok_type,
+                    err_type: ValueType::String, // Default error type
+                    value: Ok(Box::new(val)),
+                }
+            }
+            Err(e) => {
+                let val: Value = e.into();
+                let err_type = val.infer_type();
+                Value::Result {
+                    ok_type: ValueType::S32, // Default ok type
+                    err_type,
+                    value: Err(Box::new(val)),
+                }
+            }
         }
     }
 }
 
 impl<T: TryFrom<Value, Error = ConversionError>, E: TryFrom<Value, Error = ConversionError>>
-    TryFrom<Value> for Result<T, E>
+    TryFrom<Value> for core::result::Result<T, E>
 {
     type Error = ConversionError;
-    fn try_from(v: Value) -> Result<Self, Self::Error> {
+    fn try_from(v: Value) -> core::result::Result<Self, Self::Error> {
         match v {
-            Value::Variant { tag: 0, payload } => {
-                let payload = payload.ok_or(ConversionError::MissingPayload)?;
-                let value = T::try_from(*payload)
+            Value::Result { value: Ok(inner), .. } => {
+                let value = T::try_from(*inner)
                     .map_err(|e| ConversionError::PayloadError(Box::new(e)))?;
                 Ok(Ok(value))
             }
-            Value::Variant { tag: 1, payload } => {
-                let payload = payload.ok_or(ConversionError::MissingPayload)?;
-                let value = E::try_from(*payload)
+            Value::Result { value: Err(inner), .. } => {
+                let value = E::try_from(*inner)
+                    .map_err(|e| ConversionError::PayloadError(Box::new(e)))?;
+                Ok(Err(value))
+            }
+            // Also support legacy variant encoding for backwards compatibility
+            Value::Variant { tag: 0, payload, .. } if !payload.is_empty() => {
+                let value = T::try_from(payload.into_iter().next().unwrap())
+                    .map_err(|e| ConversionError::PayloadError(Box::new(e)))?;
+                Ok(Ok(value))
+            }
+            Value::Variant { tag: 1, payload, .. } if !payload.is_empty() => {
+                let value = E::try_from(payload.into_iter().next().unwrap())
                     .map_err(|e| ConversionError::PayloadError(Box::new(e)))?;
                 Ok(Err(value))
             }

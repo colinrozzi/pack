@@ -1,4 +1,4 @@
-use composite::abi::{decode, encode, GraphBuffer, Node, NodeKind, Value};
+use composite::abi::{decode, encode, GraphBuffer, Node, NodeKind, Value, ValueType};
 
 #[test]
 fn roundtrip_primitives() {
@@ -28,11 +28,17 @@ fn roundtrip_primitives() {
 
 #[test]
 fn roundtrip_nested_values() {
-    let value = Value::List(vec![
-        Value::String("a".to_string()),
-        Value::Tuple(vec![Value::S64(1), Value::S64(2)]),
-        Value::Option(Some(Box::new(Value::Bool(false)))),
-    ]);
+    let value = Value::List {
+        elem_type: ValueType::String,
+        items: vec![
+            Value::String("a".to_string()),
+            Value::Tuple(vec![Value::S64(1), Value::S64(2)]),
+            Value::Option {
+                inner_type: ValueType::Bool,
+                value: Some(Box::new(Value::Bool(false))),
+            },
+        ],
+    };
 
     let bytes = encode(&value).expect("encode");
     let decoded = decode(&bytes).expect("decode");
@@ -42,8 +48,10 @@ fn roundtrip_nested_values() {
 #[test]
 fn roundtrip_variant() {
     let value = Value::Variant {
+        type_name: "test".to_string(),
+        case_name: "case2".to_string(),
         tag: 2,
-        payload: Some(Box::new(Value::String("payload".to_string()))),
+        payload: vec![Value::String("payload".to_string())],
     };
 
     let bytes = encode(&value).expect("encode");

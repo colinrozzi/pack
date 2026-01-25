@@ -31,7 +31,7 @@
 pub extern crate alloc;
 
 // Re-export the macros
-pub use composite_guest_macros::{export, import, wit};
+pub use composite_guest_macros::{export, import, import_from, wit};
 
 // Re-export useful types from composite-abi
 pub use composite_abi::{decode, encode, ConversionError, Value};

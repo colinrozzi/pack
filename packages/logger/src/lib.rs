@@ -49,8 +49,8 @@ fn process(value: Value) -> Value {
             host_log("process: got String value");
             host_log(s);
         }
-        Value::List(_) => host_log("process: got List value"),
-        Value::Record(_) => host_log("process: got Record value"),
+        Value::List { .. } => host_log("process: got List value"),
+        Value::Record { .. } => host_log("process: got Record value"),
         Value::Variant { .. } => host_log("process: got Variant value"),
         _ => host_log("process: got other value type"),
     }
@@ -76,21 +76,28 @@ pub extern "C" fn test_alloc(size: i32) -> i32 {
 fn transform_value(value: Value) -> Value {
     match value {
         Value::S64(n) => Value::S64(n * 2),
-        Value::List(items) => Value::List(items.into_iter().map(transform_value).collect()),
-        Value::Tuple(items) => Value::Tuple(items.into_iter().map(transform_value).collect()),
-        Value::Option(Some(inner)) => {
-            Value::Option(Some(Box::new(transform_value(*inner))))
-        }
-        Value::Variant { tag, payload } => Value::Variant {
-            tag,
-            payload: payload.map(|p| Box::new(transform_value(*p))),
+        Value::List { elem_type, items } => Value::List {
+            elem_type,
+            items: items.into_iter().map(transform_value).collect(),
         },
-        Value::Record(fields) => Value::Record(
-            fields
+        Value::Tuple(items) => Value::Tuple(items.into_iter().map(transform_value).collect()),
+        Value::Option { inner_type, value: Some(inner) } => Value::Option {
+            inner_type,
+            value: Some(Box::new(transform_value(*inner))),
+        },
+        Value::Variant { type_name, case_name, tag, payload } => Value::Variant {
+            type_name,
+            case_name,
+            tag,
+            payload: payload.into_iter().map(transform_value).collect(),
+        },
+        Value::Record { type_name, fields } => Value::Record {
+            type_name,
+            fields: fields
                 .into_iter()
                 .map(|(name, val)| (name, transform_value(val)))
                 .collect(),
-        ),
+        },
         other => other,
     }
 }

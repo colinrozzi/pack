@@ -1,17 +1,25 @@
 //! Test wisp result parameter type decoding with composite runtime
 
-use composite::abi::Value;
+use composite::abi::{Value, ValueType};
 use composite::Runtime;
 
 const WISP_MODULE_PATH: &str = "/home/colin/work/wisp/examples/result-param-test.wasm";
 
-// Result is represented as Variant with tag 0 = Ok, tag 1 = Err
+// Result<s32, s32> using the proper Result value type
 fn ok_value(v: Value) -> Value {
-    Value::Variant { tag: 0, payload: Some(Box::new(v)) }
+    Value::Result {
+        ok_type: ValueType::S32,
+        err_type: ValueType::S32,
+        value: Ok(Box::new(v)),
+    }
 }
 
 fn err_value(v: Value) -> Value {
-    Value::Variant { tag: 1, payload: Some(Box::new(v)) }
+    Value::Result {
+        ok_type: ValueType::S32,
+        err_type: ValueType::S32,
+        value: Err(Box::new(v)),
+    }
 }
 
 #[test]

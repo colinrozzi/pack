@@ -25,9 +25,8 @@
 //! assert_eq!(result, Value::S64(11)); // (5 * 2) + 1
 //! ```
 
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use crate::abi::{decode, encode, Value};
 use crate::runtime::{
@@ -117,7 +116,7 @@ impl CompositionBuilder {
         }
 
         // Shared registry for cross-package calls
-        let registry: Rc<RefCell<PackageRegistry>> = Rc::new(RefCell::new(PackageRegistry {
+        let registry: Arc<Mutex<PackageRegistry>> = Arc::new(Mutex::new(PackageRegistry {
             packages: HashMap::new(),
         }));
 
@@ -147,10 +146,10 @@ impl CompositionBuilder {
                 .instantiate(&mut store, module)
                 .map_err(|e| RuntimeError::WasmError(e.to_string()))?;
 
-            registry.borrow_mut().packages.insert(
+            registry.lock().unwrap().packages.insert(
                 pkg.name.clone(),
                 PackageEntry {
-                    store: Rc::new(RefCell::new(UntypedStore::Unit(store))),
+                    store: Arc::new(Mutex::new(UntypedStore::Unit(store))),
                     instance,
                 },
             );
@@ -168,7 +167,7 @@ impl CompositionBuilder {
             for wiring in &pkg.imports {
                 let source_pkg = wiring.source_package.clone();
                 let source_fn = wiring.source_function.clone();
-                let reg = Rc::clone(&registry);
+                let reg = Arc::clone(&registry);
 
                 linker
                     .func_wrap(
@@ -196,7 +195,7 @@ impl CompositionBuilder {
             }
 
             let state = ComposedState {
-                _registry: Rc::clone(&registry),
+                _registry: Arc::clone(&registry),
             };
             let mut store = Store::new(&self.engine, state);
 
@@ -205,10 +204,10 @@ impl CompositionBuilder {
                 .map_err(|e| RuntimeError::WasmError(e.to_string()))?;
 
             // Add to registry (consumers can also be called)
-            registry.borrow_mut().packages.insert(
+            registry.lock().unwrap().packages.insert(
                 pkg.name.clone(),
                 PackageEntry {
-                    store: Rc::new(RefCell::new(UntypedStore::Composed(store))),
+                    store: Arc::new(Mutex::new(UntypedStore::Composed(store))),
                     instance,
                 },
             );
@@ -224,7 +223,7 @@ impl CompositionBuilder {
 /// Handle a cross-package call
 fn cross_package_call(
     caller: &mut Caller<'_, ComposedState>,
-    registry: &Rc<RefCell<PackageRegistry>>,
+    registry: &Arc<Mutex<PackageRegistry>>,
     source_pkg: &str,
     source_fn: &str,
     in_ptr: i32,
@@ -243,18 +242,24 @@ fn cross_package_call(
         return -1;
     }
 
-    // Call the source package
-    let result = {
-        let reg = registry.borrow();
+    // Look up the source package and get an Arc to its store
+    // Important: release the registry lock before calling into WASM
+    let (store_arc, instance) = {
+        let reg = registry.lock().unwrap();
         let source = match reg.packages.get(source_pkg) {
             Some(p) => p,
             None => return -1,
         };
+        (Arc::clone(&source.store), source.instance.clone())
+    };
+    // Registry lock released here
 
-        let mut store_guard = source.store.borrow_mut();
+    // Call the source package
+    let result = {
+        let mut store_guard = store_arc.lock().unwrap();
 
         // Write input to source's memory
-        let src_memory = match store_guard.get_memory(&source.instance) {
+        let src_memory = match store_guard.get_memory(&instance) {
             Some(m) => m,
             None => return -1,
         };
@@ -267,7 +272,7 @@ fn cross_package_call(
         }
 
         // Call the source function
-        let func = match store_guard.get_typed_func(&source.instance, source_fn) {
+        let func = match store_guard.get_typed_func(&instance, source_fn) {
             Some(f) => f,
             None => return -1,
         };
@@ -318,7 +323,7 @@ impl Default for CompositionBuilder {
 }
 
 struct ComposedState {
-    _registry: Rc<RefCell<PackageRegistry>>,
+    _registry: Arc<Mutex<PackageRegistry>>,
 }
 
 struct PackageRegistry {
@@ -326,7 +331,7 @@ struct PackageRegistry {
 }
 
 struct PackageEntry {
-    store: Rc<RefCell<UntypedStore>>,
+    store: Arc<Mutex<UntypedStore>>,
     instance: wasmtime::Instance,
 }
 
@@ -399,7 +404,7 @@ impl UntypedStore {
 /// A built composition ready for execution.
 pub struct BuiltComposition {
     _engine: Engine,
-    registry: Rc<RefCell<PackageRegistry>>,
+    registry: Arc<Mutex<PackageRegistry>>,
 }
 
 impl BuiltComposition {
@@ -410,18 +415,24 @@ impl BuiltComposition {
         function: &str,
         input: &Value,
     ) -> Result<Value, RuntimeError> {
-        let reg = self.registry.borrow();
-        let pkg = reg.packages.get(package).ok_or_else(|| {
-            RuntimeError::ModuleNotFound(format!("Package '{}' not found", package))
-        })?;
+        // Look up package and clone Arc references before releasing lock
+        // This is important to avoid deadlock when WASM calls back into registry
+        let (store_arc, instance) = {
+            let reg = self.registry.lock().unwrap();
+            let pkg = reg.packages.get(package).ok_or_else(|| {
+                RuntimeError::ModuleNotFound(format!("Package '{}' not found", package))
+            })?;
+            (Arc::clone(&pkg.store), pkg.instance.clone())
+        };
+        // Registry lock released here
 
-        let mut store = pkg.store.borrow_mut();
+        let mut store = store_arc.lock().unwrap();
 
         // Encode input
         let input_bytes = encode(input).map_err(|e| RuntimeError::AbiError(e.to_string()))?;
 
         // Get memory and write input
-        let memory = store.get_memory(&pkg.instance).ok_or_else(|| {
+        let memory = store.get_memory(&instance).ok_or_else(|| {
             RuntimeError::MemoryError("No memory export".into())
         })?;
 
@@ -430,7 +441,7 @@ impl BuiltComposition {
             .map_err(|_| RuntimeError::MemoryError("Failed to write input".into()))?;
 
         // Get and call the function
-        let func = store.get_typed_func(&pkg.instance, function).ok_or_else(|| {
+        let func = store.get_typed_func(&instance, function).ok_or_else(|| {
             RuntimeError::FunctionNotFound(function.to_string())
         })?;
 
@@ -458,7 +469,7 @@ impl BuiltComposition {
 
     /// List all packages in the composition.
     pub fn packages(&self) -> Vec<String> {
-        self.registry.borrow().packages.keys().cloned().collect()
+        self.registry.lock().unwrap().packages.keys().cloned().collect()
     }
 }
 

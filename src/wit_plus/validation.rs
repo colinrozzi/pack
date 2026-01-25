@@ -135,6 +135,8 @@ fn validate_type(
         Type::List(inner) => {
             expect_kind(index, node.kind, NodeKind::List)?;
             let mut cursor = PayloadCursor::new(&node.payload);
+            // v2 format: [elem_type:type_tag*, count:u32, child_indices:u32*]
+            cursor.skip_value_type()?;
             let count = cursor.read_u32()? as usize;
             let mut child_indices = Vec::with_capacity(count);
             for _ in 0..count {
@@ -149,6 +151,8 @@ fn validate_type(
         Type::Option(inner) => {
             expect_kind(index, node.kind, NodeKind::Option)?;
             let mut cursor = PayloadCursor::new(&node.payload);
+            // v2 format: [inner_type:type_tag*, presence:u8, child_index?:u32]
+            cursor.skip_value_type()?;
             let has_value = cursor.read_u8()?;
             let child = if has_value == 1 {
                 Some(cursor.read_u32()?)
@@ -162,8 +166,11 @@ fn validate_type(
             Ok(())
         }
         Type::Result { ok, err } => {
-            expect_kind(index, node.kind, NodeKind::Variant)?;
+            expect_kind(index, node.kind, NodeKind::Result)?;
             let mut cursor = PayloadCursor::new(&node.payload);
+            // v2 format: [ok_type:type_tag*, err_type:type_tag*, tag:u32, has_payload:u8, child_index?:u32]
+            cursor.skip_value_type()?; // ok_type
+            cursor.skip_value_type()?; // err_type
             let tag = cursor.read_u32()?;
             let has_payload = cursor.read_u8()?;
             let child = if has_payload == 1 {
@@ -264,14 +271,14 @@ fn validate_value(
         (Value::F32(_), Type::F32) | (Value::F64(_), Type::F64) => Ok(()),
         (Value::Char(_), Type::Char) => Ok(()),
         (Value::String(_), Type::String) => Ok(()),
-        (Value::List(items), Type::List(inner)) => {
+        (Value::List { items, .. }, Type::List(inner)) => {
             for item in items {
                 validate_value(item, inner, self_name, types)?;
             }
             Ok(())
         }
-        (Value::Option(option), Type::Option(inner)) => {
-            if let Some(item) = option.as_deref() {
+        (Value::Option { value, .. }, Type::Option(inner)) => {
+            if let Some(item) = value.as_deref() {
                 validate_value(item, inner, self_name, types)?;
             }
             Ok(())
@@ -319,7 +326,7 @@ fn validate_value_named(
     match def {
         TypeDef::Alias(_, ty) => validate_value(value, ty, self_name, types),
         TypeDef::Record(record) => match value {
-            Value::Record(fields) => {
+            Value::Record { fields, .. } => {
                 if fields.len() != record.fields.len() {
                     return Err(ValidationError::TypeMismatch {
                         node: 0,
@@ -348,8 +355,9 @@ fn validate_value_named(
             }),
         },
         TypeDef::Variant(variant) => match value {
-            Value::Variant { tag, payload } => {
-                validate_value_variant(*tag, payload.as_deref(), def, types)?;
+            Value::Variant { tag, payload, .. } => {
+                let payload_opt = payload.first();
+                validate_value_variant(*tag, payload_opt, def, types)?;
                 Ok(())
             }
             _ => Err(ValidationError::TypeMismatch {
@@ -359,7 +367,7 @@ fn validate_value_named(
             }),
         },
         TypeDef::Enum(enum_def) => match value {
-            Value::Variant { tag, payload } => {
+            Value::Variant { tag, payload, .. } => {
                 if *tag >= enum_def.cases.len() {
                     return Err(ValidationError::VariantTagOutOfRange {
                         node: 0,
@@ -367,7 +375,7 @@ fn validate_value_named(
                         max: enum_def.cases.len(),
                     });
                 }
-                if payload.is_some() {
+                if !payload.is_empty() {
                     return Err(ValidationError::VariantPayloadMismatch {
                         node: 0,
                         tag: *tag as u32,
@@ -475,7 +483,16 @@ fn validate_record(
     let node = &buffer.nodes[index as usize];
     expect_kind(index, node.kind, NodeKind::Record)?;
     let mut cursor = PayloadCursor::new(&node.payload);
+    // v2 format: [type_name_len:u32, type_name:utf8, field_count:u32, field_names:(len:u32, name:utf8)*, child_indices:u32*]
+    let type_name_len = cursor.read_u32()? as usize;
+    cursor.read_bytes(type_name_len)?; // skip type_name
     let count = cursor.read_u32()? as usize;
+    // Skip field names
+    for _ in 0..count {
+        let name_len = cursor.read_u32()? as usize;
+        cursor.read_bytes(name_len)?;
+    }
+    // Read child indices
     let mut child_indices = Vec::with_capacity(count);
     for _ in 0..count {
         child_indices.push(cursor.read_u32()?);
@@ -504,13 +521,17 @@ fn validate_variant(
     let node = &buffer.nodes[index as usize];
     expect_kind(index, node.kind, NodeKind::Variant)?;
     let mut cursor = PayloadCursor::new(&node.payload);
+    // v2 format: [type_name_len:u32, type_name:utf8, case_name_len:u32, case_name:utf8, tag:u32, payload_count:u32, child_indices:u32*]
+    let type_name_len = cursor.read_u32()? as usize;
+    cursor.read_bytes(type_name_len)?; // skip type_name
+    let case_name_len = cursor.read_u32()? as usize;
+    cursor.read_bytes(case_name_len)?; // skip case_name
     let tag = cursor.read_u32()?;
-    let has_payload = cursor.read_u8()?;
-    let child = if has_payload == 1 {
-        Some(cursor.read_u32()?)
-    } else {
-        None
-    };
+    let payload_count = cursor.read_u32()? as usize;
+    let mut children = Vec::with_capacity(payload_count);
+    for _ in 0..payload_count {
+        children.push(cursor.read_u32()?);
+    }
     cursor.finish(index)?;
 
     if tag as usize >= variant.cases.len() {
@@ -522,9 +543,9 @@ fn validate_variant(
     }
 
     let case = &variant.cases[tag as usize];
-    match (&case.payload, child) {
+    match (&case.payload, children.first()) {
         (None, None) => Ok(()),
-        (Some(payload_ty), Some(child)) => {
+        (Some(payload_ty), Some(&child)) => {
             validate_type(buffer, child, payload_ty, Some(&variant.name), types, assigned)
         }
         _ => Err(ValidationError::VariantPayloadMismatch { node: index, tag }),
@@ -539,8 +560,16 @@ fn validate_enum(
     let node = &buffer.nodes[index as usize];
     expect_kind(index, node.kind, NodeKind::Variant)?;
     let mut cursor = PayloadCursor::new(&node.payload);
+    // v2 format: [type_name_len:u32, type_name:utf8, case_name_len:u32, case_name:utf8, tag:u32, payload_count:u32, child_indices:u32*]
+    let type_name_len = cursor.read_u32()? as usize;
+    cursor.read_bytes(type_name_len)?; // skip type_name
+    let case_name_len = cursor.read_u32()? as usize;
+    cursor.read_bytes(case_name_len)?; // skip case_name
     let tag = cursor.read_u32()?;
-    let has_payload = cursor.read_u8()?;
+    let payload_count = cursor.read_u32()? as usize;
+    for _ in 0..payload_count {
+        cursor.read_u32()?; // skip child indices
+    }
     cursor.finish(index)?;
     if tag as usize >= enum_def.cases.len() {
         return Err(ValidationError::VariantTagOutOfRange {
@@ -549,7 +578,7 @@ fn validate_enum(
             max: enum_def.cases.len(),
         });
     }
-    if has_payload != 0 {
+    if payload_count != 0 {
         return Err(ValidationError::VariantPayloadMismatch { node: index, tag });
     }
     Ok(())
@@ -633,6 +662,66 @@ impl<'a> PayloadCursor<'a> {
             )))
         } else {
             Ok(())
+        }
+    }
+
+    /// Skip over a type tag in CGRF v2 format.
+    /// Type tags are recursive: simple types are 1 byte, compound types include nested type tags.
+    fn skip_value_type(&mut self) -> Result<(), ValidationError> {
+        const TYPE_BOOL: u8 = 0x01;
+        const TYPE_S32: u8 = 0x02;
+        const TYPE_S64: u8 = 0x03;
+        const TYPE_F32: u8 = 0x04;
+        const TYPE_F64: u8 = 0x05;
+        const TYPE_STRING: u8 = 0x06;
+        const TYPE_LIST: u8 = 0x07;
+        const TYPE_VARIANT: u8 = 0x08;
+        const TYPE_RECORD: u8 = 0x09;
+        const TYPE_OPTION: u8 = 0x0A;
+        const TYPE_TUPLE: u8 = 0x0B;
+        const TYPE_U8: u8 = 0x0C;
+        const TYPE_U16: u8 = 0x0D;
+        const TYPE_U32: u8 = 0x0E;
+        const TYPE_U64: u8 = 0x0F;
+        const TYPE_S8: u8 = 0x10;
+        const TYPE_S16: u8 = 0x11;
+        const TYPE_CHAR: u8 = 0x12;
+        const TYPE_FLAGS: u8 = 0x13;
+        const TYPE_RESULT: u8 = 0x14;
+
+        let tag = self.read_u8()?;
+        match tag {
+            TYPE_BOOL | TYPE_U8 | TYPE_U16 | TYPE_U32 | TYPE_U64 | TYPE_S8 | TYPE_S16
+            | TYPE_S32 | TYPE_S64 | TYPE_F32 | TYPE_F64 | TYPE_CHAR | TYPE_STRING | TYPE_FLAGS => {
+                // Simple types: just the tag byte
+                Ok(())
+            }
+            TYPE_LIST | TYPE_OPTION => {
+                // Compound with single nested type
+                self.skip_value_type()
+            }
+            TYPE_RESULT => {
+                // Result has ok_type and err_type
+                self.skip_value_type()?;
+                self.skip_value_type()
+            }
+            TYPE_RECORD | TYPE_VARIANT => {
+                // Record/Variant: tag + name_len + name
+                let len = self.read_u32()? as usize;
+                self.read_bytes(len)?;
+                Ok(())
+            }
+            TYPE_TUPLE => {
+                // Tuple: tag + count + elem_types
+                let count = self.read_u32()? as usize;
+                for _ in 0..count {
+                    self.skip_value_type()?;
+                }
+                Ok(())
+            }
+            _ => Err(ValidationError::InvalidEncoding(format!(
+                "Unknown type tag: {tag:#x}"
+            ))),
         }
     }
 }
