@@ -1,0 +1,23 @@
+[package]
+name = "adder"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.36"
+
+[package.metadata.component]
+package = "process:adder"
+
+[package.metadata.component.bindings]
+generate = true
+
+[package.metadata.component.target]
+path = "../wit/adder.wit"
+world = "adder"
+
+[package.metadata.component.target.dependencies]
+"process:doubler" = { path = "../wit/doubler.wit" }

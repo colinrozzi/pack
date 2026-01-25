@@ -1,0 +1,13 @@
+package process:adder;
+
+/// Interface for the final computation
+interface compute {
+    /// Process a number: double it, then add 1
+    process: func(n: s64) -> s64;
+}
+
+/// World for the adder component - imports doubler, exports compute
+world adder {
+    import process:doubler/math;
+    export compute;
+}

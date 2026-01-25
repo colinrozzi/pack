@@ -1,0 +1,12 @@
+package process:doubler;
+
+/// Interface for doubling numbers
+interface math {
+    /// Double a number
+    double: func(n: s64) -> s64;
+}
+
+/// World for the doubler component
+world doubler {
+    export math;
+}
