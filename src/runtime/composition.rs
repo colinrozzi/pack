@@ -30,7 +30,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::abi::{decode, encode, Value};
 use crate::runtime::{
-    RuntimeError, INPUT_BUFFER_OFFSET, OUTPUT_BUFFER_CAPACITY, OUTPUT_BUFFER_OFFSET,
+    RuntimeError, INPUT_BUFFER_OFFSET, RESULT_PTR_OFFSET, RESULT_LEN_OFFSET,
 };
 use wasmtime::{Caller, Engine, Linker, Module, Store};
 
@@ -220,7 +220,16 @@ impl CompositionBuilder {
     }
 }
 
-/// Handle a cross-package call
+/// Handle a cross-package call using the guest-allocates ABI.
+///
+/// # ABI
+///
+/// The source function has signature:
+/// ```text
+/// fn(in_ptr: i32, in_len: i32, out_ptr_ptr: i32, out_len_ptr: i32) -> i32
+/// ```
+///
+/// Returns 0 on success (output ptr/len written to slots), -1 on error.
 fn cross_package_call(
     caller: &mut Caller<'_, ComposedState>,
     registry: &Arc<Mutex<PackageRegistry>>,
@@ -228,8 +237,8 @@ fn cross_package_call(
     source_fn: &str,
     in_ptr: i32,
     in_len: i32,
-    out_ptr: i32,
-    out_cap: i32,
+    out_ptr_ptr: i32,
+    out_len_ptr: i32,
 ) -> i32 {
     // Read input from caller's memory
     let memory = match caller.get_export("memory") {
@@ -254,7 +263,7 @@ fn cross_package_call(
     };
     // Registry lock released here
 
-    // Call the source package
+    // Call the source package with the new ABI
     let result = {
         let mut store_guard = store_arc.lock().unwrap();
 
@@ -271,49 +280,87 @@ fn cross_package_call(
             return -1;
         }
 
-        // Call the source function
+        // Call the source function with guest-allocates ABI
         let func = match store_guard.get_typed_func(&instance, source_fn) {
             Some(f) => f,
             None => return -1,
         };
 
-        let out_len = match store_guard.call_func(
+        let status = match store_guard.call_func(
             &func,
             INPUT_BUFFER_OFFSET as i32,
             input_bytes.len() as i32,
-            OUTPUT_BUFFER_OFFSET as i32,
-            OUTPUT_BUFFER_CAPACITY as i32,
+            RESULT_PTR_OFFSET as i32,
+            RESULT_LEN_OFFSET as i32,
         ) {
-            Ok(len) => len,
+            Ok(s) => s,
             Err(_) => return -1,
         };
 
-        if out_len < 0 {
+        if status != 0 {
+            // Error occurred - read error message from slots and propagate
+            // For now, just return -1
             return -1;
         }
 
-        // Read output from source
-        let mut output_bytes = vec![0u8; out_len as usize];
+        // Read output pointer and length from the slots
+        let mut ptr_bytes = [0u8; 4];
+        let mut len_bytes = [0u8; 4];
+        if store_guard.read_memory(&src_memory, RESULT_PTR_OFFSET, &mut ptr_bytes).is_err() {
+            return -1;
+        }
+        if store_guard.read_memory(&src_memory, RESULT_LEN_OFFSET, &mut len_bytes).is_err() {
+            return -1;
+        }
+
+        let out_ptr = i32::from_le_bytes(ptr_bytes) as usize;
+        let out_len = i32::from_le_bytes(len_bytes) as usize;
+
+        // Read output from the guest-allocated buffer
+        let mut output_bytes = vec![0u8; out_len];
         if store_guard
-            .read_memory(&src_memory, OUTPUT_BUFFER_OFFSET, &mut output_bytes)
+            .read_memory(&src_memory, out_ptr, &mut output_bytes)
             .is_err()
         {
             return -1;
         }
 
+        // Free the guest's buffer by calling __pack_free
+        if let Some(free_func) = store_guard.get_free_func(&instance) {
+            let _ = store_guard.call_free(&free_func, out_ptr as i32, out_len as i32);
+        }
+
         output_bytes
     };
 
-    // Write result back to caller's memory
-    if result.len() > out_cap as usize {
+    // The caller also uses guest-allocates ABI, so we need to allocate in caller's memory
+    // For cross-package calls, the caller is also a guest, so we write to caller's result slots
+    // Actually, the caller provided out_ptr_ptr and out_len_ptr, so we need to allocate
+    // in the caller's memory and write the ptr/len there.
+
+    // For simplicity in cross-package calls, we'll allocate in caller's heap
+    // This requires the caller to have __pack_alloc exported, which may not exist.
+    //
+    // Alternative: Use a fixed buffer region in caller for cross-package results.
+    // Let's use the same RESULT region as a data buffer for now (after the ptr/len slots).
+    const CROSS_CALL_BUFFER_OFFSET: usize = RESULT_LEN_OFFSET + 4;
+
+    if memory.write(&mut *caller, CROSS_CALL_BUFFER_OFFSET, &result).is_err() {
         return -1;
     }
 
-    if memory.write(&mut *caller, out_ptr as usize, &result).is_err() {
+    // Write the buffer location to caller's result slots
+    let result_ptr = CROSS_CALL_BUFFER_OFFSET as i32;
+    let result_len = result.len() as i32;
+
+    if memory.write(&mut *caller, out_ptr_ptr as usize, &result_ptr.to_le_bytes()).is_err() {
+        return -1;
+    }
+    if memory.write(&mut *caller, out_len_ptr as usize, &result_len.to_le_bytes()).is_err() {
         return -1;
     }
 
-    result.len() as i32
+    0 // Success
 }
 
 impl Default for CompositionBuilder {
@@ -386,6 +433,16 @@ impl UntypedStore {
         }
     }
 
+    fn get_free_func(
+        &mut self,
+        instance: &wasmtime::Instance,
+    ) -> Option<wasmtime::TypedFunc<(i32, i32), ()>> {
+        match self {
+            UntypedStore::Unit(store) => instance.get_typed_func(&mut *store, "__pack_free").ok(),
+            UntypedStore::Composed(store) => instance.get_typed_func(&mut *store, "__pack_free").ok(),
+        }
+    }
+
     fn call_func(
         &mut self,
         func: &wasmtime::TypedFunc<(i32, i32, i32, i32), i32>,
@@ -397,6 +454,18 @@ impl UntypedStore {
         match self {
             UntypedStore::Unit(store) => func.call(&mut *store, (a, b, c, d)).map_err(|_| ()),
             UntypedStore::Composed(store) => func.call(&mut *store, (a, b, c, d)).map_err(|_| ()),
+        }
+    }
+
+    fn call_free(
+        &mut self,
+        func: &wasmtime::TypedFunc<(i32, i32), ()>,
+        ptr: i32,
+        len: i32,
+    ) -> Result<(), ()> {
+        match self {
+            UntypedStore::Unit(store) => func.call(&mut *store, (ptr, len)).map_err(|_| ()),
+            UntypedStore::Composed(store) => func.call(&mut *store, (ptr, len)).map_err(|_| ()),
         }
     }
 }
@@ -440,29 +509,65 @@ impl BuiltComposition {
             .write_memory(&memory, INPUT_BUFFER_OFFSET, &input_bytes)
             .map_err(|_| RuntimeError::MemoryError("Failed to write input".into()))?;
 
-        // Get and call the function
+        // Get and call the function with guest-allocates ABI
         let func = store.get_typed_func(&instance, function).ok_or_else(|| {
             RuntimeError::FunctionNotFound(function.to_string())
         })?;
 
-        let out_len = store
+        let status = store
             .call_func(&func,
                 INPUT_BUFFER_OFFSET as i32,
                 input_bytes.len() as i32,
-                OUTPUT_BUFFER_OFFSET as i32,
-                OUTPUT_BUFFER_CAPACITY as i32,
+                RESULT_PTR_OFFSET as i32,
+                RESULT_LEN_OFFSET as i32,
             )
             .map_err(|_| RuntimeError::WasmError("Function call failed".into()))?;
 
-        if out_len < 0 {
+        if status != 0 {
+            // Error - read error message from result slots
+            let mut ptr_bytes = [0u8; 4];
+            let mut len_bytes = [0u8; 4];
+            let _ = store.read_memory(&memory, RESULT_PTR_OFFSET, &mut ptr_bytes);
+            let _ = store.read_memory(&memory, RESULT_LEN_OFFSET, &mut len_bytes);
+            let err_ptr = i32::from_le_bytes(ptr_bytes) as usize;
+            let err_len = i32::from_le_bytes(len_bytes) as usize;
+
+            let mut err_bytes = vec![0u8; err_len];
+            if store.read_memory(&memory, err_ptr, &mut err_bytes).is_ok() {
+                if let Ok(err_msg) = String::from_utf8(err_bytes) {
+                    // Free the error buffer
+                    if let Some(free_func) = store.get_free_func(&instance) {
+                        let _ = store.call_free(&free_func, err_ptr as i32, err_len as i32);
+                    }
+                    return Err(RuntimeError::WasmError(err_msg));
+                }
+            }
             return Err(RuntimeError::WasmError("Function returned error".into()));
         }
 
-        // Read output
-        let mut output_bytes = vec![0u8; out_len as usize];
+        // Read output pointer and length from result slots
+        let mut ptr_bytes = [0u8; 4];
+        let mut len_bytes = [0u8; 4];
         store
-            .read_memory(&memory, OUTPUT_BUFFER_OFFSET, &mut output_bytes)
+            .read_memory(&memory, RESULT_PTR_OFFSET, &mut ptr_bytes)
+            .map_err(|_| RuntimeError::MemoryError("Failed to read result ptr".into()))?;
+        store
+            .read_memory(&memory, RESULT_LEN_OFFSET, &mut len_bytes)
+            .map_err(|_| RuntimeError::MemoryError("Failed to read result len".into()))?;
+
+        let out_ptr = i32::from_le_bytes(ptr_bytes) as usize;
+        let out_len = i32::from_le_bytes(len_bytes) as usize;
+
+        // Read output from guest-allocated buffer
+        let mut output_bytes = vec![0u8; out_len];
+        store
+            .read_memory(&memory, out_ptr, &mut output_bytes)
             .map_err(|_| RuntimeError::MemoryError("Failed to read output".into()))?;
+
+        // Free the guest's buffer
+        if let Some(free_func) = store.get_free_func(&instance) {
+            let _ = store.call_free(&free_func, out_ptr as i32, out_len as i32);
+        }
 
         decode(&output_bytes).map_err(|e| RuntimeError::AbiError(e.to_string()))
     }

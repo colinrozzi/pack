@@ -35,11 +35,19 @@ use wasmtime::{Caller, Engine, Linker};
 /// Default input buffer offset (0-16KB)
 pub const INPUT_BUFFER_OFFSET: usize = 0;
 
-/// Default output buffer offset (16KB)
+/// Offset for result pointer slot (4 bytes at 16KB)
+/// Used by new guest-allocates ABI: guest writes output ptr here
+pub const RESULT_PTR_OFFSET: usize = 16 * 1024;
+
+/// Offset for result length slot (4 bytes at 16KB + 4)
+/// Used by new guest-allocates ABI: guest writes output len here
+pub const RESULT_LEN_OFFSET: usize = 16 * 1024 + 4;
+
+// Legacy constants - kept for backward compatibility during transition
+/// Default output buffer offset (16KB) - DEPRECATED: use RESULT_PTR_OFFSET
 pub const OUTPUT_BUFFER_OFFSET: usize = 16 * 1024;
 
-/// Default output buffer capacity (32KB)
-/// This leaves room for both input (0-16KB) and output (16-48KB) with headroom
+/// Default output buffer capacity (32KB) - DEPRECATED: guest now allocates
 pub const OUTPUT_BUFFER_CAPACITY: usize = 32 * 1024;
 
 // ============================================================================

@@ -304,16 +304,18 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
                 #fn_body
 
                 // The exported wrapper with WASM calling convention
+                // ABI: guest allocates output, writes ptr/len to provided slots
+                // Returns 0 = success, -1 = error (error message in ptr/len)
                 #[export_name = #custom_name]
                 pub extern "C" fn #wrapper_fn_name(
                     in_ptr: i32,
                     in_len: i32,
-                    out_ptr: i32,
-                    out_cap: i32,
+                    out_ptr_ptr: i32,
+                    out_len_ptr: i32,
                 ) -> i32 {
                     // Use the guest runtime to handle the boilerplate
                     pack_guest::__export_impl(
-                        in_ptr, in_len, out_ptr, out_cap,
+                        in_ptr, in_len, out_ptr_ptr, out_len_ptr,
                         |value| {
                             #call_body
                         }
@@ -329,16 +331,18 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
                 #fn_body
 
                 // The exported wrapper with WASM calling convention
+                // ABI: guest allocates output, writes ptr/len to provided slots
+                // Returns 0 = success, -1 = error (error message in ptr/len)
                 #[no_mangle]
                 pub extern "C" fn #fn_name(
                     in_ptr: i32,
                     in_len: i32,
-                    out_ptr: i32,
-                    out_cap: i32,
+                    out_ptr_ptr: i32,
+                    out_len_ptr: i32,
                 ) -> i32 {
                     // Use the guest runtime to handle the boilerplate
                     pack_guest::__export_impl(
-                        in_ptr, in_len, out_ptr, out_cap,
+                        in_ptr, in_len, out_ptr_ptr, out_len_ptr,
                         |value| {
                             #call_body
                         }

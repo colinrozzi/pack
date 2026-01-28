@@ -47,20 +47,53 @@ pub use alloc as __alloc;
 /// Internal implementation for the export macro.
 ///
 /// This function handles the boilerplate of reading input, decoding,
-/// calling the user's function, encoding output, and writing it back.
+/// calling the user's function, encoding output, and returning a pointer to it.
+///
+/// # ABI
+///
+/// ```text
+/// fn export(in_ptr: i32, in_len: i32, out_ptr_ptr: i32, out_len_ptr: i32) -> i32
+/// ```
+///
+/// - `in_ptr`, `in_len`: Input data location (Graph ABI encoded)
+/// - `out_ptr_ptr`: Location where guest writes output pointer
+/// - `out_len_ptr`: Location where guest writes output length
+/// - Returns: 0 = success, -1 = error
+///
+/// On success, the output ptr/len point to the Graph ABI encoded result.
+/// On error, the output ptr/len point to a UTF-8 error message.
+///
+/// The host must call `__pack_free(ptr, len)` to free the output buffer.
 ///
 /// **Do not call this directly** - use the `#[export]` macro instead.
 #[doc(hidden)]
 pub fn __export_impl<F>(
     in_ptr: i32,
     in_len: i32,
-    out_ptr: i32,
-    out_cap: i32,
+    out_ptr_ptr: i32,
+    out_len_ptr: i32,
     f: F,
 ) -> i32
 where
     F: FnOnce(Value) -> Result<Value, &'static str>,
 {
+    // Helper to write error and return -1
+    let write_error = |msg: &str| -> i32 {
+        let bytes = msg.as_bytes();
+        let mut buf = alloc::vec::Vec::with_capacity(bytes.len());
+        buf.extend_from_slice(bytes);
+
+        let ptr = buf.as_ptr() as i32;
+        let len = buf.len() as i32;
+        core::mem::forget(buf);
+
+        unsafe {
+            core::ptr::write(out_ptr_ptr as *mut i32, ptr);
+            core::ptr::write(out_len_ptr as *mut i32, len);
+        }
+        -1
+    };
+
     // Read input bytes
     let input_bytes = unsafe {
         let ptr = in_ptr as *const u8;
@@ -71,33 +104,57 @@ where
     // Decode input
     let input_value = match decode(input_bytes) {
         Ok(v) => v,
-        Err(_) => return -1,
+        Err(e) => return write_error(&alloc::format!("decode error: {:?}", e)),
     };
 
     // Call user's function
     let output_value = match f(input_value) {
         Ok(v) => v,
-        Err(_) => return -1,
+        Err(e) => return write_error(e),
     };
 
     // Encode output
     let output_bytes = match encode(&output_value) {
         Ok(b) => b,
-        Err(_) => return -1,
+        Err(e) => return write_error(&alloc::format!("encode error: {:?}", e)),
     };
 
-    // Check capacity
-    if output_bytes.len() > out_cap as usize {
-        return -1;
-    }
+    // Write output pointer and length to the provided slots
+    let ptr = output_bytes.as_ptr() as i32;
+    let len = output_bytes.len() as i32;
 
-    // Write output
+    // Leak the buffer so it stays alive for the host to read
+    core::mem::forget(output_bytes);
+
     unsafe {
-        let dst = out_ptr as *mut u8;
-        core::ptr::copy_nonoverlapping(output_bytes.as_ptr(), dst, output_bytes.len());
+        core::ptr::write(out_ptr_ptr as *mut i32, ptr);
+        core::ptr::write(out_len_ptr as *mut i32, len);
     }
 
-    output_bytes.len() as i32
+    0 // Success
+}
+
+/// Free a buffer allocated by the guest.
+///
+/// The host must call this after reading the output from an export call.
+///
+/// # Safety
+///
+/// The `ptr` and `len` must have been returned from a previous export call.
+/// Calling this with invalid values is undefined behavior.
+#[no_mangle]
+pub extern "C" fn __pack_free(ptr: i32, len: i32) {
+    if ptr == 0 || len == 0 {
+        return;
+    }
+    unsafe {
+        let _ = alloc::vec::Vec::from_raw_parts(
+            ptr as *mut u8,
+            len as usize,
+            len as usize,
+        );
+        // Vec drops here, memory freed
+    }
 }
 
 /// Default output buffer size for imports (32KB)

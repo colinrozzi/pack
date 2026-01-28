@@ -11,6 +11,7 @@ pub use host::{
     AsyncCtx, Ctx, DefaultHostProvider, ErrorHandler, HostFunctionError, HostFunctionErrorKind,
     HostFunctionProvider, HostLinkerBuilder, InterfaceBuilder, LinkerError,
     INPUT_BUFFER_OFFSET, OUTPUT_BUFFER_CAPACITY, OUTPUT_BUFFER_OFFSET,
+    RESULT_PTR_OFFSET, RESULT_LEN_OFFSET,
 };
 pub use interface_check::{
     validate_instance_implements_interface, ExpectedSignature, InterfaceError,
@@ -346,13 +347,14 @@ impl<T: Send> AsyncInstance<T> {
         decode(&bytes).map_err(|e| RuntimeError::AbiError(e.to_string()))
     }
 
-    /// Call a function using the caller-provides-output-buffer convention (async).
+    /// Call a function using the guest-allocates-output convention (async).
     ///
-    /// The WASM function signature is `(in_ptr, in_len, out_ptr, out_cap) -> out_len`:
+    /// The WASM function signature is `(in_ptr, in_len, out_ptr_ptr, out_len_ptr) -> status`:
     /// - Input: in_ptr/in_len point to Graph ABI encoded input value
-    /// - Output: caller provides out_ptr/out_cap buffer, function returns bytes written
+    /// - Output: guest allocates buffer, writes ptr/len to provided slots
+    /// - Returns: 0 on success, -1 on error (error message in ptr/len)
     ///
-    /// Returns -1 on error (buffer too small, decode error, etc.)
+    /// The host must call `__pack_free(ptr, len)` to free the guest's output buffer.
     pub async fn call_with_value_async(
         &mut self,
         name: &str,
@@ -361,37 +363,71 @@ impl<T: Send> AsyncInstance<T> {
     ) -> Result<Value, RuntimeError> {
         let input_len = self.write_value(input_offset, input)?;
 
-        // Use default output buffer location
-        let out_ptr = OUTPUT_BUFFER_OFFSET;
-        let out_cap = OUTPUT_BUFFER_CAPACITY;
-
         let func = self
             .instance
             .get_typed_func::<(i32, i32, i32, i32), i32>(&mut self.store, name)
             .map_err(|e| RuntimeError::FunctionNotFound(e.to_string()))?;
 
-        let out_len = func
+        let status = func
             .call_async(
                 &mut self.store,
                 (
                     input_offset as i32,
                     input_len as i32,
-                    out_ptr as i32,
-                    out_cap as i32,
+                    RESULT_PTR_OFFSET as i32,
+                    RESULT_LEN_OFFSET as i32,
                 ),
             )
             .await
             .map_err(|e| RuntimeError::WasmError(e.to_string()))?;
 
+        // Read result ptr/len from slots
+        let memory = self.get_memory()?;
+        let mut ptr_bytes = [0u8; 4];
+        let mut len_bytes = [0u8; 4];
+        memory.read(&self.store, RESULT_PTR_OFFSET, &mut ptr_bytes)
+            .map_err(|_| RuntimeError::MemoryError("Failed to read result ptr".into()))?;
+        memory.read(&self.store, RESULT_LEN_OFFSET, &mut len_bytes)
+            .map_err(|_| RuntimeError::MemoryError("Failed to read result len".into()))?;
+
+        let out_ptr = i32::from_le_bytes(ptr_bytes) as usize;
+        let out_len = i32::from_le_bytes(len_bytes) as usize;
+
         // Check for error
-        if out_len < 0 {
+        if status != 0 {
+            // Read error message
+            let mut err_bytes = vec![0u8; out_len];
+            memory.read(&self.store, out_ptr, &mut err_bytes)
+                .map_err(|_| RuntimeError::MemoryError("Failed to read error".into()))?;
+
+            // Free the error buffer
+            self.call_pack_free(out_ptr, out_len).await.ok();
+
+            let err_msg = String::from_utf8_lossy(&err_bytes).to_string();
             return Err(RuntimeError::WasmError(format!(
-                "function '{}' returned error code {}",
-                name, out_len
+                "function '{}' returned error: {}",
+                name, err_msg
             )));
         }
 
-        self.read_value(out_ptr, out_len as usize)
+        // Read output value
+        let result = self.read_value(out_ptr, out_len)?;
+
+        // Free the guest's buffer
+        self.call_pack_free(out_ptr, out_len).await.ok();
+
+        Ok(result)
+    }
+
+    /// Call __pack_free to free a guest-allocated buffer (async).
+    async fn call_pack_free(&mut self, ptr: usize, len: usize) -> Result<(), RuntimeError> {
+        if let Ok(free_func) = self.instance.get_typed_func::<(i32, i32), ()>(&mut self.store, "__pack_free") {
+            free_func
+                .call_async(&mut self.store, (ptr as i32, len as i32))
+                .await
+                .map_err(|e| RuntimeError::WasmError(e.to_string()))?;
+        }
+        Ok(())
     }
 
     /// Call an exported function that takes two i32s and returns an i32 (async).
@@ -642,13 +678,14 @@ impl InstanceWithHost {
         decode(&bytes).map_err(|e| RuntimeError::AbiError(e.to_string()))
     }
 
-    /// Call a function using the caller-provides-output-buffer convention.
+    /// Call a function using the guest-allocates-output convention.
     ///
-    /// The WASM function signature is `(in_ptr, in_len, out_ptr, out_cap) -> out_len`:
+    /// The WASM function signature is `(in_ptr, in_len, out_ptr_ptr, out_len_ptr) -> status`:
     /// - Input: in_ptr/in_len point to Graph ABI encoded input value
-    /// - Output: caller provides out_ptr/out_cap buffer, function returns bytes written
+    /// - Output: guest allocates buffer, writes ptr/len to provided slots
+    /// - Returns: 0 on success, -1 on error (error message in ptr/len)
     ///
-    /// Returns -1 on error (buffer too small, decode error, etc.)
+    /// The host must call `__pack_free(ptr, len)` to free the guest's output buffer.
     pub fn call_with_value(
         &mut self,
         name: &str,
@@ -657,36 +694,69 @@ impl InstanceWithHost {
     ) -> Result<Value, RuntimeError> {
         let input_len = self.write_value(input_offset, input)?;
 
-        // Use default output buffer location
-        let out_ptr = OUTPUT_BUFFER_OFFSET;
-        let out_cap = OUTPUT_BUFFER_CAPACITY;
-
         let func = self
             .instance
             .get_typed_func::<(i32, i32, i32, i32), i32>(&mut self.store, name)
             .map_err(|e| RuntimeError::FunctionNotFound(e.to_string()))?;
 
-        let out_len = func
+        let status = func
             .call(
                 &mut self.store,
                 (
                     input_offset as i32,
                     input_len as i32,
-                    out_ptr as i32,
-                    out_cap as i32,
+                    RESULT_PTR_OFFSET as i32,
+                    RESULT_LEN_OFFSET as i32,
                 ),
             )
             .map_err(|e| RuntimeError::WasmError(e.to_string()))?;
 
+        // Read result ptr/len from slots
+        let memory = self.get_memory()?;
+        let mut ptr_bytes = [0u8; 4];
+        let mut len_bytes = [0u8; 4];
+        memory.read(&self.store, RESULT_PTR_OFFSET, &mut ptr_bytes)
+            .map_err(|_| RuntimeError::MemoryError("Failed to read result ptr".into()))?;
+        memory.read(&self.store, RESULT_LEN_OFFSET, &mut len_bytes)
+            .map_err(|_| RuntimeError::MemoryError("Failed to read result len".into()))?;
+
+        let out_ptr = i32::from_le_bytes(ptr_bytes) as usize;
+        let out_len = i32::from_le_bytes(len_bytes) as usize;
+
         // Check for error
-        if out_len < 0 {
+        if status != 0 {
+            // Read error message
+            let mut err_bytes = vec![0u8; out_len];
+            memory.read(&self.store, out_ptr, &mut err_bytes)
+                .map_err(|_| RuntimeError::MemoryError("Failed to read error".into()))?;
+
+            // Free the error buffer
+            self.call_pack_free(out_ptr, out_len).ok();
+
+            let err_msg = String::from_utf8_lossy(&err_bytes).to_string();
             return Err(RuntimeError::WasmError(format!(
-                "function '{}' returned error code {}",
-                name, out_len
+                "function '{}' returned error: {}",
+                name, err_msg
             )));
         }
 
-        self.read_value(out_ptr, out_len as usize)
+        // Read output value
+        let result = self.read_value(out_ptr, out_len)?;
+
+        // Free the guest's buffer
+        self.call_pack_free(out_ptr, out_len).ok();
+
+        Ok(result)
+    }
+
+    /// Call __pack_free to free a guest-allocated buffer.
+    fn call_pack_free(&mut self, ptr: usize, len: usize) -> Result<(), RuntimeError> {
+        if let Ok(free_func) = self.instance.get_typed_func::<(i32, i32), ()>(&mut self.store, "__pack_free") {
+            free_func
+                .call(&mut self.store, (ptr as i32, len as i32))
+                .map_err(|e| RuntimeError::WasmError(e.to_string()))?;
+        }
+        Ok(())
     }
 }
 
@@ -781,13 +851,14 @@ impl<T> Instance<T> {
         decode(&bytes).map_err(|e| RuntimeError::AbiError(e.to_string()))
     }
 
-    /// Call a function using the caller-provides-output-buffer convention.
+    /// Call a function using the guest-allocates-output convention.
     ///
-    /// The WASM function signature is `(in_ptr, in_len, out_ptr, out_cap) -> out_len`:
+    /// The WASM function signature is `(in_ptr, in_len, out_ptr_ptr, out_len_ptr) -> status`:
     /// - Input: in_ptr/in_len point to Graph ABI encoded input value
-    /// - Output: caller provides out_ptr/out_cap buffer, function returns bytes written
+    /// - Output: guest allocates buffer, writes ptr/len to provided slots
+    /// - Returns: 0 on success, -1 on error (error message in ptr/len)
     ///
-    /// Returns -1 on error (buffer too small, decode error, etc.)
+    /// The host must call `__pack_free(ptr, len)` to free the guest's output buffer.
     pub fn call_with_value(
         &mut self,
         name: &str,
@@ -797,38 +868,70 @@ impl<T> Instance<T> {
         // Encode and write input
         let input_len = self.write_value(input_offset, input)?;
 
-        // Use default output buffer location
-        let out_ptr = OUTPUT_BUFFER_OFFSET;
-        let out_cap = OUTPUT_BUFFER_CAPACITY;
-
-        // Call the function with new signature: (in_ptr, in_len, out_ptr, out_cap) -> out_len
+        // Call the function with guest-allocates ABI
         let func = self
             .instance
             .get_typed_func::<(i32, i32, i32, i32), i32>(&mut self.store, name)
             .map_err(|e| RuntimeError::FunctionNotFound(e.to_string()))?;
 
-        let out_len = func
+        let status = func
             .call(
                 &mut self.store,
                 (
                     input_offset as i32,
                     input_len as i32,
-                    out_ptr as i32,
-                    out_cap as i32,
+                    RESULT_PTR_OFFSET as i32,
+                    RESULT_LEN_OFFSET as i32,
                 ),
             )
             .map_err(|e| RuntimeError::WasmError(e.to_string()))?;
 
+        // Read result ptr/len from slots
+        let memory = self.get_memory()?;
+        let mut ptr_bytes = [0u8; 4];
+        let mut len_bytes = [0u8; 4];
+        memory.read(&self.store, RESULT_PTR_OFFSET, &mut ptr_bytes)
+            .map_err(|_| RuntimeError::MemoryError("Failed to read result ptr".into()))?;
+        memory.read(&self.store, RESULT_LEN_OFFSET, &mut len_bytes)
+            .map_err(|_| RuntimeError::MemoryError("Failed to read result len".into()))?;
+
+        let out_ptr = i32::from_le_bytes(ptr_bytes) as usize;
+        let out_len = i32::from_le_bytes(len_bytes) as usize;
+
         // Check for error
-        if out_len < 0 {
+        if status != 0 {
+            // Read error message
+            let mut err_bytes = vec![0u8; out_len];
+            memory.read(&self.store, out_ptr, &mut err_bytes)
+                .map_err(|_| RuntimeError::MemoryError("Failed to read error".into()))?;
+
+            // Free the error buffer
+            self.call_pack_free(out_ptr, out_len).ok();
+
+            let err_msg = String::from_utf8_lossy(&err_bytes).to_string();
             return Err(RuntimeError::WasmError(format!(
-                "function '{}' returned error code {}",
-                name, out_len
+                "function '{}' returned error: {}",
+                name, err_msg
             )));
         }
 
         // Read and decode output
-        self.read_value(out_ptr, out_len as usize)
+        let result = self.read_value(out_ptr, out_len)?;
+
+        // Free the guest's buffer
+        self.call_pack_free(out_ptr, out_len).ok();
+
+        Ok(result)
+    }
+
+    /// Call __pack_free to free a guest-allocated buffer.
+    fn call_pack_free(&mut self, ptr: usize, len: usize) -> Result<(), RuntimeError> {
+        if let Ok(free_func) = self.instance.get_typed_func::<(i32, i32), ()>(&mut self.store, "__pack_free") {
+            free_func
+                .call(&mut self.store, (ptr as i32, len as i32))
+                .map_err(|e| RuntimeError::WasmError(e.to_string()))?;
+        }
+        Ok(())
     }
 }
 
