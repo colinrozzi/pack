@@ -1,4 +1,4 @@
-use composite::abi::{decode, encode, GraphBuffer, Node, NodeKind, Value, ValueType};
+use pack::abi::{decode, encode, GraphBuffer, Node, NodeKind, Value, ValueType};
 
 #[test]
 fn roundtrip_primitives() {

@@ -1,5 +1,5 @@
-use composite::abi::{encode, GraphBuffer, Node, NodeKind, Value, ValueType};
-use composite::wit_plus::{
+use pack::abi::{encode, GraphBuffer, Node, NodeKind, Value, ValueType};
+use pack::wit_plus::{
     decode_with_schema, encode_with_schema, parse_interface, validate_graph_against_type, Type,
     ValidationError,
 };

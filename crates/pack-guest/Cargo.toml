@@ -1,0 +1,11 @@
+[package]
+name = "pack-guest"
+version = "0.1.0"
+edition = "2021"
+description = "Guest-side helpers for Pack WASM packages"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+pack-abi = { path = "../pack-abi", default-features = false }
+pack-guest-macros = { path = "../pack-guest-macros" }
+dlmalloc = { version = "0.2", features = ["global"] }

@@ -8,10 +8,10 @@
 extern crate alloc;
 
 use alloc::boxed::Box;
-use composite_guest::{export, Value};
+use pack_guest::{export, Value};
 
 // Set up allocator and panic handler
-composite_guest::setup_guest!();
+pack_guest::setup_guest!();
 
 // Import host functions from "host" module
 #[link(wasm_import_module = "host")]

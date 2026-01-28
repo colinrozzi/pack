@@ -1,6 +1,6 @@
 //! Tests for the GraphValue derive macro
 
-use composite_abi::{GraphValue, Value};
+use pack_abi::{GraphValue, Value};
 
 // ============================================================================
 // Struct tests

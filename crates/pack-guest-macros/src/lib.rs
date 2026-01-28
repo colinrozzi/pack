@@ -1,4 +1,4 @@
-//! Proc macros for Composite guest packages.
+//! Proc macros for Pack guest packages.
 //!
 //! Provides the `#[export]` and `#[import]` attribute macros for easily
 //! exporting and importing functions with the correct WASM calling convention.
@@ -73,8 +73,8 @@ impl Parse for ExportArgs {
 /// # Example
 ///
 /// ```ignore
-/// use composite_guest::export;
-/// use composite_guest::Value;
+/// use pack_guest::export;
+/// use pack_guest::Value;
 ///
 /// // Value mode - raw Value handling
 /// #[export]
@@ -274,7 +274,7 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
         quote! {
             // Extract multiple typed parameters from input tuple
             let items = match value {
-                composite_guest::Value::Tuple(items) => items,
+                pack_guest::Value::Tuple(items) => items,
                 _ => return Err("expected tuple of parameters"),
             };
 
@@ -306,7 +306,7 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
                     out_cap: i32,
                 ) -> i32 {
                     // Use the guest runtime to handle the boilerplate
-                    composite_guest::__export_impl(
+                    pack_guest::__export_impl(
                         in_ptr, in_len, out_ptr, out_cap,
                         |value| {
                             #call_body
@@ -331,7 +331,7 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
                     out_cap: i32,
                 ) -> i32 {
                     // Use the guest runtime to handle the boilerplate
-                    composite_guest::__export_impl(
+                    pack_guest::__export_impl(
                         in_ptr, in_len, out_ptr, out_cap,
                         |value| {
                             #call_body
@@ -586,7 +586,7 @@ impl Parse for ImportFnSignature {
 /// # Example
 ///
 /// ```ignore
-/// use composite_guest::import;
+/// use pack_guest::import;
 ///
 /// // Import a log function from the host (manual module specification)
 /// #[import(module = "theater:simple/runtime")]
@@ -690,16 +690,16 @@ pub fn import(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     // Build the input value - tuple of all parameters
     let input_construction = if param_names.is_empty() {
-        quote! { composite_guest::Value::Tuple(composite_guest::__alloc::vec![]) }
+        quote! { pack_guest::Value::Tuple(pack_guest::__alloc::vec![]) }
     } else if param_names.len() == 1 {
         let name = &param_names[0];
-        quote! { composite_guest::Value::from(#name) }
+        quote! { pack_guest::Value::from(#name) }
     } else {
         let conversions = param_names.iter().map(|name| {
-            quote! { composite_guest::Value::from(#name) }
+            quote! { pack_guest::Value::from(#name) }
         });
         quote! {
-            composite_guest::Value::Tuple(composite_guest::__alloc::vec![#(#conversions),*])
+            pack_guest::Value::Tuple(pack_guest::__alloc::vec![#(#conversions),*])
         }
     };
 
@@ -729,7 +729,7 @@ pub fn import(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         #fn_vis fn #fn_name(#(#fn_params),*) -> #return_type {
             let input = #input_construction;
-            let result = composite_guest::__import_impl(
+            let result = pack_guest::__import_impl(
                 |in_ptr, in_len, out_ptr, out_cap| unsafe {
                     #raw_fn_name(in_ptr, in_len, out_ptr, out_cap)
                 },
@@ -770,7 +770,7 @@ pub fn import(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// Then in your Rust code:
 ///
 /// ```ignore
-/// use composite_guest::wit;
+/// use pack_guest::wit;
 ///
 /// // Generate types from wit/ directory
 /// wit!();
@@ -934,7 +934,7 @@ impl Parse for ImportFromArgs {
 /// # Example
 ///
 /// ```ignore
-/// use composite_guest::{import_from, export, Value};
+/// use pack_guest::{import_from, export, Value};
 ///
 /// // Import the "double" function from the "math" package
 /// #[import_from("math")]
@@ -1026,16 +1026,16 @@ pub fn import_from(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     // Build the input value - tuple of all parameters
     let input_construction = if param_names.is_empty() {
-        quote! { composite_guest::Value::Tuple(composite_guest::__alloc::vec![]) }
+        quote! { pack_guest::Value::Tuple(pack_guest::__alloc::vec![]) }
     } else if param_names.len() == 1 {
         let name = &param_names[0];
-        quote! { composite_guest::Value::from(#name) }
+        quote! { pack_guest::Value::from(#name) }
     } else {
         let conversions = param_names.iter().map(|name| {
-            quote! { composite_guest::Value::from(#name) }
+            quote! { pack_guest::Value::from(#name) }
         });
         quote! {
-            composite_guest::Value::Tuple(composite_guest::__alloc::vec![#(#conversions),*])
+            pack_guest::Value::Tuple(pack_guest::__alloc::vec![#(#conversions),*])
         }
     };
 
@@ -1065,7 +1065,7 @@ pub fn import_from(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         #fn_vis fn #fn_name(#(#fn_params),*) -> #return_type {
             let input = #input_construction;
-            let result = composite_guest::__import_impl(
+            let result = pack_guest::__import_impl(
                 |in_ptr, in_len, out_ptr, out_cap| unsafe {
                     #raw_fn_name(in_ptr, in_len, out_ptr, out_cap)
                 },

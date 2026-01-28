@@ -3,8 +3,8 @@
 //! These tests verify that packages can be composed together,
 //! with one package's imports satisfied by another package's exports.
 
-use composite::abi::Value;
-use composite::runtime::CompositionBuilder;
+use pack::abi::Value;
+use pack::runtime::CompositionBuilder;
 use std::path::Path;
 
 /// Load the doubler package (exports `double`)

@@ -1,8 +1,8 @@
 [package]
-name = "composite-guest-macros"
+name = "pack-guest-macros"
 version = "0.1.0"
 edition = "2021"
-description = "Proc macros for Composite guest components"
+description = "Proc macros for Pack guest packages"
 license = "MIT OR Apache-2.0"
 
 [lib]

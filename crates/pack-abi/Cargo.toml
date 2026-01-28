@@ -1,0 +1,16 @@
+[package]
+name = "pack-abi"
+version = "0.1.0"
+edition = "2021"
+description = "Graph-encoded ABI for Pack runtime - supports recursive types"
+
+[features]
+default = ["std"]
+std = []
+derive = ["pack-derive"]
+
+[dependencies]
+# no_std compatible hash map
+hashbrown = "0.14"
+# Optional derive macro
+pack-derive = { path = "../pack-derive", optional = true }

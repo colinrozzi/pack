@@ -41,7 +41,7 @@ pub fn parse_interface(src: &str) -> Result<Interface, ParseError> {
 /// # Example
 ///
 /// ```
-/// use composite::wit_plus::parse_world;
+/// use pack::wit_plus::parse_world;
 ///
 /// let src = r#"
 ///     world my-component {

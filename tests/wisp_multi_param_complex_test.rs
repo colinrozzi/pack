@@ -1,7 +1,7 @@
 //! Test wisp multi-param functions with complex types
 
-use composite::abi::{Value, ValueType};
-use composite::Runtime;
+use pack::abi::{Value, ValueType};
+use pack::Runtime;
 
 const WISP_MODULE_PATH: &str = "/home/colin/work/wisp/examples/multi-param-complex-test.wasm";
 

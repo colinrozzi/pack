@@ -1,8 +1,8 @@
 [package]
-name = "composite-derive"
+name = "pack-derive"
 version = "0.1.0"
 edition = "2021"
-description = "Derive macros for composite-abi Value conversion"
+description = "Derive macros for pack-abi Value conversion"
 
 [lib]
 proc-macro = true

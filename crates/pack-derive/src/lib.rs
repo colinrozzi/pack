@@ -1,4 +1,4 @@
-//! Derive macros for composite-abi Value conversion.
+//! Derive macros for pack-abi Value conversion.
 //!
 //! This crate provides `#[derive(GraphValue)]` which generates implementations
 //! of `From<T> for Value` and `TryFrom<Value> for T`.
@@ -6,7 +6,7 @@
 //! # Example
 //!
 //! ```ignore
-//! use composite_abi::{GraphValue, Value};
+//! use pack_abi::{GraphValue, Value};
 //!
 //! #[derive(GraphValue)]
 //! struct Point {

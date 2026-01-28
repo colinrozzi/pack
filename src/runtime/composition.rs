@@ -6,8 +6,8 @@
 //! # Example
 //!
 //! ```ignore
-//! use composite::runtime::CompositionBuilder;
-//! use composite::abi::Value;
+//! use pack::runtime::CompositionBuilder;
+//! use pack::abi::Value;
 //!
 //! // Load package bytes
 //! let doubler_wasm = std::fs::read("doubler.wasm")?;

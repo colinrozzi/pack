@@ -2,9 +2,9 @@
 //!
 //! Tests that validate WASM modules implement WIT interfaces correctly.
 
-use composite::runtime::InterfaceError;
-use composite::wit_plus::parse_interface;
-use composite::Runtime;
+use pack::runtime::InterfaceError;
+use pack::wit_plus::parse_interface;
+use pack::Runtime;
 
 /// A module with the correct Graph ABI signature: (i32, i32) -> i64
 const VALID_PROCESS_MODULE: &str = r#"

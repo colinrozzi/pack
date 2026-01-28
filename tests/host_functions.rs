@@ -1,8 +1,8 @@
 //! Integration tests for the new host function registration API
 
-use composite::abi::Value;
-use composite::runtime::{HostLinkerBuilder, LinkerError};
-use composite::Runtime;
+use pack::abi::Value;
+use pack::runtime::{HostLinkerBuilder, LinkerError};
+use pack::Runtime;
 use wasmtime::Caller;
 
 /// Simple state for testing
@@ -85,7 +85,7 @@ fn test_func_typed_with_value() {
         .instantiate_with_host((), |builder| {
             builder.interface("test")?.func_typed(
                 "double",
-                |_ctx: &mut composite::Ctx<'_, ()>, input: Value| -> Value {
+                |_ctx: &mut pack::Ctx<'_, ()>, input: Value| -> Value {
                     // Double any S64 value
                     match input {
                         Value::S64(n) => Value::S64(n * 2),
@@ -149,7 +149,7 @@ fn test_multiple_interfaces() {
 
 #[test]
 fn test_provider_pattern() {
-    use composite::runtime::HostFunctionProvider;
+    use pack::runtime::HostFunctionProvider;
 
     struct MathProvider;
 
@@ -197,7 +197,7 @@ fn test_provider_pattern() {
 #[test]
 fn test_backward_compatibility() {
     // Ensure the old API still works
-    use composite::runtime::HostImports;
+    use pack::runtime::HostImports;
 
     let module_wat = r#"
     (module
@@ -246,7 +246,7 @@ fn test_backward_compatibility() {
 
 #[tokio::test]
 async fn test_async_runtime_basic() {
-    use composite::AsyncRuntime;
+    use pack::AsyncRuntime;
 
     // Simple module that echoes input - new calling convention
     // Copies input to output buffer and returns the length
@@ -284,7 +284,7 @@ async fn test_async_runtime_basic() {
 
 #[tokio::test]
 async fn test_func_async_registration() {
-    use composite::AsyncRuntime;
+    use pack::AsyncRuntime;
 
     // Module that calls an async host function - new calling convention
     let module_wat = r#"
@@ -309,7 +309,7 @@ async fn test_func_async_registration() {
         .instantiate_with_host_async((), |builder| {
             builder.interface("test")?.func_async(
                 "async_double",
-                |_ctx: composite::AsyncCtx<()>, input: Value| async move {
+                |_ctx: pack::AsyncCtx<()>, input: Value| async move {
                     // Simulate async operation
                     match input {
                         Value::S64(n) => Value::S64(n * 2),
@@ -334,7 +334,7 @@ async fn test_func_async_registration() {
 
 #[tokio::test]
 async fn test_async_ctx_state_access() {
-    use composite::AsyncRuntime;
+    use pack::AsyncRuntime;
 
     /// State that holds a multiplier
     #[derive(Clone)]
@@ -367,7 +367,7 @@ async fn test_async_ctx_state_access() {
         .instantiate_with_host_async(state, |builder| {
             builder.interface("math")?.func_async(
                 "multiply",
-                |ctx: composite::AsyncCtx<MultiplierState>, input: Value| async move {
+                |ctx: pack::AsyncCtx<MultiplierState>, input: Value| async move {
                     // Access state through ctx.data()
                     let multiplier = ctx.data().multiplier;
                     match input {
@@ -393,7 +393,7 @@ async fn test_async_ctx_state_access() {
 
 #[test]
 fn test_error_handler_callback() {
-    use composite::{HostFunctionError, HostFunctionErrorKind};
+    use pack::{HostFunctionError, HostFunctionErrorKind};
     use std::sync::{Arc, Mutex};
 
     // Track errors via a shared vec
@@ -435,7 +435,7 @@ fn test_error_handler_callback() {
 
             builder.interface("test")?.func_typed(
                 "process",
-                |_ctx: &mut composite::Ctx<'_, ()>, input: Value| -> Value {
+                |_ctx: &mut pack::Ctx<'_, ()>, input: Value| -> Value {
                     // This will never be reached due to decode error
                     input
                 },

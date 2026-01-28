@@ -6,10 +6,10 @@
 
 extern crate alloc;
 
-use composite_guest::{export, import_from, Value};
+use pack_guest::{export, import_from, Value};
 
 // Set up allocator and panic handler
-composite_guest::setup_guest!();
+pack_guest::setup_guest!();
 
 /// Import the double function from the "math" module.
 /// This will be wired to the doubler package's "double" export

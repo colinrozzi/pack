@@ -1,7 +1,7 @@
-//! Guest-side helpers for Composite WASM packages.
+//! Guest-side helpers for Pack WASM packages.
 //!
 //! This crate provides macros and utilities for writing WASM packages
-//! that use the Composite calling convention.
+//! that use the Pack calling convention.
 //!
 //! # Example
 //!
@@ -9,11 +9,11 @@
 //! #![no_std]
 //! extern crate alloc;
 //!
-//! use composite_guest::export;
-//! use composite_guest::Value;
+//! use pack_guest::export;
+//! use pack_guest::Value;
 //!
 //! // Set up panic handler and allocator (uses dlmalloc for proper memory management)
-//! composite_guest::setup_guest!();
+//! pack_guest::setup_guest!();
 //!
 //! #[export]
 //! fn echo(input: Value) -> Value {
@@ -31,10 +31,10 @@
 pub extern crate alloc;
 
 // Re-export the macros
-pub use composite_guest_macros::{export, import, import_from, wit};
+pub use pack_guest_macros::{export, import, import_from, wit};
 
 // Re-export useful types from composite-abi
-pub use composite_abi::{decode, encode, ConversionError, Value};
+pub use pack_abi::{decode, encode, ConversionError, Value};
 
 // Re-export dlmalloc for the setup_guest macro
 #[doc(hidden)]
@@ -152,7 +152,7 @@ where
 /// # Example
 ///
 /// ```ignore
-/// composite_guest::bump_allocator!(64 * 1024); // 64KB heap
+/// pack_guest::bump_allocator!(64 * 1024); // 64KB heap
 /// ```
 #[macro_export]
 macro_rules! bump_allocator {
@@ -212,7 +212,7 @@ macro_rules! bump_allocator {
 /// # Example
 ///
 /// ```ignore
-/// composite_guest::panic_handler!();
+/// pack_guest::panic_handler!();
 /// ```
 #[macro_export]
 macro_rules! panic_handler {
@@ -232,7 +232,7 @@ macro_rules! panic_handler {
 /// # Example
 ///
 /// ```ignore
-/// composite_guest::setup_guest!();
+/// pack_guest::setup_guest!();
 /// ```
 #[macro_export]
 macro_rules! setup_guest {

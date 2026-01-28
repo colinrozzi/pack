@@ -1,4 +1,4 @@
-//! Graph-encoded ABI for Composite runtime
+//! Graph-encoded ABI for Pack runtime
 //!
 //! This crate provides encoding and decoding for recursive data types
 //! using a graph-based binary format. It's `no_std` compatible for use
@@ -9,7 +9,7 @@
 //! Enable the `derive` feature to use `#[derive(GraphValue)]`:
 //!
 //! ```ignore
-//! use composite_abi::{GraphValue, Value};
+//! use pack_abi::{GraphValue, Value};
 //!
 //! #[derive(GraphValue)]
 //! struct Point {
@@ -32,7 +32,7 @@ pub use value::{FromValue, Value, ValueType};
 
 // Re-export derive macro when feature is enabled
 #[cfg(feature = "derive")]
-pub use composite_derive::GraphValue;
+pub use pack_derive::GraphValue;
 
 // ============================================================================
 // Conversion Error

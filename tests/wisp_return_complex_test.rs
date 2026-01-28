@@ -1,7 +1,7 @@
 //! Test wisp returning complex types with composite runtime
 
-use composite::abi::Value;
-use composite::Runtime;
+use pack::abi::Value;
+use pack::Runtime;
 
 const WISP_MODULE_PATH: &str = "/home/colin/work/wisp/examples/return-complex-test.wasm";
 

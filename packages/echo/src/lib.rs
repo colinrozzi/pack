@@ -1,6 +1,6 @@
 //! A package that can decode, inspect, and re-encode graph values.
 //!
-//! This demonstrates using the composite-guest crate to simplify
+//! This demonstrates using the pack-guest crate to simplify
 //! WASM package development.
 
 #![no_std]
@@ -8,10 +8,10 @@
 extern crate alloc;
 
 use alloc::boxed::Box;
-use composite_guest::{export, Value};
+use pack_guest::{export, Value};
 
 // Set up allocator and panic handler
-composite_guest::setup_guest!();
+pack_guest::setup_guest!();
 
 /// Echo: decode input, re-encode unchanged, return result.
 /// This proves we can decode and encode values in the package.

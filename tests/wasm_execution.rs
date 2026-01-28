@@ -2,8 +2,8 @@
 //!
 //! These tests verify that we can load and run WASM modules through the Runtime.
 
-use composite::abi::{Value, ValueType};
-use composite::Runtime;
+use pack::abi::{Value, ValueType};
+use pack::Runtime;
 use std::path::Path;
 
 /// A minimal WAT module that exports an `add` function
@@ -532,7 +532,7 @@ fn rust_package_transform_preserves_strings() {
 // Host imports tests
 // ============================================================================
 
-use composite::runtime::HostImports;
+use pack::runtime::HostImports;
 
 /// Load the Rust-compiled logger package (uses host imports)
 fn load_rust_logger_package() -> Vec<u8> {
@@ -699,7 +699,7 @@ fn load_rust_sexpr_package() -> Vec<u8> {
 /// Helper to create an SExpr value for testing
 #[allow(dead_code)]
 mod sexpr {
-    use composite::abi::Value;
+    use pack::abi::Value;
 
     pub fn sym(s: &str) -> Value {
         Value::Variant {

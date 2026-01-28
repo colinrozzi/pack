@@ -1,6 +1,6 @@
 //! S-expression evaluator package
 //!
-//! Demonstrates the composite-guest macros with a recursive type.
+//! Demonstrates the pack-guest macros with a recursive type.
 //! Evaluates simple Lisp-like expressions.
 
 #![no_std]
@@ -11,10 +11,10 @@ use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use composite_abi::ConversionError;
-use composite_guest::{export, Value};
+use pack_guest::{export, Value};
 
 // Set up allocator and panic handler
-composite_guest::setup_guest!();
+pack_guest::setup_guest!();
 
 // ============================================================================
 // S-expression type

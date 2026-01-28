@@ -6,10 +6,10 @@
 
 extern crate alloc;
 
-use composite_guest::{export, Value};
+use pack_guest::{export, Value};
 
 // Set up allocator and panic handler
-composite_guest::setup_guest!();
+pack_guest::setup_guest!();
 
 /// Double an i64 value.
 #[export]

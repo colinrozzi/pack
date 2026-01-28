@@ -7,7 +7,7 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-composite-guest = { path = "../../crates/composite-guest" }
+pack-guest = { path = "../../crates/pack-guest" }
 composite-abi = { path = "../../crates/composite-abi", default-features = false }
 
 [profile.release]

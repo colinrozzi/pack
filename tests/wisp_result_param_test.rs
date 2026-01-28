@@ -1,7 +1,7 @@
 //! Test wisp result parameter type decoding with composite runtime
 
-use composite::abi::{Value, ValueType};
-use composite::Runtime;
+use pack::abi::{Value, ValueType};
+use pack::Runtime;
 
 const WISP_MODULE_PATH: &str = "/home/colin/work/wisp/examples/result-param-test.wasm";
 
