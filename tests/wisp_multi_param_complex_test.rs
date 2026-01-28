@@ -24,7 +24,7 @@ fn test_wisp_scalar_and_record() {
         },
     ]);
     let output = instance
-        .call_with_value("add-to-point", &input, 0)
+        .call_with_value("add-to-point", &input)
         .expect("failed to call add-to-point");
     assert_eq!(output, Value::S32(17));
 }
@@ -45,7 +45,7 @@ fn test_wisp_scalar_and_option_some() {
         },
     ]);
     let output = instance
-        .call_with_value("add-or-default", &input, 0)
+        .call_with_value("add-or-default", &input)
         .expect("failed to call add-or-default");
     assert_eq!(output, Value::S32(12));
 }
@@ -66,7 +66,7 @@ fn test_wisp_scalar_and_option_none() {
         },
     ]);
     let output = instance
-        .call_with_value("add-or-default", &input, 0)
+        .call_with_value("add-or-default", &input)
         .expect("failed to call add-or-default");
     assert_eq!(output, Value::S32(5));
 }
@@ -90,7 +90,7 @@ fn test_wisp_two_options_both_some() {
         },
     ]);
     let output = instance
-        .call_with_value("both-or-zero", &input, 0)
+        .call_with_value("both-or-zero", &input)
         .expect("failed to call both-or-zero");
     assert_eq!(output, Value::S32(30));
 }
@@ -114,7 +114,7 @@ fn test_wisp_two_options_first_none() {
         },
     ]);
     let output = instance
-        .call_with_value("both-or-zero", &input, 0)
+        .call_with_value("both-or-zero", &input)
         .expect("failed to call both-or-zero");
     assert_eq!(output, Value::S32(0));
 }
@@ -138,7 +138,7 @@ fn test_wisp_two_options_second_none() {
         },
     ]);
     let output = instance
-        .call_with_value("both-or-zero", &input, 0)
+        .call_with_value("both-or-zero", &input)
         .expect("failed to call both-or-zero");
     assert_eq!(output, Value::S32(0));
 }

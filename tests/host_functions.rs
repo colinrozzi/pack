@@ -61,16 +61,49 @@ fn test_namespaced_interface_registration() {
 #[test]
 fn test_func_typed_with_value() {
     // Module that wraps a host function call - the host function uses Graph ABI
-    // New calling convention: (in_ptr, in_len, out_ptr, out_cap) -> out_len
+    // Guest-allocates ABI: (in_ptr, in_len, out_ptr_ptr, out_len_ptr) -> status
     let module_wat = r#"
     (module
         (import "test" "double" (func $double (param i32 i32 i32 i32) (result i32)))
         (memory (export "memory") 1)
 
-        ;; Wrapper that calls host function with new calling convention
-        ;; and forwards the output buffer from caller
-        (func $call_double (param $in_ptr i32) (param $in_len i32) (param $out_ptr i32) (param $out_cap i32) (result i32)
-            (call $double (local.get $in_ptr) (local.get $in_len) (local.get $out_ptr) (local.get $out_cap))
+        ;; Reserve space for result slots at fixed offset (16KB)
+        (global $result_ptr_offset i32 (i32.const 16384))
+        (global $result_len_offset i32 (i32.const 16388))
+        ;; Output data offset
+        (global $output_offset i32 (i32.const 16392))
+
+        ;; Wrapper that calls host function with guest-allocates ABI
+        ;; and copies result to caller's slots
+        (func $call_double (param $in_ptr i32) (param $in_len i32) (param $out_ptr_ptr i32) (param $out_len_ptr i32) (result i32)
+            (local $status i32)
+            (local $result_ptr i32)
+            (local $result_len i32)
+
+            ;; Call host function - it writes ptr/len to our slots
+            (local.set $status
+                (call $double
+                    (local.get $in_ptr)
+                    (local.get $in_len)
+                    (global.get $result_ptr_offset)
+                    (global.get $result_len_offset)))
+
+            ;; If error, propagate
+            (if (i32.ne (local.get $status) (i32.const 0))
+                (then (return (local.get $status))))
+
+            ;; Read result ptr/len from slots
+            (local.set $result_ptr (i32.load (global.get $result_ptr_offset)))
+            (local.set $result_len (i32.load (global.get $result_len_offset)))
+
+            ;; Copy result to our output area
+            (memory.copy (global.get $output_offset) (local.get $result_ptr) (local.get $result_len))
+
+            ;; Write our output location to caller's slots
+            (i32.store (local.get $out_ptr_ptr) (global.get $output_offset))
+            (i32.store (local.get $out_len_ptr) (local.get $result_len))
+
+            (i32.const 0)
         )
 
         (export "call_double" (func $call_double))
@@ -100,7 +133,7 @@ fn test_func_typed_with_value() {
     // Use call_with_value which handles the full Graph ABI flow
     let input = Value::S64(21);
     let output = instance
-        .call_with_value("call_double", &input, 0)
+        .call_with_value("call_double", &input)
         .expect("call");
 
     assert_eq!(output, Value::S64(42)); // 21 * 2 = 42
@@ -248,19 +281,24 @@ fn test_backward_compatibility() {
 async fn test_async_runtime_basic() {
     use pack::AsyncRuntime;
 
-    // Simple module that echoes input - new calling convention
-    // Copies input to output buffer and returns the length
+    // Simple module that echoes input - guest-allocates ABI
+    // (in_ptr, in_len, out_ptr_ptr, out_len_ptr) -> status
     let module_wat = r#"
     (module
         (memory (export "memory") 1)
 
-        ;; Echo function: copies input to output buffer
-        ;; (in_ptr, in_len, out_ptr, out_cap) -> out_len
-        (func $echo (param $in_ptr i32) (param $in_len i32) (param $out_ptr i32) (param $out_cap i32) (result i32)
-            ;; Copy in_len bytes from in_ptr to out_ptr
-            (memory.copy (local.get $out_ptr) (local.get $in_ptr) (local.get $in_len))
-            ;; Return the length
-            (local.get $in_len)
+        ;; Output data offset
+        (global $output_offset i32 (i32.const 16392))
+
+        ;; Echo function: copies input to output area, writes ptr/len to slots
+        (func $echo (param $in_ptr i32) (param $in_len i32) (param $out_ptr_ptr i32) (param $out_len_ptr i32) (result i32)
+            ;; Copy input to output area
+            (memory.copy (global.get $output_offset) (local.get $in_ptr) (local.get $in_len))
+            ;; Write output ptr/len to caller's slots
+            (i32.store (local.get $out_ptr_ptr) (global.get $output_offset))
+            (i32.store (local.get $out_len_ptr) (local.get $in_len))
+            ;; Return success
+            (i32.const 0)
         )
         (export "echo" (func $echo))
     )
@@ -275,7 +313,7 @@ async fn test_async_runtime_basic() {
     // Call with value async
     let input = Value::S64(42);
     let output = instance
-        .call_with_value_async("echo", &input, 0)
+        .call_with_value_async("echo", &input)
         .await
         .expect("call");
 
@@ -286,15 +324,46 @@ async fn test_async_runtime_basic() {
 async fn test_func_async_registration() {
     use pack::AsyncRuntime;
 
-    // Module that calls an async host function - new calling convention
+    // Module that calls an async host function - guest-allocates ABI
     let module_wat = r#"
     (module
         (import "test" "async_double" (func $async_double (param i32 i32 i32 i32) (result i32)))
         (memory (export "memory") 1)
 
-        ;; Wrapper that calls async host function with new signature
-        (func $call_async (param $in_ptr i32) (param $in_len i32) (param $out_ptr i32) (param $out_cap i32) (result i32)
-            (call $async_double (local.get $in_ptr) (local.get $in_len) (local.get $out_ptr) (local.get $out_cap))
+        ;; Reserve space for result slots
+        (global $result_ptr_offset i32 (i32.const 16384))
+        (global $result_len_offset i32 (i32.const 16388))
+        (global $output_offset i32 (i32.const 16392))
+
+        ;; Wrapper that calls async host function with guest-allocates ABI
+        (func $call_async (param $in_ptr i32) (param $in_len i32) (param $out_ptr_ptr i32) (param $out_len_ptr i32) (result i32)
+            (local $status i32)
+            (local $result_ptr i32)
+            (local $result_len i32)
+
+            ;; Call host function
+            (local.set $status
+                (call $async_double
+                    (local.get $in_ptr)
+                    (local.get $in_len)
+                    (global.get $result_ptr_offset)
+                    (global.get $result_len_offset)))
+
+            (if (i32.ne (local.get $status) (i32.const 0))
+                (then (return (local.get $status))))
+
+            ;; Read result
+            (local.set $result_ptr (i32.load (global.get $result_ptr_offset)))
+            (local.set $result_len (i32.load (global.get $result_len_offset)))
+
+            ;; Copy to output area
+            (memory.copy (global.get $output_offset) (local.get $result_ptr) (local.get $result_len))
+
+            ;; Write to caller's slots
+            (i32.store (local.get $out_ptr_ptr) (global.get $output_offset))
+            (i32.store (local.get $out_len_ptr) (local.get $result_len))
+
+            (i32.const 0)
         )
 
         (export "call_async" (func $call_async))
@@ -325,7 +394,7 @@ async fn test_func_async_registration() {
     // Use call_with_value_async which handles the full Graph ABI flow
     let input = Value::S64(21);
     let output = instance
-        .call_with_value_async("call_async", &input, 0)
+        .call_with_value_async("call_async", &input)
         .await
         .expect("call");
 
@@ -342,14 +411,45 @@ async fn test_async_ctx_state_access() {
         multiplier: i64,
     }
 
-    // Module that calls an async host function - new calling convention
+    // Module that calls an async host function - guest-allocates ABI
     let module_wat = r#"
     (module
         (import "math" "multiply" (func $multiply (param i32 i32 i32 i32) (result i32)))
         (memory (export "memory") 1)
 
-        (func $call_multiply (param $in_ptr i32) (param $in_len i32) (param $out_ptr i32) (param $out_cap i32) (result i32)
-            (call $multiply (local.get $in_ptr) (local.get $in_len) (local.get $out_ptr) (local.get $out_cap))
+        ;; Reserve space for result slots
+        (global $result_ptr_offset i32 (i32.const 16384))
+        (global $result_len_offset i32 (i32.const 16388))
+        (global $output_offset i32 (i32.const 16392))
+
+        (func $call_multiply (param $in_ptr i32) (param $in_len i32) (param $out_ptr_ptr i32) (param $out_len_ptr i32) (result i32)
+            (local $status i32)
+            (local $result_ptr i32)
+            (local $result_len i32)
+
+            ;; Call host function
+            (local.set $status
+                (call $multiply
+                    (local.get $in_ptr)
+                    (local.get $in_len)
+                    (global.get $result_ptr_offset)
+                    (global.get $result_len_offset)))
+
+            (if (i32.ne (local.get $status) (i32.const 0))
+                (then (return (local.get $status))))
+
+            ;; Read result
+            (local.set $result_ptr (i32.load (global.get $result_ptr_offset)))
+            (local.set $result_len (i32.load (global.get $result_len_offset)))
+
+            ;; Copy to output area
+            (memory.copy (global.get $output_offset) (local.get $result_ptr) (local.get $result_len))
+
+            ;; Write to caller's slots
+            (i32.store (local.get $out_ptr_ptr) (global.get $output_offset))
+            (i32.store (local.get $out_len_ptr) (local.get $result_len))
+
+            (i32.const 0)
         )
 
         (export "call_multiply" (func $call_multiply))
@@ -384,7 +484,7 @@ async fn test_async_ctx_state_access() {
     // 7 * 10 (from state) = 70
     let input = Value::S64(7);
     let output = instance
-        .call_with_value_async("call_multiply", &input, 0)
+        .call_with_value_async("call_multiply", &input)
         .await
         .expect("call");
 

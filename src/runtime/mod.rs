@@ -347,22 +347,33 @@ impl<T: Send> AsyncInstance<T> {
         decode(&bytes).map_err(|e| RuntimeError::AbiError(e.to_string()))
     }
 
-    /// Call a function using the guest-allocates-output convention (async).
+    /// Call a function using the Pack ABI (async).
+    ///
+    /// If the guest exports `__pack_alloc`, input is dynamically allocated.
+    /// Otherwise, falls back to a fixed input buffer at INPUT_BUFFER_OFFSET.
     ///
     /// The WASM function signature is `(in_ptr, in_len, out_ptr_ptr, out_len_ptr) -> status`:
-    /// - Input: in_ptr/in_len point to Graph ABI encoded input value
-    /// - Output: guest allocates buffer, writes ptr/len to provided slots
     /// - Returns: 0 on success, -1 on error (error message in ptr/len)
-    ///
-    /// The host must call `__pack_free(ptr, len)` to free the guest's output buffer.
     pub async fn call_with_value_async(
         &mut self,
         name: &str,
         input: &Value,
-        input_offset: usize,
     ) -> Result<Value, RuntimeError> {
-        let input_len = self.write_value(input_offset, input)?;
+        // Encode input
+        let input_bytes = encode(input).map_err(|e| RuntimeError::AbiError(e.to_string()))?;
 
+        // Try to allocate input buffer dynamically, fall back to fixed buffer
+        let (in_ptr, dynamic_input) = match self.call_pack_alloc_async(input_bytes.len()).await {
+            Ok(ptr) => (ptr, true),
+            Err(_) => (INPUT_BUFFER_OFFSET, false),
+        };
+
+        // Write input to buffer
+        let memory = self.get_memory()?;
+        memory.write(&mut self.store, in_ptr, &input_bytes)
+            .map_err(|_| RuntimeError::MemoryError("Failed to write input".into()))?;
+
+        // Call the function
         let func = self
             .instance
             .get_typed_func::<(i32, i32, i32, i32), i32>(&mut self.store, name)
@@ -372,14 +383,19 @@ impl<T: Send> AsyncInstance<T> {
             .call_async(
                 &mut self.store,
                 (
-                    input_offset as i32,
-                    input_len as i32,
+                    in_ptr as i32,
+                    input_bytes.len() as i32,
                     RESULT_PTR_OFFSET as i32,
                     RESULT_LEN_OFFSET as i32,
                 ),
             )
             .await
             .map_err(|e| RuntimeError::WasmError(e.to_string()))?;
+
+        // Free the input buffer if dynamically allocated
+        if dynamic_input {
+            self.call_pack_free_async(in_ptr, input_bytes.len()).await.ok();
+        }
 
         // Read result ptr/len from slots
         let memory = self.get_memory()?;
@@ -401,7 +417,7 @@ impl<T: Send> AsyncInstance<T> {
                 .map_err(|_| RuntimeError::MemoryError("Failed to read error".into()))?;
 
             // Free the error buffer
-            self.call_pack_free(out_ptr, out_len).await.ok();
+            self.call_pack_free_async(out_ptr, out_len).await.ok();
 
             let err_msg = String::from_utf8_lossy(&err_bytes).to_string();
             return Err(RuntimeError::WasmError(format!(
@@ -413,14 +429,33 @@ impl<T: Send> AsyncInstance<T> {
         // Read output value
         let result = self.read_value(out_ptr, out_len)?;
 
-        // Free the guest's buffer
-        self.call_pack_free(out_ptr, out_len).await.ok();
+        // Free the guest's output buffer if guest has __pack_free
+        self.call_pack_free_async(out_ptr, out_len).await.ok();
 
         Ok(result)
     }
 
+    /// Call __pack_alloc to allocate a buffer in guest memory (async).
+    async fn call_pack_alloc_async(&mut self, size: usize) -> Result<usize, RuntimeError> {
+        let alloc_func = self
+            .instance
+            .get_typed_func::<i32, i32>(&mut self.store, "__pack_alloc")
+            .map_err(|_| RuntimeError::FunctionNotFound("__pack_alloc not found".into()))?;
+
+        let ptr = alloc_func
+            .call_async(&mut self.store, size as i32)
+            .await
+            .map_err(|e| RuntimeError::WasmError(e.to_string()))?;
+
+        if ptr == 0 {
+            return Err(RuntimeError::MemoryError("Guest allocation failed".into()));
+        }
+
+        Ok(ptr as usize)
+    }
+
     /// Call __pack_free to free a guest-allocated buffer (async).
-    async fn call_pack_free(&mut self, ptr: usize, len: usize) -> Result<(), RuntimeError> {
+    async fn call_pack_free_async(&mut self, ptr: usize, len: usize) -> Result<(), RuntimeError> {
         if let Ok(free_func) = self.instance.get_typed_func::<(i32, i32), ()>(&mut self.store, "__pack_free") {
             free_func
                 .call_async(&mut self.store, (ptr as i32, len as i32))
@@ -678,22 +713,33 @@ impl InstanceWithHost {
         decode(&bytes).map_err(|e| RuntimeError::AbiError(e.to_string()))
     }
 
-    /// Call a function using the guest-allocates-output convention.
+    /// Call a function using the Pack ABI.
+    ///
+    /// If the guest exports `__pack_alloc`, input is dynamically allocated.
+    /// Otherwise, falls back to a fixed input buffer at INPUT_BUFFER_OFFSET.
     ///
     /// The WASM function signature is `(in_ptr, in_len, out_ptr_ptr, out_len_ptr) -> status`:
-    /// - Input: in_ptr/in_len point to Graph ABI encoded input value
-    /// - Output: guest allocates buffer, writes ptr/len to provided slots
     /// - Returns: 0 on success, -1 on error (error message in ptr/len)
-    ///
-    /// The host must call `__pack_free(ptr, len)` to free the guest's output buffer.
     pub fn call_with_value(
         &mut self,
         name: &str,
         input: &Value,
-        input_offset: usize,
     ) -> Result<Value, RuntimeError> {
-        let input_len = self.write_value(input_offset, input)?;
+        // Encode input
+        let input_bytes = encode(input).map_err(|e| RuntimeError::AbiError(e.to_string()))?;
 
+        // Try to allocate input buffer dynamically, fall back to fixed buffer
+        let (in_ptr, dynamic_input) = match self.call_pack_alloc(input_bytes.len()) {
+            Ok(ptr) => (ptr, true),
+            Err(_) => (INPUT_BUFFER_OFFSET, false),
+        };
+
+        // Write input to buffer
+        let memory = self.get_memory()?;
+        memory.write(&mut self.store, in_ptr, &input_bytes)
+            .map_err(|_| RuntimeError::MemoryError("Failed to write input".into()))?;
+
+        // Call the function
         let func = self
             .instance
             .get_typed_func::<(i32, i32, i32, i32), i32>(&mut self.store, name)
@@ -703,13 +749,18 @@ impl InstanceWithHost {
             .call(
                 &mut self.store,
                 (
-                    input_offset as i32,
-                    input_len as i32,
+                    in_ptr as i32,
+                    input_bytes.len() as i32,
                     RESULT_PTR_OFFSET as i32,
                     RESULT_LEN_OFFSET as i32,
                 ),
             )
             .map_err(|e| RuntimeError::WasmError(e.to_string()))?;
+
+        // Free the input buffer if dynamically allocated
+        if dynamic_input {
+            self.call_pack_free(in_ptr, input_bytes.len()).ok();
+        }
 
         // Read result ptr/len from slots
         let memory = self.get_memory()?;
@@ -743,10 +794,28 @@ impl InstanceWithHost {
         // Read output value
         let result = self.read_value(out_ptr, out_len)?;
 
-        // Free the guest's buffer
+        // Free the guest's output buffer if guest has __pack_free
         self.call_pack_free(out_ptr, out_len).ok();
 
         Ok(result)
+    }
+
+    /// Call __pack_alloc to allocate a buffer in guest memory.
+    fn call_pack_alloc(&mut self, size: usize) -> Result<usize, RuntimeError> {
+        let alloc_func = self
+            .instance
+            .get_typed_func::<i32, i32>(&mut self.store, "__pack_alloc")
+            .map_err(|_| RuntimeError::FunctionNotFound("__pack_alloc not found".into()))?;
+
+        let ptr = alloc_func
+            .call(&mut self.store, size as i32)
+            .map_err(|e| RuntimeError::WasmError(e.to_string()))?;
+
+        if ptr == 0 {
+            return Err(RuntimeError::MemoryError("Guest allocation failed".into()));
+        }
+
+        Ok(ptr as usize)
     }
 
     /// Call __pack_free to free a guest-allocated buffer.
@@ -851,24 +920,33 @@ impl<T> Instance<T> {
         decode(&bytes).map_err(|e| RuntimeError::AbiError(e.to_string()))
     }
 
-    /// Call a function using the guest-allocates-output convention.
+    /// Call a function using the Pack ABI.
+    ///
+    /// If the guest exports `__pack_alloc`, input is dynamically allocated.
+    /// Otherwise, falls back to a fixed input buffer at INPUT_BUFFER_OFFSET.
     ///
     /// The WASM function signature is `(in_ptr, in_len, out_ptr_ptr, out_len_ptr) -> status`:
-    /// - Input: in_ptr/in_len point to Graph ABI encoded input value
-    /// - Output: guest allocates buffer, writes ptr/len to provided slots
     /// - Returns: 0 on success, -1 on error (error message in ptr/len)
-    ///
-    /// The host must call `__pack_free(ptr, len)` to free the guest's output buffer.
     pub fn call_with_value(
         &mut self,
         name: &str,
         input: &Value,
-        input_offset: usize,
     ) -> Result<Value, RuntimeError> {
-        // Encode and write input
-        let input_len = self.write_value(input_offset, input)?;
+        // Encode input
+        let input_bytes = encode(input).map_err(|e| RuntimeError::AbiError(e.to_string()))?;
 
-        // Call the function with guest-allocates ABI
+        // Try to allocate input buffer dynamically, fall back to fixed buffer
+        let (in_ptr, dynamic_input) = match self.call_pack_alloc(input_bytes.len()) {
+            Ok(ptr) => (ptr, true),
+            Err(_) => (INPUT_BUFFER_OFFSET, false),
+        };
+
+        // Write input to buffer
+        let memory = self.get_memory()?;
+        memory.write(&mut self.store, in_ptr, &input_bytes)
+            .map_err(|_| RuntimeError::MemoryError("Failed to write input".into()))?;
+
+        // Call the function
         let func = self
             .instance
             .get_typed_func::<(i32, i32, i32, i32), i32>(&mut self.store, name)
@@ -878,13 +956,18 @@ impl<T> Instance<T> {
             .call(
                 &mut self.store,
                 (
-                    input_offset as i32,
-                    input_len as i32,
+                    in_ptr as i32,
+                    input_bytes.len() as i32,
                     RESULT_PTR_OFFSET as i32,
                     RESULT_LEN_OFFSET as i32,
                 ),
             )
             .map_err(|e| RuntimeError::WasmError(e.to_string()))?;
+
+        // Free the input buffer if dynamically allocated
+        if dynamic_input {
+            self.call_pack_free(in_ptr, input_bytes.len()).ok();
+        }
 
         // Read result ptr/len from slots
         let memory = self.get_memory()?;
@@ -918,10 +1001,28 @@ impl<T> Instance<T> {
         // Read and decode output
         let result = self.read_value(out_ptr, out_len)?;
 
-        // Free the guest's buffer
+        // Free the guest's output buffer if guest has __pack_free
         self.call_pack_free(out_ptr, out_len).ok();
 
         Ok(result)
+    }
+
+    /// Call __pack_alloc to allocate a buffer in guest memory.
+    fn call_pack_alloc(&mut self, size: usize) -> Result<usize, RuntimeError> {
+        let alloc_func = self
+            .instance
+            .get_typed_func::<i32, i32>(&mut self.store, "__pack_alloc")
+            .map_err(|_| RuntimeError::FunctionNotFound("__pack_alloc not found".into()))?;
+
+        let ptr = alloc_func
+            .call(&mut self.store, size as i32)
+            .map_err(|e| RuntimeError::WasmError(e.to_string()))?;
+
+        if ptr == 0 {
+            return Err(RuntimeError::MemoryError("Guest allocation failed".into()));
+        }
+
+        Ok(ptr as usize)
     }
 
     /// Call __pack_free to free a guest-allocated buffer.

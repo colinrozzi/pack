@@ -20,7 +20,7 @@ fn test_wisp_variant_no_payload_red() {
         payload: vec![],
     };
     let output = instance
-        .call_with_value("color-to-num", &input, 0)
+        .call_with_value("color-to-num", &input)
         .expect("failed to call color-to-num");
     assert_eq!(output, Value::S32(1));
 }
@@ -40,7 +40,7 @@ fn test_wisp_variant_no_payload_green() {
         payload: vec![],
     };
     let output = instance
-        .call_with_value("color-to-num", &input, 0)
+        .call_with_value("color-to-num", &input)
         .expect("failed to call color-to-num");
     assert_eq!(output, Value::S32(2));
 }
@@ -60,7 +60,7 @@ fn test_wisp_variant_no_payload_blue() {
         payload: vec![],
     };
     let output = instance
-        .call_with_value("color-to-num", &input, 0)
+        .call_with_value("color-to-num", &input)
         .expect("failed to call color-to-num");
     assert_eq!(output, Value::S32(3));
 }
@@ -80,7 +80,7 @@ fn test_wisp_variant_with_payload_circle() {
         payload: vec![Value::S32(10)],
     };
     let output = instance
-        .call_with_value("get-dimension", &input, 0)
+        .call_with_value("get-dimension", &input)
         .expect("failed to call get-dimension");
     assert_eq!(output, Value::S32(10));
 }
@@ -100,7 +100,7 @@ fn test_wisp_variant_with_payload_square() {
         payload: vec![Value::S32(5)],
     };
     let output = instance
-        .call_with_value("get-dimension", &input, 0)
+        .call_with_value("get-dimension", &input)
         .expect("failed to call get-dimension");
     assert_eq!(output, Value::S32(5));
 }
@@ -120,7 +120,7 @@ fn test_wisp_variant_double_dimension() {
         payload: vec![Value::S32(7)],
     };
     let output = instance
-        .call_with_value("double-dimension", &input, 0)
+        .call_with_value("double-dimension", &input)
         .expect("failed to call double-dimension");
     assert_eq!(output, Value::S32(14));
 
@@ -132,7 +132,7 @@ fn test_wisp_variant_double_dimension() {
         payload: vec![Value::S32(8)],
     };
     let output = instance
-        .call_with_value("double-dimension", &input, 0)
+        .call_with_value("double-dimension", &input)
         .expect("failed to call double-dimension");
     assert_eq!(output, Value::S32(16));
 }

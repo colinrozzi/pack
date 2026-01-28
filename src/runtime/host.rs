@@ -387,9 +387,10 @@ impl<'a, 'b, T: 'static> InterfaceBuilder<'a, 'b, T> {
     /// type `R` must implement `Into<Value>`. Use `#[derive(GraphValue)]` to
     /// automatically implement these traits.
     ///
-    /// The WASM function signature is `(in_ptr, in_len, out_ptr, out_cap) -> out_len`:
+    /// The WASM function signature is `(in_ptr, in_len, out_ptr_ptr, out_len_ptr) -> status`:
     /// - Input: in_ptr/in_len point to Graph ABI encoded input value
-    /// - Output: caller provides out_ptr/out_cap buffer, function returns bytes written
+    /// - Output: host writes data to OUTPUT_BUFFER_OFFSET, then writes ptr/len to the provided slots
+    /// - Returns 0 on success, -1 on error
     ///
     /// Errors during decode/encode are logged via the error handler (see
     /// `HostLinkerBuilder::on_error`). On error, returns -1.
@@ -424,8 +425,8 @@ impl<'a, 'b, T: 'static> InterfaceBuilder<'a, 'b, T> {
                 move |caller: Caller<'_, T>,
                       in_ptr: i32,
                       in_len: i32,
-                      out_ptr: i32,
-                      out_cap: i32|
+                      out_ptr_ptr: i32,
+                      out_len_ptr: i32|
                       -> i32 {
                     let func = func.clone();
                     let error_handler = error_handler.clone();
@@ -470,17 +471,43 @@ impl<'a, 'b, T: 'static> InterfaceBuilder<'a, 'b, T> {
                     // Call user function
                     let output: R = func(&mut ctx, input);
 
-                    // Convert result to Value
+                    // Convert result to Value and encode
                     let output_value: Value = output.into();
-
-                    // Write output to caller-provided buffer
-                    match ctx.write_value_at(out_ptr, out_cap, &output_value) {
-                        Ok(out_len) => out_len,
+                    let bytes = match encode(&output_value) {
+                        Ok(b) => b,
                         Err(e) => {
-                            report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
-                            -1
+                            report(HostFunctionErrorKind::Encode(e.to_string()));
+                            return -1;
                         }
+                    };
+
+                    // Write output to a fixed buffer location
+                    let memory = match ctx.caller.get_export("memory").and_then(|e| e.into_memory()) {
+                        Some(m) => m,
+                        None => {
+                            report(HostFunctionErrorKind::MemoryWrite("no memory export".to_string()));
+                            return -1;
+                        }
+                    };
+
+                    // Write data to OUTPUT_BUFFER_OFFSET (after the slots)
+                    let data_offset = OUTPUT_BUFFER_OFFSET + 8; // After the ptr/len slots
+                    if let Err(e) = memory.write(&mut ctx.caller, data_offset, &bytes) {
+                        report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
+                        return -1;
                     }
+
+                    // Write ptr and len to the caller's slots
+                    if let Err(e) = memory.write(&mut ctx.caller, out_ptr_ptr as usize, &(data_offset as i32).to_le_bytes()) {
+                        report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
+                        return -1;
+                    }
+                    if let Err(e) = memory.write(&mut ctx.caller, out_len_ptr as usize, &(bytes.len() as i32).to_le_bytes()) {
+                        report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
+                        return -1;
+                    }
+
+                    0 // Success
                 },
             )
             .map_err(|e| LinkerError::FunctionRegistration(e.to_string()))?;
@@ -495,7 +522,7 @@ impl<'a, 'b, T: 'static> InterfaceBuilder<'a, 'b, T> {
     /// - `Ok(value)` → `Variant { tag: 0, payload: Some(value) }`
     /// - `Err(error)` → `Variant { tag: 1, payload: Some(error) }`
     ///
-    /// The WASM function signature is `(in_ptr, in_len, out_ptr, out_cap) -> out_len`.
+    /// The WASM function signature is `(in_ptr, in_len, out_ptr_ptr, out_len_ptr) -> status`.
     /// On decode/encode errors, returns -1.
     ///
     /// # Example
@@ -530,8 +557,8 @@ impl<'a, 'b, T: 'static> InterfaceBuilder<'a, 'b, T> {
                 move |caller: Caller<'_, T>,
                       in_ptr: i32,
                       in_len: i32,
-                      out_ptr: i32,
-                      out_cap: i32|
+                      out_ptr_ptr: i32,
+                      out_len_ptr: i32|
                       -> i32 {
                     let func = func.clone();
                     let error_handler = error_handler.clone();
@@ -591,14 +618,41 @@ impl<'a, 'b, T: 'static> InterfaceBuilder<'a, 'b, T> {
                         },
                     };
 
-                    // Write output to caller-provided buffer
-                    match ctx.write_value_at(out_ptr, out_cap, &output_value) {
-                        Ok(out_len) => out_len,
+                    // Encode output
+                    let bytes = match encode(&output_value) {
+                        Ok(b) => b,
                         Err(e) => {
-                            report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
-                            -1
+                            report(HostFunctionErrorKind::Encode(e.to_string()));
+                            return -1;
                         }
+                    };
+
+                    // Write output to a fixed buffer location
+                    let memory = match ctx.caller.get_export("memory").and_then(|e| e.into_memory()) {
+                        Some(m) => m,
+                        None => {
+                            report(HostFunctionErrorKind::MemoryWrite("no memory export".to_string()));
+                            return -1;
+                        }
+                    };
+
+                    let data_offset = OUTPUT_BUFFER_OFFSET + 8;
+                    if let Err(e) = memory.write(&mut ctx.caller, data_offset, &bytes) {
+                        report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
+                        return -1;
                     }
+
+                    // Write ptr and len to the caller's slots
+                    if let Err(e) = memory.write(&mut ctx.caller, out_ptr_ptr as usize, &(data_offset as i32).to_le_bytes()) {
+                        report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
+                        return -1;
+                    }
+                    if let Err(e) = memory.write(&mut ctx.caller, out_len_ptr as usize, &(bytes.len() as i32).to_le_bytes()) {
+                        report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
+                        return -1;
+                    }
+
+                    0 // Success
                 },
             )
             .map_err(|e| LinkerError::FunctionRegistration(e.to_string()))?;
@@ -625,7 +679,7 @@ impl<'a, 'b, T: Send + Clone + 'static> InterfaceBuilder<'a, 'b, T> {
     ///
     /// **Important**: This requires an async-enabled runtime (`AsyncRuntime`).
     ///
-    /// The WASM function signature is `(in_ptr, in_len, out_ptr, out_cap) -> out_len`.
+    /// The WASM function signature is `(in_ptr, in_len, out_ptr_ptr, out_len_ptr) -> status`.
     /// On decode/encode errors, returns -1.
     ///
     /// # Example
@@ -662,7 +716,7 @@ impl<'a, 'b, T: Send + Clone + 'static> InterfaceBuilder<'a, 'b, T> {
                 &self.module_name,
                 name,
                 move |mut caller: Caller<'_, T>,
-                      (in_ptr, in_len, out_ptr, out_cap): (i32, i32, i32, i32)| {
+                      (in_ptr, in_len, out_ptr_ptr, out_len_ptr): (i32, i32, i32, i32)| {
                     let func = func.clone();
                     let error_handler = error_handler.clone();
                     let interface_name = interface_name.clone();
@@ -739,23 +793,24 @@ impl<'a, 'b, T: Send + Clone + 'static> InterfaceBuilder<'a, 'b, T> {
                             }
                         };
 
-                        // Check capacity
-                        if bytes.len() > out_cap as usize {
-                            report(HostFunctionErrorKind::MemoryWrite(format!(
-                                "output buffer too small: need {} bytes, have {} capacity",
-                                bytes.len(),
-                                out_cap
-                            )));
-                            return -1;
-                        }
-
-                        // Write output to caller-provided buffer
-                        if let Err(e) = memory.write(&mut caller, out_ptr as usize, &bytes) {
+                        // Write data to OUTPUT_BUFFER_OFFSET (after the slots)
+                        let data_offset = OUTPUT_BUFFER_OFFSET + 8;
+                        if let Err(e) = memory.write(&mut caller, data_offset, &bytes) {
                             report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
                             return -1;
                         }
 
-                        bytes.len() as i32
+                        // Write ptr and len to the caller's slots
+                        if let Err(e) = memory.write(&mut caller, out_ptr_ptr as usize, &(data_offset as i32).to_le_bytes()) {
+                            report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
+                            return -1;
+                        }
+                        if let Err(e) = memory.write(&mut caller, out_len_ptr as usize, &(bytes.len() as i32).to_le_bytes()) {
+                            report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
+                            return -1;
+                        }
+
+                        0 // Success
                     })
                 },
             )
@@ -769,7 +824,7 @@ impl<'a, 'b, T: Send + Clone + 'static> InterfaceBuilder<'a, 'b, T> {
     /// Both success and error types are encoded as WIT result variants.
     /// The `AsyncCtx` contains a cloned copy of the store state.
     ///
-    /// The WASM function signature is `(in_ptr, in_len, out_ptr, out_cap) -> out_len`.
+    /// The WASM function signature is `(in_ptr, in_len, out_ptr_ptr, out_len_ptr) -> status`.
     /// On decode/encode errors, returns -1.
     ///
     /// # Example
@@ -805,7 +860,7 @@ impl<'a, 'b, T: Send + Clone + 'static> InterfaceBuilder<'a, 'b, T> {
                 &self.module_name,
                 name,
                 move |mut caller: Caller<'_, T>,
-                      (in_ptr, in_len, out_ptr, out_cap): (i32, i32, i32, i32)| {
+                      (in_ptr, in_len, out_ptr_ptr, out_len_ptr): (i32, i32, i32, i32)| {
                     let func = func.clone();
                     let error_handler = error_handler.clone();
                     let interface_name = interface_name.clone();
@@ -896,23 +951,24 @@ impl<'a, 'b, T: Send + Clone + 'static> InterfaceBuilder<'a, 'b, T> {
                             }
                         };
 
-                        // Check capacity
-                        if bytes.len() > out_cap as usize {
-                            report(HostFunctionErrorKind::MemoryWrite(format!(
-                                "output buffer too small: need {} bytes, have {} capacity",
-                                bytes.len(),
-                                out_cap
-                            )));
-                            return -1;
-                        }
-
-                        // Write output to caller-provided buffer
-                        if let Err(e) = memory.write(&mut caller, out_ptr as usize, &bytes) {
+                        // Write data to OUTPUT_BUFFER_OFFSET (after the slots)
+                        let data_offset = OUTPUT_BUFFER_OFFSET + 8;
+                        if let Err(e) = memory.write(&mut caller, data_offset, &bytes) {
                             report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
                             return -1;
                         }
 
-                        bytes.len() as i32
+                        // Write ptr and len to the caller's slots
+                        if let Err(e) = memory.write(&mut caller, out_ptr_ptr as usize, &(data_offset as i32).to_le_bytes()) {
+                            report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
+                            return -1;
+                        }
+                        if let Err(e) = memory.write(&mut caller, out_len_ptr as usize, &(bytes.len() as i32).to_le_bytes()) {
+                            report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
+                            return -1;
+                        }
+
+                        0 // Success
                     })
                 },
             )

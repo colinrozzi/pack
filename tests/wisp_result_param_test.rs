@@ -32,7 +32,7 @@ fn test_wisp_result_ok() {
     // Test handle-result with Ok(42) should return 42
     let input = ok_value(Value::S32(42));
     let output = instance
-        .call_with_value("handle-result", &input, 0)
+        .call_with_value("handle-result", &input)
         .expect("failed to call handle-result");
     assert_eq!(output, Value::S32(42));
 }
@@ -47,7 +47,7 @@ fn test_wisp_result_err() {
     // Test handle-result with Err(10) should return -10
     let input = err_value(Value::S32(10));
     let output = instance
-        .call_with_value("handle-result", &input, 0)
+        .call_with_value("handle-result", &input)
         .expect("failed to call handle-result");
     assert_eq!(output, Value::S32(-10));
 }
@@ -62,7 +62,7 @@ fn test_wisp_result_double_ok() {
     // Test double-ok with Ok(7) should return 14
     let input = ok_value(Value::S32(7));
     let output = instance
-        .call_with_value("double-ok", &input, 0)
+        .call_with_value("double-ok", &input)
         .expect("failed to call double-ok");
     assert_eq!(output, Value::S32(14));
 }
@@ -77,7 +77,7 @@ fn test_wisp_result_double_err() {
     // Test double-ok with Err(99) should return 0
     let input = err_value(Value::S32(99));
     let output = instance
-        .call_with_value("double-ok", &input, 0)
+        .call_with_value("double-ok", &input)
         .expect("failed to call double-ok");
     assert_eq!(output, Value::S32(0));
 }
@@ -92,7 +92,7 @@ fn test_wisp_is_ok_true() {
     // Test is-ok with Ok(123) should return 1
     let input = ok_value(Value::S32(123));
     let output = instance
-        .call_with_value("is-ok", &input, 0)
+        .call_with_value("is-ok", &input)
         .expect("failed to call is-ok");
     assert_eq!(output, Value::S32(1));
 }
@@ -107,7 +107,7 @@ fn test_wisp_is_ok_false() {
     // Test is-ok with Err(456) should return 0
     let input = err_value(Value::S32(456));
     let output = instance
-        .call_with_value("is-ok", &input, 0)
+        .call_with_value("is-ok", &input)
         .expect("failed to call is-ok");
     assert_eq!(output, Value::S32(0));
 }

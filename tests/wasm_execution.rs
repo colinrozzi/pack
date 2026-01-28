@@ -238,27 +238,30 @@ fn memory_reverse_string() {
 // Graph ABI tests
 // ============================================================================
 
-/// An echo module that copies input bytes to the caller-provided output buffer.
-/// New calling convention: (in_ptr, in_len, out_ptr, out_cap) -> out_len
+/// An echo module using the Pack ABI guest-allocates convention.
+/// Calling convention: (in_ptr, in_len, out_ptr_ptr, out_len_ptr) -> status
+/// Guest copies input to a fixed output location and writes ptr/len to provided slots.
 const ECHO_MODULE: &str = r#"
 (module
     (memory (export "memory") 1)
 
-    ;; Echo: copy input bytes to caller-provided output buffer
-    ;; Returns out_len (bytes written), or -1 if buffer too small
-    (func $echo (param $in_ptr i32) (param $in_len i32) (param $out_ptr i32) (param $out_cap i32) (result i32)
-        (local $i i32)
+    ;; Fixed output buffer location (after result slots at 16KB+8)
+    (global $output_offset i32 (i32.const 16392))
 
-        ;; Check if output buffer is large enough
-        (if (i32.gt_u (local.get $in_len) (local.get $out_cap))
-            (then (return (i32.const -1)))
-        )
+    ;; Echo: copy input to output buffer and write ptr/len to result slots
+    ;; Returns 0 on success
+    (func $echo (param $in_ptr i32) (param $in_len i32) (param $out_ptr_ptr i32) (param $out_len_ptr i32) (result i32)
+        ;; Copy input to output buffer
+        (memory.copy (global.get $output_offset) (local.get $in_ptr) (local.get $in_len))
 
-        ;; Copy input to output buffer using memory.copy
-        (memory.copy (local.get $out_ptr) (local.get $in_ptr) (local.get $in_len))
+        ;; Write output pointer to the ptr slot
+        (i32.store (local.get $out_ptr_ptr) (global.get $output_offset))
 
-        ;; Return the length
-        (local.get $in_len)
+        ;; Write output length to the len slot
+        (i32.store (local.get $out_len_ptr) (local.get $in_len))
+
+        ;; Return 0 (success)
+        (i32.const 0)
     )
     (export "echo" (func $echo))
 )
@@ -275,7 +278,7 @@ fn graph_abi_echo_roundtrip() {
     // Test with a simple integer
     let input = Value::S64(42);
     let output = instance
-        .call_with_value("echo", &input, 0)
+        .call_with_value("echo", &input)
         .expect("failed to call echo");
     assert_eq!(output, input);
 }
@@ -290,7 +293,7 @@ fn graph_abi_echo_string() {
 
     let input = Value::String("Hello, Graph ABI!".to_string());
     let output = instance
-        .call_with_value("echo", &input, 0)
+        .call_with_value("echo", &input)
         .expect("failed to call echo");
     assert_eq!(output, input);
 }
@@ -312,7 +315,7 @@ fn graph_abi_echo_list() {
         ],
     };
     let output = instance
-        .call_with_value("echo", &input, 0)
+        .call_with_value("echo", &input)
         .expect("failed to call echo");
     assert_eq!(output, input);
 }
@@ -333,7 +336,7 @@ fn graph_abi_echo_variant() {
         payload: vec![Value::String("symbol".to_string())],
     };
     let output = instance
-        .call_with_value("echo", &input, 0)
+        .call_with_value("echo", &input)
         .expect("failed to call echo");
     assert_eq!(output, input);
 }
@@ -376,7 +379,7 @@ fn graph_abi_echo_nested() {
         ],
     };
     let output = instance
-        .call_with_value("echo", &input, 0)
+        .call_with_value("echo", &input)
         .expect("failed to call echo");
     assert_eq!(output, input);
 }
@@ -409,7 +412,7 @@ fn rust_package_echo_roundtrip() {
     // Test with a simple integer
     let input = Value::S64(42);
     let output = instance
-        .call_with_value("echo", &input, 0)
+        .call_with_value("echo", &input)
         .expect("failed to call echo");
     assert_eq!(output, input);
 }
@@ -448,7 +451,7 @@ fn rust_package_echo_complex() {
     };
 
     let output = instance
-        .call_with_value("echo", &input, 0)
+        .call_with_value("echo", &input)
         .expect("failed to call echo");
     assert_eq!(output, input);
 }
@@ -464,7 +467,7 @@ fn rust_package_transform_doubles_s64() {
     // Test transform doubles S64
     let input = Value::S64(21);
     let output = instance
-        .call_with_value("transform", &input, 0)
+        .call_with_value("transform", &input)
         .expect("failed to call transform");
     assert_eq!(output, Value::S64(42));
 }
@@ -507,7 +510,7 @@ fn rust_package_transform_nested() {
     };
 
     let output = instance
-        .call_with_value("transform", &input, 0)
+        .call_with_value("transform", &input)
         .expect("failed to call transform");
     assert_eq!(output, expected);
 }
@@ -523,7 +526,7 @@ fn rust_package_transform_preserves_strings() {
     // Strings should pass through unchanged
     let input = Value::String("hello world".to_string());
     let output = instance
-        .call_with_value("transform", &input, 0)
+        .call_with_value("transform", &input)
         .expect("failed to call transform");
     assert_eq!(output, input);
 }
@@ -563,7 +566,7 @@ fn host_imports_logging() {
     // Call process with a value - this should log messages
     let input = Value::S64(42);
     let output = instance
-        .call_with_value("process", &input, 0)
+        .call_with_value("process", &input)
         .expect("failed to call process");
 
     // The transform doubles S64 values
@@ -594,7 +597,7 @@ fn host_imports_logging_with_string() {
     // Call with a string value
     let input = Value::String("test message".to_string());
     let output = instance
-        .call_with_value("process", &input, 0)
+        .call_with_value("process", &input)
         .expect("failed to call process");
 
     // Strings pass through unchanged
@@ -637,7 +640,7 @@ fn host_imports_transform_nested() {
     };
 
     let output = instance
-        .call_with_value("process", &input, 0)
+        .call_with_value("process", &input)
         .expect("failed to call process");
 
     assert_eq!(output, expected);
@@ -661,7 +664,7 @@ fn host_imports_clear_logs() {
 
     // First call
     let input = Value::S64(1);
-    let _ = instance.call_with_value("process", &input, 0).unwrap();
+    let _ = instance.call_with_value("process", &input).unwrap();
 
     let logs1 = instance.get_logs();
     assert!(!logs1.is_empty());
@@ -671,7 +674,7 @@ fn host_imports_clear_logs() {
     assert!(instance.get_logs().is_empty(), "Logs should be cleared");
 
     // Second call
-    let _ = instance.call_with_value("process", &input, 0).unwrap();
+    let _ = instance.call_with_value("process", &input).unwrap();
     let logs2 = instance.get_logs();
     assert!(!logs2.is_empty());
 
@@ -790,7 +793,7 @@ fn sexpr_eval_simple_addition() {
     ]);
 
     let output = instance
-        .call_with_value("evaluate", &input, 0)
+        .call_with_value("evaluate", &input)
         .expect("failed to call evaluate");
 
     assert_eq!(output, sexpr::num(6));
@@ -812,7 +815,7 @@ fn sexpr_eval_nested_arithmetic() {
     ]);
 
     let output = instance
-        .call_with_value("evaluate", &input, 0)
+        .call_with_value("evaluate", &input)
         .expect("failed to call evaluate");
 
     assert_eq!(output, sexpr::num(30));
@@ -834,7 +837,7 @@ fn sexpr_eval_comparison() {
     ]);
 
     let output = instance
-        .call_with_value("evaluate", &input, 0)
+        .call_with_value("evaluate", &input)
         .expect("failed to call evaluate");
 
     assert_eq!(output, sexpr::boolean(true));
@@ -857,7 +860,7 @@ fn sexpr_eval_if_true() {
     ]);
 
     let output = instance
-        .call_with_value("evaluate", &input, 0)
+        .call_with_value("evaluate", &input)
         .expect("failed to call evaluate");
 
     assert_eq!(output, sexpr::num(42));
@@ -880,7 +883,7 @@ fn sexpr_eval_if_false() {
     ]);
 
     let output = instance
-        .call_with_value("evaluate", &input, 0)
+        .call_with_value("evaluate", &input)
         .expect("failed to call evaluate");
 
     assert_eq!(output, sexpr::num(0));
@@ -906,7 +909,7 @@ fn sexpr_eval_list_operations() {
     ]);
 
     let output = instance
-        .call_with_value("evaluate", &input, 0)
+        .call_with_value("evaluate", &input)
         .expect("failed to call evaluate");
 
     assert_eq!(output, sexpr::num(1));
@@ -934,7 +937,7 @@ fn sexpr_eval_length() {
     ]);
 
     let output = instance
-        .call_with_value("evaluate", &input, 0)
+        .call_with_value("evaluate", &input)
         .expect("failed to call evaluate");
 
     assert_eq!(output, sexpr::num(5));
@@ -968,7 +971,7 @@ fn sexpr_eval_complex_expression() {
     ]);
 
     let output = instance
-        .call_with_value("evaluate", &input, 0)
+        .call_with_value("evaluate", &input)
         .expect("failed to call evaluate");
 
     assert_eq!(output, sexpr::num(11));

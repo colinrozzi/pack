@@ -10,7 +10,7 @@ extern crate alloc;
 use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use composite_abi::ConversionError;
+use pack_abi::ConversionError;
 use pack_guest::{export, Value};
 
 // Set up allocator and panic handler

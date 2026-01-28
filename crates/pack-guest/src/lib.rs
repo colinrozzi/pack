@@ -80,8 +80,10 @@ where
     // Helper to write error and return -1
     let write_error = |msg: &str| -> i32 {
         let bytes = msg.as_bytes();
+        // Allocate exactly the size we need
         let mut buf = alloc::vec::Vec::with_capacity(bytes.len());
         buf.extend_from_slice(bytes);
+        // Vec::with_capacity ensures capacity == length here
 
         let ptr = buf.as_ptr() as i32;
         let len = buf.len() as i32;
@@ -114,16 +116,15 @@ where
     };
 
     // Encode output
-    let output_bytes = match encode(&output_value) {
+    let mut output_bytes = match encode(&output_value) {
         Ok(b) => b,
         Err(e) => return write_error(&alloc::format!("encode error: {:?}", e)),
     };
 
-    // Write output pointer and length to the provided slots
+    // Shrink to fit ensures capacity == length for proper deallocation
+    output_bytes.shrink_to_fit();
     let ptr = output_bytes.as_ptr() as i32;
     let len = output_bytes.len() as i32;
-
-    // Leak the buffer so it stays alive for the host to read
     core::mem::forget(output_bytes);
 
     unsafe {
@@ -134,36 +135,60 @@ where
     0 // Success
 }
 
+/// Allocate a buffer in guest memory.
+///
+/// The host calls this to allocate space for input data before calling an export.
+/// Returns a pointer to the allocated buffer, or 0 on allocation failure.
+///
+/// The host must call `__pack_free(ptr, len)` to free this buffer after use.
+#[no_mangle]
+pub extern "C" fn __pack_alloc(size: i32) -> i32 {
+    if size <= 0 {
+        return 0;
+    }
+    unsafe {
+        // Use raw allocation to ensure size matches exactly what we'll dealloc
+        let layout = core::alloc::Layout::from_size_align_unchecked(size as usize, 1);
+        let ptr = alloc::alloc::alloc_zeroed(layout);
+        if ptr.is_null() {
+            0
+        } else {
+            ptr as i32
+        }
+    }
+}
+
 /// Free a buffer allocated by the guest.
 ///
-/// The host must call this after reading the output from an export call.
+/// The host must call this after reading the output from an export call,
+/// and after using input buffers allocated via `__pack_alloc`.
 ///
 /// # Safety
 ///
-/// The `ptr` and `len` must have been returned from a previous export call.
-/// Calling this with invalid values is undefined behavior.
+/// The `ptr` and `len` must have been returned from `__pack_alloc` or
+/// from an export call's result slots. Calling with invalid values is UB.
 #[no_mangle]
 pub extern "C" fn __pack_free(ptr: i32, len: i32) {
     if ptr == 0 || len == 0 {
         return;
     }
     unsafe {
-        let _ = alloc::vec::Vec::from_raw_parts(
-            ptr as *mut u8,
-            len as usize,
-            len as usize,
-        );
-        // Vec drops here, memory freed
+        // Use the global allocator directly to deallocate.
+        // Create a layout matching what was allocated.
+        let layout = core::alloc::Layout::from_size_align_unchecked(len as usize, 1);
+        alloc::alloc::dealloc(ptr as *mut u8, layout);
     }
 }
-
-/// Default output buffer size for imports (32KB)
-const IMPORT_OUTPUT_BUFFER_SIZE: usize = 32 * 1024;
 
 /// Internal implementation for the import macro.
 ///
 /// This function handles the boilerplate of encoding input, calling
 /// the raw import function, and decoding the result.
+///
+/// Uses the guest-allocates ABI:
+/// - `fn(in_ptr, in_len, out_ptr_ptr, out_len_ptr) -> status`
+/// - status 0 = success, -1 = error
+/// - The callee writes result ptr/len to the provided slots
 ///
 /// **Do not call this directly** - use the `#[import]` macro instead.
 #[doc(hidden)]
@@ -177,27 +202,34 @@ where
         Err(_) => panic!("failed to encode import input"),
     };
 
-    // Prepare output buffer
-    let mut output_buf = __alloc::vec![0u8; IMPORT_OUTPUT_BUFFER_SIZE];
+    // Prepare slots for the callee to write result ptr/len
+    let mut out_ptr: i32 = 0;
+    let mut out_len: i32 = 0;
 
-    // Call the raw import function
-    let result_len = raw_fn(
+    // Call the raw import function with guest-allocates ABI
+    let status = raw_fn(
         input_bytes.as_ptr() as i32,
         input_bytes.len() as i32,
-        output_buf.as_mut_ptr() as i32,
-        output_buf.len() as i32,
+        &mut out_ptr as *mut i32 as i32,
+        &mut out_len as *mut i32 as i32,
     );
 
-    if result_len < 0 {
+    if status != 0 {
         panic!("import function returned error");
     }
 
+    // Read the result from the location the callee specified
+    let output_bytes = unsafe {
+        core::slice::from_raw_parts(out_ptr as *const u8, out_len as usize)
+    };
+
     // Decode the result
-    let output_bytes = &output_buf[..result_len as usize];
-    match decode(output_bytes) {
+    let result = match decode(output_bytes) {
         Ok(v) => v,
         Err(_) => panic!("failed to decode import result"),
-    }
+    };
+
+    result
 }
 
 /// A simple bump allocator for guest packages.

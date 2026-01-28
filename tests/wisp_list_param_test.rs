@@ -18,7 +18,7 @@ fn test_wisp_list_len() {
         items: vec![Value::S32(1), Value::S32(2), Value::S32(3)],
     };
     let output = instance
-        .call_with_value("get-list-len", &input, 0)
+        .call_with_value("get-list-len", &input)
         .expect("failed to call get-list-len");
     assert_eq!(output, Value::S32(3));
 
@@ -28,7 +28,7 @@ fn test_wisp_list_len() {
         items: vec![],
     };
     let output = instance
-        .call_with_value("get-list-len", &input, 0)
+        .call_with_value("get-list-len", &input)
         .expect("failed to call get-list-len with empty list");
     assert_eq!(output, Value::S32(0));
 }
@@ -46,7 +46,7 @@ fn test_wisp_list_first() {
         items: vec![Value::S32(42), Value::S32(10), Value::S32(5)],
     };
     let output = instance
-        .call_with_value("list-first", &input, 0)
+        .call_with_value("list-first", &input)
         .expect("failed to call list-first");
     assert_eq!(output, Value::S32(42));
 
@@ -56,7 +56,7 @@ fn test_wisp_list_first() {
         items: vec![],
     };
     let output = instance
-        .call_with_value("list-first", &input, 0)
+        .call_with_value("list-first", &input)
         .expect("failed to call list-first with empty list");
     assert_eq!(output, Value::S32(-1));
 }
@@ -74,7 +74,7 @@ fn test_wisp_list_second() {
         items: vec![Value::S32(1), Value::S32(99), Value::S32(3)],
     };
     let output = instance
-        .call_with_value("list-second", &input, 0)
+        .call_with_value("list-second", &input)
         .expect("failed to call list-second");
     assert_eq!(output, Value::S32(99));
 
@@ -84,7 +84,7 @@ fn test_wisp_list_second() {
         items: vec![Value::S32(1)],
     };
     let output = instance
-        .call_with_value("list-second", &input, 0)
+        .call_with_value("list-second", &input)
         .expect("failed to call list-second with single element");
     assert_eq!(output, Value::S32(-1));
 }
@@ -102,7 +102,7 @@ fn test_wisp_sum_first_two() {
         items: vec![Value::S32(10), Value::S32(20), Value::S32(30)],
     };
     let output = instance
-        .call_with_value("sum-first-two", &input, 0)
+        .call_with_value("sum-first-two", &input)
         .expect("failed to call sum-first-two");
     assert_eq!(output, Value::S32(30));
 
@@ -112,7 +112,7 @@ fn test_wisp_sum_first_two() {
         items: vec![Value::S32(7)],
     };
     let output = instance
-        .call_with_value("sum-first-two", &input, 0)
+        .call_with_value("sum-first-two", &input)
         .expect("failed to call sum-first-two with single element");
     assert_eq!(output, Value::S32(7));
 
@@ -122,7 +122,7 @@ fn test_wisp_sum_first_two() {
         items: vec![],
     };
     let output = instance
-        .call_with_value("sum-first-two", &input, 0)
+        .call_with_value("sum-first-two", &input)
         .expect("failed to call sum-first-two with empty list");
     assert_eq!(output, Value::S32(0));
 }

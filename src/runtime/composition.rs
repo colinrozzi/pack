@@ -263,24 +263,36 @@ fn cross_package_call(
     };
     // Registry lock released here
 
-    // Call the source package with the new ABI
+    // Call the source package - try dynamic allocation, fall back to fixed buffer
     let result = {
         let mut store_guard = store_arc.lock().unwrap();
 
-        // Write input to source's memory
+        // Get memory
         let src_memory = match store_guard.get_memory(&instance) {
             Some(m) => m,
             None => return -1,
         };
 
+        // Try to allocate input buffer dynamically, fall back to fixed buffer
+        let (in_ptr, dynamic_input) = match store_guard.get_alloc_func(&instance) {
+            Some(alloc_func) => {
+                match store_guard.call_alloc(&alloc_func, input_bytes.len() as i32) {
+                    Ok(ptr) if ptr != 0 => (ptr, true),
+                    _ => (INPUT_BUFFER_OFFSET as i32, false),
+                }
+            }
+            None => (INPUT_BUFFER_OFFSET as i32, false),
+        };
+
+        // Write input to buffer
         if store_guard
-            .write_memory(&src_memory, INPUT_BUFFER_OFFSET, &input_bytes)
+            .write_memory(&src_memory, in_ptr as usize, &input_bytes)
             .is_err()
         {
             return -1;
         }
 
-        // Call the source function with guest-allocates ABI
+        // Call the source function
         let func = match store_guard.get_typed_func(&instance, source_fn) {
             Some(f) => f,
             None => return -1,
@@ -288,7 +300,7 @@ fn cross_package_call(
 
         let status = match store_guard.call_func(
             &func,
-            INPUT_BUFFER_OFFSET as i32,
+            in_ptr,
             input_bytes.len() as i32,
             RESULT_PTR_OFFSET as i32,
             RESULT_LEN_OFFSET as i32,
@@ -296,6 +308,13 @@ fn cross_package_call(
             Ok(s) => s,
             Err(_) => return -1,
         };
+
+        // Free the input buffer if dynamically allocated
+        if dynamic_input {
+            if let Some(free_func) = store_guard.get_free_func(&instance) {
+                let _ = store_guard.call_free(&free_func, in_ptr, input_bytes.len() as i32);
+            }
+        }
 
         if status != 0 {
             // Error occurred - read error message from slots and propagate
@@ -325,7 +344,7 @@ fn cross_package_call(
             return -1;
         }
 
-        // Free the guest's buffer by calling __pack_free
+        // Free the guest's output buffer
         if let Some(free_func) = store_guard.get_free_func(&instance) {
             let _ = store_guard.call_free(&free_func, out_ptr as i32, out_len as i32);
         }
@@ -443,6 +462,27 @@ impl UntypedStore {
         }
     }
 
+    fn get_alloc_func(
+        &mut self,
+        instance: &wasmtime::Instance,
+    ) -> Option<wasmtime::TypedFunc<i32, i32>> {
+        match self {
+            UntypedStore::Unit(store) => instance.get_typed_func(&mut *store, "__pack_alloc").ok(),
+            UntypedStore::Composed(store) => instance.get_typed_func(&mut *store, "__pack_alloc").ok(),
+        }
+    }
+
+    fn call_alloc(
+        &mut self,
+        func: &wasmtime::TypedFunc<i32, i32>,
+        size: i32,
+    ) -> Result<i32, ()> {
+        match self {
+            UntypedStore::Unit(store) => func.call(&mut *store, size).map_err(|_| ()),
+            UntypedStore::Composed(store) => func.call(&mut *store, size).map_err(|_| ()),
+        }
+    }
+
     fn call_func(
         &mut self,
         func: &wasmtime::TypedFunc<(i32, i32, i32, i32), i32>,
@@ -500,28 +540,47 @@ impl BuiltComposition {
         // Encode input
         let input_bytes = encode(input).map_err(|e| RuntimeError::AbiError(e.to_string()))?;
 
-        // Get memory and write input
+        // Get memory
         let memory = store.get_memory(&instance).ok_or_else(|| {
             RuntimeError::MemoryError("No memory export".into())
         })?;
 
+        // Try to allocate input buffer dynamically, fall back to fixed buffer
+        let (in_ptr, dynamic_input) = match store.get_alloc_func(&instance) {
+            Some(alloc_func) => {
+                match store.call_alloc(&alloc_func, input_bytes.len() as i32) {
+                    Ok(ptr) if ptr != 0 => (ptr, true),
+                    _ => (INPUT_BUFFER_OFFSET as i32, false),
+                }
+            }
+            None => (INPUT_BUFFER_OFFSET as i32, false),
+        };
+
+        // Write input to buffer
         store
-            .write_memory(&memory, INPUT_BUFFER_OFFSET, &input_bytes)
+            .write_memory(&memory, in_ptr as usize, &input_bytes)
             .map_err(|_| RuntimeError::MemoryError("Failed to write input".into()))?;
 
-        // Get and call the function with guest-allocates ABI
+        // Get and call the function
         let func = store.get_typed_func(&instance, function).ok_or_else(|| {
             RuntimeError::FunctionNotFound(function.to_string())
         })?;
 
         let status = store
             .call_func(&func,
-                INPUT_BUFFER_OFFSET as i32,
+                in_ptr,
                 input_bytes.len() as i32,
                 RESULT_PTR_OFFSET as i32,
                 RESULT_LEN_OFFSET as i32,
             )
             .map_err(|_| RuntimeError::WasmError("Function call failed".into()))?;
+
+        // Free the input buffer if dynamically allocated
+        if dynamic_input {
+            if let Some(free_func) = store.get_free_func(&instance) {
+                let _ = store.call_free(&free_func, in_ptr, input_bytes.len() as i32);
+            }
+        }
 
         if status != 0 {
             // Error - read error message from result slots

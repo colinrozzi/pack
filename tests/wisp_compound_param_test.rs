@@ -21,7 +21,7 @@ fn test_wisp_record_param() {
         ],
     };
     let output = instance
-        .call_with_value("point-sum", &input, 0)
+        .call_with_value("point-sum", &input)
         .expect("failed to call point-sum");
     assert_eq!(output, Value::S32(30));
 
@@ -34,7 +34,7 @@ fn test_wisp_record_param() {
         ],
     };
     let output = instance
-        .call_with_value("point-sum", &input, 0)
+        .call_with_value("point-sum", &input)
         .expect("failed to call point-sum");
     assert_eq!(output, Value::S32(50));
 }
@@ -52,7 +52,7 @@ fn test_wisp_option_param_some() {
         value: Some(Box::new(Value::S32(42))),
     };
     let output = instance
-        .call_with_value("unwrap-or-zero", &input, 0)
+        .call_with_value("unwrap-or-zero", &input)
         .expect("failed to call unwrap-or-zero with Some");
     assert_eq!(output, Value::S32(42));
 }
@@ -70,7 +70,7 @@ fn test_wisp_option_param_none() {
         value: None,
     };
     let output = instance
-        .call_with_value("unwrap-or-zero", &input, 0)
+        .call_with_value("unwrap-or-zero", &input)
         .expect("failed to call unwrap-or-zero with None");
     assert_eq!(output, Value::S32(0));
 }
@@ -88,7 +88,7 @@ fn test_wisp_string_in_tuple() {
         Value::S32(10),
     ]);
     let output = instance
-        .call_with_value("greet-with-count", &input, 0)
+        .call_with_value("greet-with-count", &input)
         .expect("failed to call greet-with-count");
     assert_eq!(output, Value::S32(15));
 }

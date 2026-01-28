@@ -15,7 +15,7 @@ fn test_wisp_return_record() {
     // make-point(3, 4) should return point { x: 3, y: 4 }
     let input = Value::Tuple(vec![Value::S32(3), Value::S32(4)]);
     let output = instance
-        .call_with_value("make-point", &input, 0)
+        .call_with_value("make-point", &input)
         .expect("failed to call make-point");
 
     // Record should be returned as a Record with named fields
@@ -41,7 +41,7 @@ fn test_wisp_return_option_some() {
     // make-some(42) should return Some(42)
     let input = Value::S32(42);
     let output = instance
-        .call_with_value("make-some", &input, 0)
+        .call_with_value("make-some", &input)
         .expect("failed to call make-some");
 
     // Check that it's a Some with correct inner value
@@ -64,7 +64,7 @@ fn test_wisp_return_option_none() {
     // No input parameters - use empty tuple
     let input = Value::Tuple(vec![]);
     let output = instance
-        .call_with_value("make-none", &input, 0)
+        .call_with_value("make-none", &input)
         .expect("failed to call make-none");
 
     match output {
@@ -83,7 +83,7 @@ fn test_wisp_return_result_ok() {
     // make-ok(100) should return Ok(100) as Result type
     let input = Value::S32(100);
     let output = instance
-        .call_with_value("make-ok", &input, 0)
+        .call_with_value("make-ok", &input)
         .expect("failed to call make-ok");
 
     // Result is now properly decoded as Value::Result
@@ -105,7 +105,7 @@ fn test_wisp_return_result_err() {
     // make-err(999) should return Err(999) as Result type
     let input = Value::S32(999);
     let output = instance
-        .call_with_value("make-err", &input, 0)
+        .call_with_value("make-err", &input)
         .expect("failed to call make-err");
 
     // Result is now properly decoded as Value::Result
@@ -127,7 +127,7 @@ fn test_wisp_return_string() {
     // get-greeting() should return "hello"
     let input = Value::Tuple(vec![]);
     let output = instance
-        .call_with_value("get-greeting", &input, 0)
+        .call_with_value("get-greeting", &input)
         .expect("failed to call get-greeting");
 
     assert_eq!(output, Value::String("hello".to_string()));
@@ -143,7 +143,7 @@ fn test_wisp_return_variant_red() {
     // get-red() should return red variant (tag 0, no payload)
     let input = Value::Tuple(vec![]);
     let output = instance
-        .call_with_value("get-red", &input, 0)
+        .call_with_value("get-red", &input)
         .expect("failed to call get-red");
 
     match output {
@@ -164,7 +164,7 @@ fn test_wisp_return_variant_green() {
     // get-green() should return green variant (tag 1, no payload)
     let input = Value::Tuple(vec![]);
     let output = instance
-        .call_with_value("get-green", &input, 0)
+        .call_with_value("get-green", &input)
         .expect("failed to call get-green");
 
     match output {
