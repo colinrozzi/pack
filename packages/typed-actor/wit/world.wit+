@@ -1,0 +1,29 @@
+// Example WIT+ world demonstrating the world! macro
+//
+// This world defines:
+// - An import interface (runtime) with typed functions
+// - Export functions that the actor must implement
+
+interface runtime {
+    // Log a message to the console
+    log: func(msg: string)
+
+    // Get the current timestamp
+    get-time: func() -> u64
+}
+
+interface actor {
+    // Initialize the actor with optional state and parameters
+    init: func(state: option<list<u8>>, actor-id: string) -> result<option<list<u8>>, string>
+
+    // Handle an incoming message
+    handle: func(state: option<list<u8>>, msg: list<u8>) -> option<list<u8>>
+}
+
+world typed-actor {
+    // Import the runtime interface for logging and time
+    import runtime
+
+    // Export the actor interface
+    export actor
+}
