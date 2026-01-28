@@ -31,10 +31,10 @@
 pub extern crate alloc;
 
 // Re-export the macros
-pub use pack_guest_macros::{export, import, import_from, wit};
+pub use pack_guest_macros::{export, import, import_from, wit, world};
 
-// Re-export useful types from composite-abi
-pub use pack_abi::{decode, encode, ConversionError, Value};
+// Re-export useful types from pack-abi
+pub use pack_abi::{decode, encode, ConversionError, Value, ValueType};
 
 // Re-export dlmalloc for the setup_guest macro
 #[doc(hidden)]

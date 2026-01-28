@@ -6,7 +6,7 @@
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
-use crate::wit_parser::{Type, TypeDef, VariantCase, World, Function, WorldItem};
+use crate::wit_parser::{Type, TypeDef, VariantCase, World, Function, WorldItem, WitRegistry, Interface};
 
 /// Convert a WIT identifier (kebab-case) to Rust identifier (PascalCase for types, snake_case for functions)
 fn to_rust_type_name(wit_name: &str) -> syn::Ident {
@@ -789,4 +789,383 @@ pub fn get_world_imports(world: &World) -> Vec<(&str, &Function)> {
         }
     }
     imports
+}
+
+// ============================================================================
+// Import Module Generation
+// ============================================================================
+
+/// Format an interface path from its components
+fn format_interface_path(namespace: &Option<String>, package: &Option<String>, interface: &str) -> String {
+    match (namespace, package) {
+        (Some(ns), Some(pkg)) => format!("{}:{}/{}", ns, pkg, interface),
+        (None, Some(pkg)) => format!("{}/{}", pkg, interface),
+        _ => interface.to_string(),
+    }
+}
+
+/// Generate import modules from world imports
+pub fn generate_imports(registry: &WitRegistry, world: &World) -> TokenStream {
+    let mut modules = Vec::new();
+
+    for import in &world.imports {
+        match import {
+            WorldItem::InterfacePath { namespace, package, interface } => {
+                // Look up the interface definition
+                let path = format_interface_path(namespace, package, interface);
+                if let Some(iface) = registry.interfaces.get(&path) {
+                    let module = generate_import_module(&path, iface);
+                    modules.push(module);
+                }
+            }
+            WorldItem::InlineInterface { name, functions } => {
+                let module = generate_inline_import_module(name, functions);
+                modules.push(module);
+            }
+            WorldItem::Function(f) => {
+                // Bare function import - generate at top level
+                let func = generate_import_function("", f);
+                modules.push(func);
+            }
+        }
+    }
+
+    quote! { #(#modules)* }
+}
+
+/// Generate a single import module from an interface
+fn generate_import_module(module_path: &str, iface: &Interface) -> TokenStream {
+    // Convert interface name to module name (kebab-case to snake_case)
+    let module_name = iface.name.replace('-', "_");
+    let module_ident = format_ident!("{}", module_name);
+
+    let functions: Vec<_> = iface.functions.iter()
+        .map(|f| generate_import_function(module_path, f))
+        .collect();
+
+    // Also generate types from the interface
+    let types: Vec<_> = iface.types.iter()
+        .map(generate_type_def)
+        .collect();
+
+    quote! {
+        pub mod #module_ident {
+            #![allow(unused_imports)]
+            use super::*;
+
+            #(#types)*
+            #(#functions)*
+        }
+    }
+}
+
+/// Generate an inline import module (from world inline interface)
+fn generate_inline_import_module(name: &str, functions: &[Function]) -> TokenStream {
+    let module_name = name.replace('-', "_");
+    let module_ident = format_ident!("{}", module_name);
+
+    let funcs: Vec<_> = functions.iter()
+        .map(|f| generate_import_function(name, f))
+        .collect();
+
+    quote! {
+        pub mod #module_ident {
+            #![allow(unused_imports)]
+            use super::*;
+
+            #(#funcs)*
+        }
+    }
+}
+
+/// Generate a single typed import function
+fn generate_import_function(module_path: &str, func: &Function) -> TokenStream {
+    let fn_name = format_ident!("{}", func.name.replace('-', "_"));
+    let raw_fn_name = format_ident!("__raw_{}", func.name.replace('-', "_"));
+    let link_name = &func.name;
+
+    // Generate parameter list - use &str for string params in imports
+    let params: Vec<_> = func.params.iter().map(|(name, ty)| {
+        let param_name = format_ident!("{}", name.replace('-', "_"));
+        let param_type = if matches!(ty, Type::String) {
+            quote! { &str }
+        } else {
+            generate_type_ref(ty, None)
+        };
+        quote! { #param_name: #param_type }
+    }).collect();
+
+    // Generate return type
+    let return_type = if func.results.is_empty() {
+        quote! { () }
+    } else if func.results.len() == 1 {
+        generate_type_ref(&func.results[0], None)
+    } else {
+        let tys: Vec<_> = func.results.iter()
+            .map(|t| generate_type_ref(t, None))
+            .collect();
+        quote! { (#(#tys),*) }
+    };
+
+    // Generate input value construction
+    let input_construction = if func.params.is_empty() {
+        quote! { pack_guest::Value::Tuple(::alloc::vec![]) }
+    } else if func.params.len() == 1 {
+        let (name, ty) = &func.params[0];
+        let param_name = format_ident!("{}", name.replace('-', "_"));
+        generate_to_value_for_import(ty, quote! { #param_name })
+    } else {
+        let conversions: Vec<_> = func.params.iter().map(|(name, ty)| {
+            let param_name = format_ident!("{}", name.replace('-', "_"));
+            generate_to_value_for_import(ty, quote! { #param_name })
+        }).collect();
+        quote! { pack_guest::Value::Tuple(::alloc::vec![#(#conversions),*]) }
+    };
+
+    // Generate return extraction
+    let has_return = !func.results.is_empty();
+    let body = if has_return {
+        let result_ty = &return_type;
+        quote! {
+            let input = #input_construction;
+            let result = pack_guest::__import_impl(
+                |a, b, c, d| unsafe { #raw_fn_name(a, b, c, d) },
+                input,
+            );
+            match <#result_ty>::try_from(result) {
+                Ok(v) => v,
+                Err(_) => panic!("failed to convert result from {}", stringify!(#fn_name)),
+            }
+        }
+    } else {
+        quote! {
+            let input = #input_construction;
+            let _ = pack_guest::__import_impl(
+                |a, b, c, d| unsafe { #raw_fn_name(a, b, c, d) },
+                input,
+            );
+        }
+    };
+
+    quote! {
+        pub fn #fn_name(#(#params),*) -> #return_type {
+            #[link(wasm_import_module = #module_path)]
+            extern "C" {
+                #[link_name = #link_name]
+                fn #raw_fn_name(in_ptr: i32, in_len: i32, out_ptr: i32, out_cap: i32) -> i32;
+            }
+
+            #body
+        }
+    }
+}
+
+/// Generate value conversion for import params (handles &str specially)
+fn generate_to_value_for_import(ty: &Type, expr: TokenStream) -> TokenStream {
+    match ty {
+        Type::String => quote! {
+            pack_guest::Value::String(::alloc::string::String::from(#expr))
+        },
+        Type::Option(inner) if matches!(inner.as_ref(), Type::String) => quote! {
+            match #expr {
+                Some(s) => pack_guest::Value::Option {
+                    inner_type: pack_guest::ValueType::String,
+                    value: Some(::alloc::boxed::Box::new(
+                        pack_guest::Value::String(::alloc::string::String::from(s))
+                    )),
+                },
+                None => pack_guest::Value::Option {
+                    inner_type: pack_guest::ValueType::String,
+                    value: None,
+                },
+            }
+        },
+        // Other types use the standard conversion
+        _ => generate_to_value(ty, expr, None),
+    }
+}
+
+// ============================================================================
+// Export Metadata Generation
+// ============================================================================
+
+/// Format a WIT function signature as a string
+fn format_function_signature(func: &Function) -> String {
+    let params: Vec<String> = func.params.iter()
+        .map(|(name, ty)| format!("{}: {}", name, format_wit_type(ty)))
+        .collect();
+
+    let results = if func.results.is_empty() {
+        String::new()
+    } else if func.results.len() == 1 {
+        format!(" -> {}", format_wit_type(&func.results[0]))
+    } else {
+        let result_strs: Vec<String> = func.results.iter()
+            .map(format_wit_type)
+            .collect();
+        format!(" -> ({})", result_strs.join(", "))
+    };
+
+    format!("func({}){}", params.join(", "), results)
+}
+
+/// Format a WIT type as a string
+fn format_wit_type(ty: &Type) -> String {
+    match ty {
+        Type::Bool => "bool".to_string(),
+        Type::U8 => "u8".to_string(),
+        Type::U16 => "u16".to_string(),
+        Type::U32 => "u32".to_string(),
+        Type::U64 => "u64".to_string(),
+        Type::S8 => "s8".to_string(),
+        Type::S16 => "s16".to_string(),
+        Type::S32 => "s32".to_string(),
+        Type::S64 => "s64".to_string(),
+        Type::F32 => "f32".to_string(),
+        Type::F64 => "f64".to_string(),
+        Type::Char => "char".to_string(),
+        Type::String => "string".to_string(),
+        Type::List(inner) => format!("list<{}>", format_wit_type(inner)),
+        Type::Option(inner) => format!("option<{}>", format_wit_type(inner)),
+        Type::Result { ok, err } => {
+            let ok_str = ok.as_ref().map(|t| format_wit_type(t)).unwrap_or_else(|| "_".to_string());
+            let err_str = err.as_ref().map(|t| format_wit_type(t)).unwrap_or_else(|| "_".to_string());
+            format!("result<{}, {}>", ok_str, err_str)
+        }
+        Type::Tuple(items) => {
+            let item_strs: Vec<String> = items.iter().map(format_wit_type).collect();
+            format!("tuple<{}>", item_strs.join(", "))
+        }
+        Type::Named(name) => name.clone(),
+        Type::SelfRef => "self".to_string(),
+    }
+}
+
+/// Information about an expected export
+pub struct ExportInfo {
+    pub name: String,
+    pub export_name: String,
+    pub signature: String,
+    pub params: Vec<(String, Type)>,
+    pub results: Vec<Type>,
+}
+
+/// Generate export metadata for validation
+pub fn generate_export_metadata(registry: &WitRegistry, world: &World) -> TokenStream {
+    let mut exports: Vec<ExportInfo> = Vec::new();
+
+    for export in &world.exports {
+        match export {
+            WorldItem::Function(f) => {
+                exports.push(ExportInfo {
+                    name: f.name.clone(),
+                    export_name: f.name.clone(),
+                    signature: format_function_signature(f),
+                    params: f.params.clone(),
+                    results: f.results.clone(),
+                });
+            }
+            WorldItem::InterfacePath { namespace, package, interface } => {
+                let path = format_interface_path(namespace, package, interface);
+                if let Some(iface) = registry.interfaces.get(&path) {
+                    for f in &iface.functions {
+                        let export_name = format!("{}.{}", path, f.name);
+                        exports.push(ExportInfo {
+                            name: f.name.clone(),
+                            export_name,
+                            signature: format_function_signature(f),
+                            params: f.params.clone(),
+                            results: f.results.clone(),
+                        });
+                    }
+                }
+            }
+            WorldItem::InlineInterface { name, functions } => {
+                for f in functions {
+                    let export_name = format!("{}.{}", name, f.name);
+                    exports.push(ExportInfo {
+                        name: f.name.clone(),
+                        export_name,
+                        signature: format_function_signature(f),
+                        params: f.params.clone(),
+                        results: f.results.clone(),
+                    });
+                }
+            }
+        }
+    }
+
+    let entries: Vec<_> = exports.iter().map(|e| {
+        let name = &e.name;
+        let export_name = &e.export_name;
+        let sig = &e.signature;
+        quote! {
+            (#name, #export_name, #sig)
+        }
+    }).collect();
+
+    quote! {
+        #[doc(hidden)]
+        pub mod __pack_exports {
+            /// (function_name, export_name, wit_signature)
+            pub const EXPORTS: &[(&str, &str, &str)] = &[
+                #(#entries),*
+            ];
+
+            /// Look up an export by function name
+            pub fn get_export(name: &str) -> Option<(&'static str, &'static str)> {
+                EXPORTS.iter()
+                    .find(|(n, _, _)| *n == name)
+                    .map(|(_, export_name, sig)| (*export_name, *sig))
+            }
+        }
+    }
+}
+
+/// Collect export information for the #[export] macro to use
+pub fn collect_exports(registry: &WitRegistry, world: &World) -> Vec<ExportInfo> {
+    let mut exports = Vec::new();
+
+    for export in &world.exports {
+        match export {
+            WorldItem::Function(f) => {
+                exports.push(ExportInfo {
+                    name: f.name.clone(),
+                    export_name: f.name.clone(),
+                    signature: format_function_signature(f),
+                    params: f.params.clone(),
+                    results: f.results.clone(),
+                });
+            }
+            WorldItem::InterfacePath { namespace, package, interface } => {
+                let path = format_interface_path(namespace, package, interface);
+                if let Some(iface) = registry.interfaces.get(&path) {
+                    for f in &iface.functions {
+                        let export_name = format!("{}.{}", path, f.name);
+                        exports.push(ExportInfo {
+                            name: f.name.clone(),
+                            export_name,
+                            signature: format_function_signature(f),
+                            params: f.params.clone(),
+                            results: f.results.clone(),
+                        });
+                    }
+                }
+            }
+            WorldItem::InlineInterface { name, functions } => {
+                for f in functions {
+                    let export_name = format!("{}.{}", name, f.name);
+                    exports.push(ExportInfo {
+                        name: f.name.clone(),
+                        export_name,
+                        signature: format_function_signature(f),
+                        params: f.params.clone(),
+                        results: f.results.clone(),
+                    });
+                }
+            }
+        }
+    }
+
+    exports
 }

@@ -113,8 +113,13 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
     let args = parse_macro_input!(attr as ExportArgs);
     let input_fn = parse_macro_input!(item as ItemFn);
 
-    // If wit attribute is provided, validate against WIT and optionally derive export name
+    let fn_name_str = input_fn.sig.ident.to_string();
+
+    // Try to derive export name from WIT:
+    // 1. If wit attribute is explicitly provided, use it
+    // 2. Otherwise, try to find the function in the world automatically
     let derived_export_name = if let Some(ref wit_path) = args.wit {
+        // Explicit wit path provided
         match validate_export_against_wit(wit_path) {
             Ok(result) => result.derived_name,
             Err(e) => {
@@ -125,7 +130,8 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
         }
     } else {
-        None
+        // Try auto-discovery: look up function by name in world exports
+        try_auto_discover_export(&fn_name_str)
     };
 
     // Determine the export name: explicit name > derived from wit > function name
@@ -444,6 +450,65 @@ fn validate_export_against_wit(wit_path: &str) -> Result<WitValidationResult, St
         "Function '{}' not found in WIT exports. Available: {:?}",
         func_name, available
     ))
+}
+
+/// Try to auto-discover the export name for a function by looking it up in the world.
+///
+/// This is a "best effort" lookup - it returns None if:
+/// - No WIT files are found
+/// - No world is defined
+/// - The function is not found in exports
+///
+/// This allows the macro to work both with and without a WIT world definition.
+fn try_auto_discover_export(fn_name: &str) -> Option<String> {
+    // Try to read WIT files, but don't error if not found
+    let wit_content = match read_wit_files() {
+        Ok(c) => c,
+        Err(_) => return None,
+    };
+
+    // Try to parse the WIT, but don't error on failure
+    let registry = match wit_parser::parse_wit(&wit_content) {
+        Ok(r) => r,
+        Err(_) => return None,
+    };
+
+    // Search for the function in world exports
+    for world in &registry.worlds {
+        for export in &world.exports {
+            match export {
+                wit_parser::WorldItem::Function(f) if f.name == fn_name => {
+                    // Found as a bare export - use just the function name
+                    return Some(fn_name.to_string());
+                }
+                wit_parser::WorldItem::InlineInterface { name: iface_name, functions } => {
+                    if functions.iter().any(|f| f.name == fn_name) {
+                        // Found in inline interface - use interface.function format
+                        return Some(format!("{}.{}", iface_name, fn_name));
+                    }
+                }
+                wit_parser::WorldItem::InterfacePath { namespace, package, interface } => {
+                    // Check if this interface has the function
+                    let iface_path = match (namespace, package) {
+                        (Some(ns), Some(pkg)) => format!("{}:{}/{}", ns, pkg, interface),
+                        (None, Some(pkg)) => format!("{}/{}", pkg, interface),
+                        _ => interface.clone(),
+                    };
+
+                    if let Some(iface) = registry.interfaces.get(&iface_path) {
+                        if iface.functions.iter().any(|f| f.name == fn_name) {
+                            // Found in referenced interface
+                            return Some(format!("{}.{}", iface_path, fn_name));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Not found - return None (no error, just use default behavior)
+    None
 }
 
 /// Result of validating an import against WIT
@@ -836,6 +901,118 @@ pub fn wit(input: TokenStream) -> TokenStream {
     let generated = codegen::generate_world_types(&world);
 
     generated.into()
+}
+
+/// Parse the WIT+ world and generate types, imports, and export metadata.
+///
+/// This macro reads WIT+ files from the `wit/` directory in your crate and generates:
+/// - Rust types for all type definitions (records, variants, enums, flags)
+/// - Import modules with fully typed functions
+/// - Export metadata for `#[export]` validation
+///
+/// # Usage
+///
+/// Create a `wit/` directory in your crate root with `.wit` or `.wit+` files:
+///
+/// ```wit
+/// // wit/world.wit+
+/// interface runtime {
+///     log: func(msg: string)
+///     get-time: func() -> u64
+/// }
+///
+/// world my-actor {
+///     import runtime
+///     export init: func(state: option<list<u8>>) -> option<list<u8>>
+/// }
+/// ```
+///
+/// Then in your Rust code:
+///
+/// ```ignore
+/// #![no_std]
+/// extern crate alloc;
+///
+/// use pack_guest::export;
+///
+/// // Generate types, imports, and export metadata
+/// pack_guest::world!();
+///
+/// #[export]
+/// fn init(state: Option<Vec<u8>>) -> Option<Vec<u8>> {
+///     // Use generated import - fully typed!
+///     runtime::log("Starting!");
+///     state
+/// }
+/// ```
+///
+/// # What Gets Generated
+///
+/// 1. **Types**: All records, variants, enums, and flags become Rust types
+/// 2. **Import modules**: Each imported interface becomes a module with typed functions
+/// 3. **Export metadata**: Information for `#[export]` to validate signatures
+#[proc_macro]
+pub fn world(input: TokenStream) -> TokenStream {
+    let input_str = input.to_string();
+
+    let wit_content = if input_str.trim().is_empty() {
+        // Read from wit/ directory
+        match read_wit_files() {
+            Ok(content) => content,
+            Err(e) => {
+                return syn::Error::new(
+                    proc_macro2::Span::call_site(),
+                    format!("Failed to read WIT files: {}", e)
+                ).to_compile_error().into();
+            }
+        }
+    } else {
+        // Use inline content
+        input_str
+    };
+
+    // Parse the full WIT registry
+    let registry = match wit_parser::parse_wit(&wit_content) {
+        Ok(r) => r,
+        Err(e) => {
+            return syn::Error::new(
+                proc_macro2::Span::call_site(),
+                format!("Failed to parse WIT: {}", e)
+            ).to_compile_error().into();
+        }
+    };
+
+    // Get the first world (or error if none)
+    let world = match registry.worlds.first() {
+        Some(w) => w,
+        None => {
+            return syn::Error::new(
+                proc_macro2::Span::call_site(),
+                "No world definition found in WIT files"
+            ).to_compile_error().into();
+        }
+    };
+
+    // Generate types from the world
+    let types = codegen::generate_world_types(world);
+
+    // Generate types from top-level definitions in the registry
+    let registry_types: Vec<_> = registry.types.iter()
+        .map(|t| codegen::generate_type_def(t))
+        .collect();
+
+    // Generate import modules
+    let imports = codegen::generate_imports(&registry, world);
+
+    // Generate export metadata
+    let export_metadata = codegen::generate_export_metadata(&registry, world);
+
+    quote::quote! {
+        #(#registry_types)*
+        #types
+        #imports
+        #export_metadata
+    }.into()
 }
 
 /// Read all WIT files from the wit/ directory and wit/deps/ subdirectories
