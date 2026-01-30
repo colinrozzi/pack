@@ -13,6 +13,12 @@ use pack_guest::{export, Value};
 // Set up allocator and panic handler
 pack_guest::setup_guest!();
 
+pack_guest::pack_types! {
+    exports {
+        process: func(value: value) -> value,
+    }
+}
+
 // Import host functions from "host" module
 #[link(wasm_import_module = "host")]
 extern "C" {

@@ -396,7 +396,7 @@ impl std::fmt::Display for ParseError {
 // ============================================================================
 
 #[derive(Debug, Clone, PartialEq)]
-enum Token {
+pub(crate) enum Token {
     Ident(String),
     Symbol(char),
     Eof,
@@ -481,13 +481,13 @@ impl<'a> Lexer<'a> {
 // Parser
 // ============================================================================
 
-struct Parser {
+pub(crate) struct Parser {
     tokens: Vec<Token>,
     pos: usize,
 }
 
 impl Parser {
-    fn new(tokens: Vec<Token>) -> Self {
+    pub(crate) fn new(tokens: Vec<Token>) -> Self {
         Self { tokens, pos: 0 }
     }
 
@@ -507,7 +507,7 @@ impl Parser {
         tok
     }
 
-    fn accept_symbol(&mut self, expected: char) -> bool {
+    pub(crate) fn accept_symbol(&mut self, expected: char) -> bool {
         if matches!(self.peek(), Token::Symbol(c) if *c == expected) {
             self.pos += 1;
             true
@@ -516,14 +516,14 @@ impl Parser {
         }
     }
 
-    fn expect_symbol(&mut self, expected: char) -> Result<(), ParseError> {
+    pub(crate) fn expect_symbol(&mut self, expected: char) -> Result<(), ParseError> {
         match self.next() {
             Token::Symbol(c) if c == expected => Ok(()),
             other => Err(ParseError::new(format!("expected '{}', got {:?}", expected, other))),
         }
     }
 
-    fn accept_ident(&mut self, expected: &str) -> bool {
+    pub(crate) fn accept_ident(&mut self, expected: &str) -> bool {
         if matches!(self.peek(), Token::Ident(s) if s == expected) {
             self.pos += 1;
             true
@@ -532,16 +532,33 @@ impl Parser {
         }
     }
 
-    fn expect_ident(&mut self) -> Result<String, ParseError> {
+    pub(crate) fn expect_ident(&mut self) -> Result<String, ParseError> {
         match self.next() {
             Token::Ident(s) => Ok(s),
             other => Err(ParseError::new(format!("expected identifier, got {:?}", other))),
         }
     }
 
-    fn is_eof(&self) -> bool {
+    pub(crate) fn is_eof(&self) -> bool {
         matches!(self.peek(), Token::Eof)
     }
+
+    pub(crate) fn peek_is_symbol(&self, expected: char) -> bool {
+        matches!(self.peek(), Token::Symbol(c) if *c == expected)
+    }
+}
+
+// ============================================================================
+// Crate-internal helpers
+// ============================================================================
+
+pub(crate) fn tokenize(src: &str) -> Result<Vec<Token>, ParseError> {
+    let mut lexer = Lexer::new(src);
+    lexer.tokenize()
+}
+
+pub(crate) fn make_parser(tokens: Vec<Token>) -> Parser {
+    Parser::new(tokens)
 }
 
 // ============================================================================
@@ -932,7 +949,7 @@ fn parse_function_block(parser: &mut Parser) -> Result<Vec<Function>, ParseError
     Ok(functions)
 }
 
-fn parse_func_signature(parser: &mut Parser, name: String) -> Result<Function, ParseError> {
+pub(crate) fn parse_func_signature(parser: &mut Parser, name: String) -> Result<Function, ParseError> {
     parser.expect_symbol('(')?;
     let params = parse_params(parser)?;
     parser.expect_symbol(')')?;
@@ -995,7 +1012,7 @@ fn parse_results(parser: &mut Parser) -> Result<Vec<Type>, ParseError> {
     Ok(vec![parse_type(parser)?])
 }
 
-fn parse_type(parser: &mut Parser) -> Result<Type, ParseError> {
+pub(crate) fn parse_type(parser: &mut Parser) -> Result<Type, ParseError> {
     let ident = parser.expect_ident()?;
 
     match ident.as_str() {

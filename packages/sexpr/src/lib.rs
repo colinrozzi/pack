@@ -16,6 +16,12 @@ use pack_guest::{export, Value};
 // Set up allocator and panic handler
 pack_guest::setup_guest!();
 
+pack_guest::pack_types! {
+    exports {
+        evaluate: func(expr: value) -> value,
+    }
+}
+
 // ============================================================================
 // S-expression type
 // ============================================================================

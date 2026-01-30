@@ -49,10 +49,15 @@
 //! ```
 
 pub mod abi;
+pub mod metadata;
 pub mod runtime;
 pub mod wit_plus;
 
 pub use abi::{decode, encode};
+pub use metadata::{
+    decode_metadata, CaseDesc, FieldDesc, FunctionSignature, MetadataError, PackageMetadata,
+    ParamSignature, TypeDesc,
+};
 pub use runtime::{
     validate_instance_implements_interface, AsyncCompiledModule, AsyncCtx, AsyncInstance,
     AsyncRuntime, CompiledModule, Ctx, DefaultHostProvider, ErrorHandler, HostFunctionError,

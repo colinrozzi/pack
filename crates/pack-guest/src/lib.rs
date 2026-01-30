@@ -31,7 +31,7 @@
 pub extern crate alloc;
 
 // Re-export the macros
-pub use pack_guest_macros::{export, import, import_from, wit, world};
+pub use pack_guest_macros::{export, import, import_from, pack_types, wit, world};
 
 // Re-export useful types from pack-abi
 pub use pack_abi::{decode, encode, ConversionError, Value, ValueType};

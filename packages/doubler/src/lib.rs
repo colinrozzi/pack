@@ -11,6 +11,12 @@ use pack_guest::{export, Value};
 // Set up allocator and panic handler
 pack_guest::setup_guest!();
 
+pack_guest::pack_types! {
+    exports {
+        double: func(input: value) -> value,
+    }
+}
+
 /// Double an i64 value.
 #[export]
 fn double(input: Value) -> Value {

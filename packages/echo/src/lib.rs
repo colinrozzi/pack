@@ -13,6 +13,13 @@ use pack_guest::{export, Value};
 // Set up allocator and panic handler
 pack_guest::setup_guest!();
 
+pack_guest::pack_types! {
+    exports {
+        echo: func(input: value) -> value,
+        transform: func(input: value) -> value,
+    }
+}
+
 /// Echo: decode input, re-encode unchanged, return result.
 /// This proves we can decode and encode values in the package.
 #[export]

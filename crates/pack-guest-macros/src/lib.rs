@@ -13,6 +13,7 @@ use syn::punctuated::Punctuated;
 
 mod wit_parser;
 mod codegen;
+mod metadata;
 
 /// Arguments for the #[export] attribute.
 struct ExportArgs {
@@ -1257,4 +1258,147 @@ pub fn import_from(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     expanded.into()
+}
+
+/// Embed type metadata describing this package's imports and exports.
+///
+/// This macro generates a static byte array containing CGRF-encoded metadata
+/// and a `__pack_types` export function that returns a pointer to it.
+///
+/// # Syntax
+///
+/// ```ignore
+/// pack_guest::pack_types! {
+///     exports {
+///         echo: func(input: value) -> value,
+///         transform: func(input: value) -> value,
+///     }
+/// }
+/// ```
+///
+/// With imports:
+///
+/// ```ignore
+/// pack_guest::pack_types! {
+///     imports {
+///         math {
+///             double: func(n: s64) -> s64,
+///         }
+///     }
+///     exports {
+///         process: func(input: value) -> value,
+///     }
+/// }
+/// ```
+#[proc_macro]
+pub fn pack_types(input: TokenStream) -> TokenStream {
+    let input_str = input.to_string();
+
+    match parse_and_encode_metadata(&input_str) {
+        Ok(bytes) => {
+            let byte_literals: Vec<proc_macro2::TokenStream> = bytes
+                .iter()
+                .map(|b| {
+                    let lit = proc_macro2::Literal::u8_suffixed(*b);
+                    quote! { #lit }
+                })
+                .collect();
+            let len = bytes.len();
+
+            let expanded = quote! {
+                #[doc(hidden)]
+                static __PACK_TYPES_DATA: [u8; #len] = [#(#byte_literals),*];
+
+                #[no_mangle]
+                pub extern "C" fn __pack_types(out_ptr_ptr: i32, out_len_ptr: i32) -> i32 {
+                    unsafe {
+                        core::ptr::write(out_ptr_ptr as *mut i32, __PACK_TYPES_DATA.as_ptr() as i32);
+                        core::ptr::write(out_len_ptr as *mut i32, __PACK_TYPES_DATA.len() as i32);
+                    }
+                    0
+                }
+            };
+
+            expanded.into()
+        }
+        Err(e) => syn::Error::new(proc_macro2::Span::call_site(), e)
+            .to_compile_error()
+            .into(),
+    }
+}
+
+fn parse_and_encode_metadata(input: &str) -> Result<Vec<u8>, String> {
+    let tokens = wit_parser::tokenize(input).map_err(|e| format!("tokenize error: {}", e))?;
+    let mut parser = wit_parser::make_parser(tokens);
+
+    let mut imports = Vec::new();
+    let mut exports = Vec::new();
+
+    while !parser.is_eof() {
+        if parser.accept_ident("imports") {
+            parser.expect_symbol('{').map_err(|e| e.to_string())?;
+            parse_import_sigs(&mut parser, &mut imports)?;
+            parser.expect_symbol('}').map_err(|e| e.to_string())?;
+        } else if parser.accept_ident("exports") {
+            parser.expect_symbol('{').map_err(|e| e.to_string())?;
+            parse_func_sigs_into(&mut parser, "", &mut exports)?;
+            parser.expect_symbol('}').map_err(|e| e.to_string())?;
+        } else {
+            return Err("expected 'imports' or 'exports'".into());
+        }
+    }
+
+    Ok(metadata::encode_metadata(&imports, &exports))
+}
+
+fn parse_import_sigs(
+    parser: &mut wit_parser::Parser,
+    sigs: &mut Vec<metadata::FuncSig>,
+) -> Result<(), String> {
+    while !parser.peek_is_symbol('}') && !parser.is_eof() {
+        let iface_name = parser.expect_ident().map_err(|e| e.to_string())?;
+        parser.expect_symbol('{').map_err(|e| e.to_string())?;
+        parse_func_sigs_into(parser, &iface_name, sigs)?;
+        parser.expect_symbol('}').map_err(|e| e.to_string())?;
+        parser.accept_symbol(',');
+    }
+    Ok(())
+}
+
+fn parse_func_sigs_into(
+    parser: &mut wit_parser::Parser,
+    interface: &str,
+    sigs: &mut Vec<metadata::FuncSig>,
+) -> Result<(), String> {
+    while !parser.peek_is_symbol('}') && !parser.is_eof() {
+        let name = parser.expect_ident().map_err(|e| e.to_string())?;
+        parser.expect_symbol(':').map_err(|e| e.to_string())?;
+        parser.accept_ident("func");
+
+        let func =
+            wit_parser::parse_func_signature(parser, name).map_err(|e| e.to_string())?;
+
+        let params: Vec<(String, metadata::TypeDesc)> = func
+            .params
+            .iter()
+            .map(|(n, t)| (n.clone(), metadata::wit_type_to_type_desc(t, &[])))
+            .collect();
+
+        let results: Vec<metadata::TypeDesc> = func
+            .results
+            .iter()
+            .map(|t| metadata::wit_type_to_type_desc(t, &[]))
+            .collect();
+
+        sigs.push(metadata::FuncSig {
+            interface: interface.to_string(),
+            name: func.name,
+            params,
+            results,
+        });
+
+        parser.accept_symbol(',');
+        parser.accept_symbol(';');
+    }
+    Ok(())
 }

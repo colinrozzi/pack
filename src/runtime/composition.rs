@@ -508,6 +508,32 @@ impl UntypedStore {
             UntypedStore::Composed(store) => func.call(&mut *store, (ptr, len)).map_err(|_| ()),
         }
     }
+
+    fn get_types_func(
+        &mut self,
+        instance: &wasmtime::Instance,
+    ) -> Option<wasmtime::TypedFunc<(i32, i32), i32>> {
+        match self {
+            UntypedStore::Unit(store) => {
+                instance.get_typed_func(&mut *store, "__pack_types").ok()
+            }
+            UntypedStore::Composed(store) => {
+                instance.get_typed_func(&mut *store, "__pack_types").ok()
+            }
+        }
+    }
+
+    fn call_types_func(
+        &mut self,
+        func: &wasmtime::TypedFunc<(i32, i32), i32>,
+        a: i32,
+        b: i32,
+    ) -> Result<i32, ()> {
+        match self {
+            UntypedStore::Unit(store) => func.call(&mut *store, (a, b)).map_err(|_| ()),
+            UntypedStore::Composed(store) => func.call(&mut *store, (a, b)).map_err(|_| ()),
+        }
+    }
 }
 
 /// A built composition ready for execution.
@@ -634,6 +660,74 @@ impl BuiltComposition {
     /// List all packages in the composition.
     pub fn packages(&self) -> Vec<String> {
         self.registry.lock().unwrap().packages.keys().cloned().collect()
+    }
+
+    /// Read embedded type metadata from a package in the composition.
+    ///
+    /// Returns `Err(MetadataError::NotFound)` if the package doesn't exist
+    /// or doesn't export `__pack_types`.
+    pub fn types(
+        &mut self,
+        package: &str,
+    ) -> Result<crate::metadata::PackageMetadata, crate::metadata::MetadataError> {
+        let (store_arc, instance) = {
+            let reg = self.registry.lock().unwrap();
+            let pkg = reg
+                .packages
+                .get(package)
+                .ok_or(crate::metadata::MetadataError::NotFound)?;
+            (Arc::clone(&pkg.store), pkg.instance.clone())
+        };
+
+        let mut store = store_arc.lock().unwrap();
+
+        let types_func = store
+            .get_types_func(&instance)
+            .ok_or(crate::metadata::MetadataError::NotFound)?;
+
+        let status = store
+            .call_types_func(
+                &types_func,
+                RESULT_PTR_OFFSET as i32,
+                RESULT_LEN_OFFSET as i32,
+            )
+            .map_err(|_| {
+                crate::metadata::MetadataError::CallFailed("call failed".into())
+            })?;
+
+        if status != 0 {
+            return Err(crate::metadata::MetadataError::CallFailed(
+                "non-zero status from __pack_types".into(),
+            ));
+        }
+
+        let memory = store.get_memory(&instance).ok_or_else(|| {
+            crate::metadata::MetadataError::CallFailed("no memory".into())
+        })?;
+        let mut ptr_bytes = [0u8; 4];
+        let mut len_bytes = [0u8; 4];
+        store
+            .read_memory(&memory, RESULT_PTR_OFFSET, &mut ptr_bytes)
+            .map_err(|_| {
+                crate::metadata::MetadataError::CallFailed("read ptr failed".into())
+            })?;
+        store
+            .read_memory(&memory, RESULT_LEN_OFFSET, &mut len_bytes)
+            .map_err(|_| {
+                crate::metadata::MetadataError::CallFailed("read len failed".into())
+            })?;
+
+        let out_ptr = i32::from_le_bytes(ptr_bytes) as usize;
+        let out_len = i32::from_le_bytes(len_bytes) as usize;
+
+        let mut metadata_bytes = vec![0u8; out_len];
+        store
+            .read_memory(&memory, out_ptr, &mut metadata_bytes)
+            .map_err(|_| {
+                crate::metadata::MetadataError::CallFailed("read metadata failed".into())
+            })?;
+
+        crate::metadata::decode_metadata(&metadata_bytes)
     }
 }
 

@@ -11,6 +11,17 @@ use pack_guest::{export, import_from, Value};
 // Set up allocator and panic handler
 pack_guest::setup_guest!();
 
+pack_guest::pack_types! {
+    imports {
+        math {
+            double: func(n: s64) -> s64,
+        }
+    }
+    exports {
+        process: func(input: value) -> value,
+    }
+}
+
 /// Import the double function from the "math" module.
 /// This will be wired to the doubler package's "double" export
 /// by the CompositionBuilder.
