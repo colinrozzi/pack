@@ -1,12 +1,14 @@
 //! A package with concretely typed exports for testing type-aware interop.
 //!
 //! Unlike the doubler/echo packages which use the dynamic Value type,
-//! this package uses concrete scalar types (s32, s64, f64, bool).
+//! this package uses concrete scalar types (s32, s64, f64, bool) and strings.
 
 #![no_std]
 
 extern crate alloc;
 
+use alloc::format;
+use alloc::string::String;
 use pack_guest::export;
 
 pack_guest::setup_guest!();
@@ -18,6 +20,8 @@ pack_guest::pack_types! {
         add_f64: func(a: f64, b: f64) -> f64,
         negate: func(n: s32) -> s32,
         is_positive: func(n: s32) -> bool,
+        greet: func(name: string) -> string,
+        str_len: func(s: string) -> s32,
     }
 }
 
@@ -44,4 +48,14 @@ fn negate(n: i32) -> i32 {
 #[export]
 fn is_positive(n: i32) -> bool {
     n > 0
+}
+
+#[export]
+fn greet(name: String) -> String {
+    format!("Hello, {}!", name)
+}
+
+#[export]
+fn str_len(s: String) -> i32 {
+    s.len() as i32
 }

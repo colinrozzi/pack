@@ -4,15 +4,17 @@
 
 mod composition;
 mod host;
+pub mod interceptor;
 mod interface_check;
 
-pub use composition::{BuiltComposition, CompositionBuilder};
+pub use composition::{BuiltComposition, CompositionBuilder, HostFn};
 pub use host::{
     AsyncCtx, Ctx, DefaultHostProvider, ErrorHandler, HostFunctionError, HostFunctionErrorKind,
     HostFunctionProvider, HostLinkerBuilder, InterfaceBuilder, LinkerError,
     INPUT_BUFFER_OFFSET, OUTPUT_BUFFER_CAPACITY, OUTPUT_BUFFER_OFFSET,
     RESULT_PTR_OFFSET, RESULT_LEN_OFFSET,
 };
+pub use interceptor::CallInterceptor;
 pub use interface_check::{
     validate_instance_implements_interface, ExpectedSignature, InterfaceError,
 };
@@ -245,7 +247,7 @@ impl<'a> AsyncCompiledModule<'a> {
             .await
             .map_err(|e| RuntimeError::WasmError(e.to_string()))?;
 
-        Ok(AsyncInstance { store, instance })
+        Ok(AsyncInstance { store, instance, interceptor: None })
     }
 
     /// Instantiate the module with a builder function for configuring host functions (async).
@@ -272,8 +274,31 @@ impl<'a> AsyncCompiledModule<'a> {
         T: Send + 'static,
         F: FnOnce(&mut HostLinkerBuilder<'_, T>) -> Result<(), LinkerError>,
     {
+        self.instantiate_with_host_and_interceptor_async(state, None, configure)
+            .await
+    }
+
+    /// Instantiate the module with host functions and a call interceptor (async).
+    ///
+    /// The interceptor is set on the `HostLinkerBuilder` (to intercept import calls)
+    /// and on the resulting `AsyncInstance` (to intercept export calls).
+    pub async fn instantiate_with_host_and_interceptor_async<T, F>(
+        &self,
+        state: T,
+        interceptor: Option<Arc<dyn CallInterceptor>>,
+        configure: F,
+    ) -> Result<AsyncInstance<T>, RuntimeError>
+    where
+        T: Send + 'static,
+        F: FnOnce(&mut HostLinkerBuilder<'_, T>) -> Result<(), LinkerError>,
+    {
         let mut linker = Linker::new(self.engine);
         let mut builder = HostLinkerBuilder::new(self.engine, &mut linker);
+
+        if let Some(ref interceptor) = interceptor {
+            builder.set_interceptor(interceptor.clone());
+        }
+
         configure(&mut builder).map_err(|e| RuntimeError::WasmError(e.to_string()))?;
 
         let mut store = Store::new(self.engine, state);
@@ -282,7 +307,7 @@ impl<'a> AsyncCompiledModule<'a> {
             .await
             .map_err(|e| RuntimeError::WasmError(e.to_string()))?;
 
-        Ok(AsyncInstance { store, instance })
+        Ok(AsyncInstance { store, instance, interceptor })
     }
 
     /// Get a reference to the engine.
@@ -295,6 +320,7 @@ impl<'a> AsyncCompiledModule<'a> {
 pub struct AsyncInstance<T> {
     store: Store<T>,
     instance: WasmtimeInstance,
+    interceptor: Option<Arc<dyn CallInterceptor>>,
 }
 
 impl<T: Send> AsyncInstance<T> {
@@ -347,6 +373,16 @@ impl<T: Send> AsyncInstance<T> {
         decode(&bytes).map_err(|e| RuntimeError::AbiError(e.to_string()))
     }
 
+    /// Set a call interceptor for recording/replaying export function calls.
+    pub fn set_interceptor(&mut self, interceptor: Arc<dyn CallInterceptor>) {
+        self.interceptor = Some(interceptor);
+    }
+
+    /// Get the current interceptor, if any.
+    pub fn interceptor(&self) -> Option<&Arc<dyn CallInterceptor>> {
+        self.interceptor.as_ref()
+    }
+
     /// Call a function using the Pack ABI (async).
     ///
     /// If the guest exports `__pack_alloc`, input is dynamically allocated.
@@ -359,6 +395,14 @@ impl<T: Send> AsyncInstance<T> {
         name: &str,
         input: &Value,
     ) -> Result<Value, RuntimeError> {
+        // Check interceptor for short-circuit (replay)
+        if let Some(ref interceptor) = self.interceptor {
+            if let Some(recorded_output) = interceptor.before_export(name, input) {
+                interceptor.after_export(name, input, &recorded_output);
+                return Ok(recorded_output);
+            }
+        }
+
         // Encode input
         let input_bytes = encode(input).map_err(|e| RuntimeError::AbiError(e.to_string()))?;
 
@@ -431,6 +475,11 @@ impl<T: Send> AsyncInstance<T> {
 
         // Free the guest's output buffer if guest has __pack_free
         self.call_pack_free_async(out_ptr, out_len).await.ok();
+
+        // Notify interceptor of completed export call
+        if let Some(ref interceptor) = self.interceptor {
+            interceptor.after_export(name, input, &result);
+        }
 
         Ok(result)
     }

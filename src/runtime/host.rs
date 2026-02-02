@@ -21,6 +21,7 @@
 //! ```
 
 use crate::abi::{decode, encode, Value};
+use crate::runtime::interceptor::CallInterceptor;
 use crate::runtime::RuntimeError;
 use std::future::Future;
 use std::marker::PhantomData;
@@ -266,6 +267,7 @@ pub struct HostLinkerBuilder<'a, T> {
     linker: &'a mut Linker<T>,
     engine: &'a Engine,
     error_handler: Option<ErrorHandler>,
+    interceptor: Option<Arc<dyn CallInterceptor>>,
     _marker: PhantomData<T>,
 }
 
@@ -276,8 +278,23 @@ impl<'a, T> HostLinkerBuilder<'a, T> {
             linker,
             engine,
             error_handler: None,
+            interceptor: None,
             _marker: PhantomData,
         }
+    }
+
+    /// Set a call interceptor for recording/replaying host function calls.
+    ///
+    /// The interceptor is passed to all interface builders created from this
+    /// linker builder, enabling automatic interception of every host function.
+    pub fn set_interceptor(&mut self, interceptor: Arc<dyn CallInterceptor>) -> &mut Self {
+        self.interceptor = Some(interceptor);
+        self
+    }
+
+    /// Get the current interceptor, if any.
+    pub fn interceptor(&self) -> Option<&Arc<dyn CallInterceptor>> {
+        self.interceptor.as_ref()
     }
 
     /// Set a custom error handler for host function errors.
@@ -315,10 +332,12 @@ impl<'a, T> HostLinkerBuilder<'a, T> {
     /// ```
     pub fn interface(&mut self, name: &str) -> Result<InterfaceBuilder<'_, 'a, T>, LinkerError> {
         let error_handler = self.error_handler.clone();
+        let interceptor = self.interceptor.clone();
         Ok(InterfaceBuilder {
             linker: self,
             module_name: name.to_string(),
             error_handler,
+            interceptor,
         })
     }
 
@@ -350,6 +369,7 @@ pub struct InterfaceBuilder<'a, 'b, T> {
     linker: &'a mut HostLinkerBuilder<'b, T>,
     module_name: String,
     error_handler: Option<ErrorHandler>,
+    interceptor: Option<Arc<dyn CallInterceptor>>,
 }
 
 
@@ -414,6 +434,7 @@ impl<'a, 'b, T: 'static> InterfaceBuilder<'a, 'b, T> {
     {
         let func = Arc::new(func);
         let error_handler = self.error_handler.clone();
+        let interceptor = self.interceptor.clone();
         let interface_name = self.module_name.clone();
         let func_name = name.to_string();
 
@@ -430,6 +451,7 @@ impl<'a, 'b, T: 'static> InterfaceBuilder<'a, 'b, T> {
                       -> i32 {
                     let func = func.clone();
                     let error_handler = error_handler.clone();
+                    let interceptor = interceptor.clone();
                     let interface_name = interface_name.clone();
                     let func_name = func_name.clone();
 
@@ -447,6 +469,42 @@ impl<'a, 'b, T: 'static> InterfaceBuilder<'a, 'b, T> {
                         }
                     };
 
+                    // Helper to encode a value and write it to memory
+                    let write_output = |ctx: &mut Ctx<'_, T>, value: &Value| -> i32 {
+                        let bytes = match encode(value) {
+                            Ok(b) => b,
+                            Err(e) => {
+                                report(HostFunctionErrorKind::Encode(e.to_string()));
+                                return -1;
+                            }
+                        };
+
+                        let memory = match ctx.caller.get_export("memory").and_then(|e| e.into_memory()) {
+                            Some(m) => m,
+                            None => {
+                                report(HostFunctionErrorKind::MemoryWrite("no memory export".to_string()));
+                                return -1;
+                            }
+                        };
+
+                        let data_offset = OUTPUT_BUFFER_OFFSET + 8;
+                        if let Err(e) = memory.write(&mut ctx.caller, data_offset, &bytes) {
+                            report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
+                            return -1;
+                        }
+
+                        if let Err(e) = memory.write(&mut ctx.caller, out_ptr_ptr as usize, &(data_offset as i32).to_le_bytes()) {
+                            report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
+                            return -1;
+                        }
+                        if let Err(e) = memory.write(&mut ctx.caller, out_len_ptr as usize, &(bytes.len() as i32).to_le_bytes()) {
+                            report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
+                            return -1;
+                        }
+
+                        0
+                    };
+
                     // Create context - we keep ownership throughout
                     let mut ctx = Ctx::new(caller);
 
@@ -458,6 +516,17 @@ impl<'a, 'b, T: 'static> InterfaceBuilder<'a, 'b, T> {
                             return -1;
                         }
                     };
+
+                    // Check interceptor for short-circuit (replay)
+                    if let Some(ref interceptor) = interceptor {
+                        if let Some(recorded_output) = interceptor.before_import(&interface_name, &func_name, &input_value) {
+                            interceptor.after_import(&interface_name, &func_name, &input_value, &recorded_output);
+                            return write_output(&mut ctx, &recorded_output);
+                        }
+                    }
+
+                    // Clone input_value for after_import notification if interceptor exists
+                    let input_value_for_interceptor = interceptor.as_ref().map(|_| input_value.clone());
 
                     // Convert to user type
                     let input: P = match P::try_from(input_value) {
@@ -473,41 +542,15 @@ impl<'a, 'b, T: 'static> InterfaceBuilder<'a, 'b, T> {
 
                     // Convert result to Value and encode
                     let output_value: Value = output.into();
-                    let bytes = match encode(&output_value) {
-                        Ok(b) => b,
-                        Err(e) => {
-                            report(HostFunctionErrorKind::Encode(e.to_string()));
-                            return -1;
+
+                    // Notify interceptor of completed call
+                    if let Some(ref interceptor) = interceptor {
+                        if let Some(ref iv) = input_value_for_interceptor {
+                            interceptor.after_import(&interface_name, &func_name, iv, &output_value);
                         }
-                    };
-
-                    // Write output to a fixed buffer location
-                    let memory = match ctx.caller.get_export("memory").and_then(|e| e.into_memory()) {
-                        Some(m) => m,
-                        None => {
-                            report(HostFunctionErrorKind::MemoryWrite("no memory export".to_string()));
-                            return -1;
-                        }
-                    };
-
-                    // Write data to OUTPUT_BUFFER_OFFSET (after the slots)
-                    let data_offset = OUTPUT_BUFFER_OFFSET + 8; // After the ptr/len slots
-                    if let Err(e) = memory.write(&mut ctx.caller, data_offset, &bytes) {
-                        report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
-                        return -1;
                     }
 
-                    // Write ptr and len to the caller's slots
-                    if let Err(e) = memory.write(&mut ctx.caller, out_ptr_ptr as usize, &(data_offset as i32).to_le_bytes()) {
-                        report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
-                        return -1;
-                    }
-                    if let Err(e) = memory.write(&mut ctx.caller, out_len_ptr as usize, &(bytes.len() as i32).to_le_bytes()) {
-                        report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
-                        return -1;
-                    }
-
-                    0 // Success
+                    write_output(&mut ctx, &output_value)
                 },
             )
             .map_err(|e| LinkerError::FunctionRegistration(e.to_string()))?;
@@ -546,6 +589,7 @@ impl<'a, 'b, T: 'static> InterfaceBuilder<'a, 'b, T> {
     {
         let func = Arc::new(func);
         let error_handler = self.error_handler.clone();
+        let interceptor = self.interceptor.clone();
         let interface_name = self.module_name.clone();
         let func_name = name.to_string();
 
@@ -562,6 +606,7 @@ impl<'a, 'b, T: 'static> InterfaceBuilder<'a, 'b, T> {
                       -> i32 {
                     let func = func.clone();
                     let error_handler = error_handler.clone();
+                    let interceptor = interceptor.clone();
                     let interface_name = interface_name.clone();
                     let func_name = func_name.clone();
 
@@ -579,6 +624,42 @@ impl<'a, 'b, T: 'static> InterfaceBuilder<'a, 'b, T> {
                         }
                     };
 
+                    // Helper to encode a value and write it to memory
+                    let write_output = |ctx: &mut Ctx<'_, T>, value: &Value| -> i32 {
+                        let bytes = match encode(value) {
+                            Ok(b) => b,
+                            Err(e) => {
+                                report(HostFunctionErrorKind::Encode(e.to_string()));
+                                return -1;
+                            }
+                        };
+
+                        let memory = match ctx.caller.get_export("memory").and_then(|e| e.into_memory()) {
+                            Some(m) => m,
+                            None => {
+                                report(HostFunctionErrorKind::MemoryWrite("no memory export".to_string()));
+                                return -1;
+                            }
+                        };
+
+                        let data_offset = OUTPUT_BUFFER_OFFSET + 8;
+                        if let Err(e) = memory.write(&mut ctx.caller, data_offset, &bytes) {
+                            report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
+                            return -1;
+                        }
+
+                        if let Err(e) = memory.write(&mut ctx.caller, out_ptr_ptr as usize, &(data_offset as i32).to_le_bytes()) {
+                            report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
+                            return -1;
+                        }
+                        if let Err(e) = memory.write(&mut ctx.caller, out_len_ptr as usize, &(bytes.len() as i32).to_le_bytes()) {
+                            report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
+                            return -1;
+                        }
+
+                        0
+                    };
+
                     let mut ctx = Ctx::new(caller);
 
                     // Read and decode input
@@ -589,6 +670,17 @@ impl<'a, 'b, T: 'static> InterfaceBuilder<'a, 'b, T> {
                             return -1;
                         }
                     };
+
+                    // Check interceptor for short-circuit (replay)
+                    if let Some(ref interceptor) = interceptor {
+                        if let Some(recorded_output) = interceptor.before_import(&interface_name, &func_name, &input_value) {
+                            interceptor.after_import(&interface_name, &func_name, &input_value, &recorded_output);
+                            return write_output(&mut ctx, &recorded_output);
+                        }
+                    }
+
+                    // Clone input_value for after_import notification if interceptor exists
+                    let input_value_for_interceptor = interceptor.as_ref().map(|_| input_value.clone());
 
                     // Convert to user type
                     let input: P = match P::try_from(input_value) {
@@ -618,41 +710,14 @@ impl<'a, 'b, T: 'static> InterfaceBuilder<'a, 'b, T> {
                         },
                     };
 
-                    // Encode output
-                    let bytes = match encode(&output_value) {
-                        Ok(b) => b,
-                        Err(e) => {
-                            report(HostFunctionErrorKind::Encode(e.to_string()));
-                            return -1;
+                    // Notify interceptor of completed call
+                    if let Some(ref interceptor) = interceptor {
+                        if let Some(ref iv) = input_value_for_interceptor {
+                            interceptor.after_import(&interface_name, &func_name, iv, &output_value);
                         }
-                    };
-
-                    // Write output to a fixed buffer location
-                    let memory = match ctx.caller.get_export("memory").and_then(|e| e.into_memory()) {
-                        Some(m) => m,
-                        None => {
-                            report(HostFunctionErrorKind::MemoryWrite("no memory export".to_string()));
-                            return -1;
-                        }
-                    };
-
-                    let data_offset = OUTPUT_BUFFER_OFFSET + 8;
-                    if let Err(e) = memory.write(&mut ctx.caller, data_offset, &bytes) {
-                        report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
-                        return -1;
                     }
 
-                    // Write ptr and len to the caller's slots
-                    if let Err(e) = memory.write(&mut ctx.caller, out_ptr_ptr as usize, &(data_offset as i32).to_le_bytes()) {
-                        report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
-                        return -1;
-                    }
-                    if let Err(e) = memory.write(&mut ctx.caller, out_len_ptr as usize, &(bytes.len() as i32).to_le_bytes()) {
-                        report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
-                        return -1;
-                    }
-
-                    0 // Success
+                    write_output(&mut ctx, &output_value)
                 },
             )
             .map_err(|e| LinkerError::FunctionRegistration(e.to_string()))?;
@@ -707,6 +772,7 @@ impl<'a, 'b, T: Send + Clone + 'static> InterfaceBuilder<'a, 'b, T> {
     {
         let func = Arc::new(func);
         let error_handler = self.error_handler.clone();
+        let interceptor = self.interceptor.clone();
         let interface_name = self.module_name.clone();
         let func_name = name.to_string();
 
@@ -719,6 +785,7 @@ impl<'a, 'b, T: Send + Clone + 'static> InterfaceBuilder<'a, 'b, T> {
                       (in_ptr, in_len, out_ptr_ptr, out_len_ptr): (i32, i32, i32, i32)| {
                     let func = func.clone();
                     let error_handler = error_handler.clone();
+                    let interceptor = interceptor.clone();
                     let interface_name = interface_name.clone();
                     let func_name = func_name.clone();
 
@@ -769,6 +836,38 @@ impl<'a, 'b, T: Send + Clone + 'static> InterfaceBuilder<'a, 'b, T> {
                             }
                         };
 
+                        // Check interceptor for short-circuit (replay)
+                        if let Some(ref interceptor) = interceptor {
+                            if let Some(recorded_output) = interceptor.before_import(&interface_name, &func_name, &input_value) {
+                                interceptor.after_import(&interface_name, &func_name, &input_value, &recorded_output);
+                                // Encode and write intercepted output to memory
+                                let bytes = match encode(&recorded_output) {
+                                    Ok(b) => b,
+                                    Err(e) => {
+                                        report(HostFunctionErrorKind::Encode(e.to_string()));
+                                        return -1;
+                                    }
+                                };
+                                let data_offset = OUTPUT_BUFFER_OFFSET + 8;
+                                if let Err(e) = memory.write(&mut caller, data_offset, &bytes) {
+                                    report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
+                                    return -1;
+                                }
+                                if let Err(e) = memory.write(&mut caller, out_ptr_ptr as usize, &(data_offset as i32).to_le_bytes()) {
+                                    report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
+                                    return -1;
+                                }
+                                if let Err(e) = memory.write(&mut caller, out_len_ptr as usize, &(bytes.len() as i32).to_le_bytes()) {
+                                    report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
+                                    return -1;
+                                }
+                                return 0;
+                            }
+                        }
+
+                        // Clone input_value for after_import notification if interceptor exists
+                        let input_value_for_interceptor = interceptor.as_ref().map(|_| input_value.clone());
+
                         let input: P = match P::try_from(input_value) {
                             Ok(p) => p,
                             Err(e) => {
@@ -785,6 +884,15 @@ impl<'a, 'b, T: Send + Clone + 'static> InterfaceBuilder<'a, 'b, T> {
 
                         // Encode output
                         let output_value: Value = output.into();
+
+                        // Notify interceptor of completed call
+                        if let Some(ref interceptor) = interceptor {
+                            if let Some(ref iv) = input_value_for_interceptor {
+                                interceptor.after_import(&interface_name, &func_name, iv, &output_value);
+                            }
+                        }
+
+                        // Encode and write output to memory
                         let bytes = match encode(&output_value) {
                             Ok(b) => b,
                             Err(e) => {
@@ -793,14 +901,12 @@ impl<'a, 'b, T: Send + Clone + 'static> InterfaceBuilder<'a, 'b, T> {
                             }
                         };
 
-                        // Write data to OUTPUT_BUFFER_OFFSET (after the slots)
                         let data_offset = OUTPUT_BUFFER_OFFSET + 8;
                         if let Err(e) = memory.write(&mut caller, data_offset, &bytes) {
                             report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
                             return -1;
                         }
 
-                        // Write ptr and len to the caller's slots
                         if let Err(e) = memory.write(&mut caller, out_ptr_ptr as usize, &(data_offset as i32).to_le_bytes()) {
                             report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
                             return -1;
@@ -851,6 +957,7 @@ impl<'a, 'b, T: Send + Clone + 'static> InterfaceBuilder<'a, 'b, T> {
     {
         let func = Arc::new(func);
         let error_handler = self.error_handler.clone();
+        let interceptor = self.interceptor.clone();
         let interface_name = self.module_name.clone();
         let func_name = name.to_string();
 
@@ -863,6 +970,7 @@ impl<'a, 'b, T: Send + Clone + 'static> InterfaceBuilder<'a, 'b, T> {
                       (in_ptr, in_len, out_ptr_ptr, out_len_ptr): (i32, i32, i32, i32)| {
                     let func = func.clone();
                     let error_handler = error_handler.clone();
+                    let interceptor = interceptor.clone();
                     let interface_name = interface_name.clone();
                     let func_name = func_name.clone();
 
@@ -913,6 +1021,38 @@ impl<'a, 'b, T: Send + Clone + 'static> InterfaceBuilder<'a, 'b, T> {
                             }
                         };
 
+                        // Check interceptor for short-circuit (replay)
+                        if let Some(ref interceptor) = interceptor {
+                            if let Some(recorded_output) = interceptor.before_import(&interface_name, &func_name, &input_value) {
+                                interceptor.after_import(&interface_name, &func_name, &input_value, &recorded_output);
+                                // Encode and write intercepted output to memory
+                                let bytes = match encode(&recorded_output) {
+                                    Ok(b) => b,
+                                    Err(e) => {
+                                        report(HostFunctionErrorKind::Encode(e.to_string()));
+                                        return -1;
+                                    }
+                                };
+                                let data_offset = OUTPUT_BUFFER_OFFSET + 8;
+                                if let Err(e) = memory.write(&mut caller, data_offset, &bytes) {
+                                    report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
+                                    return -1;
+                                }
+                                if let Err(e) = memory.write(&mut caller, out_ptr_ptr as usize, &(data_offset as i32).to_le_bytes()) {
+                                    report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
+                                    return -1;
+                                }
+                                if let Err(e) = memory.write(&mut caller, out_len_ptr as usize, &(bytes.len() as i32).to_le_bytes()) {
+                                    report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
+                                    return -1;
+                                }
+                                return 0;
+                            }
+                        }
+
+                        // Clone input_value for after_import notification if interceptor exists
+                        let input_value_for_interceptor = interceptor.as_ref().map(|_| input_value.clone());
+
                         let input: P = match P::try_from(input_value) {
                             Ok(p) => p,
                             Err(e) => {
@@ -943,6 +1083,14 @@ impl<'a, 'b, T: Send + Clone + 'static> InterfaceBuilder<'a, 'b, T> {
                             },
                         };
 
+                        // Notify interceptor of completed call
+                        if let Some(ref interceptor) = interceptor {
+                            if let Some(ref iv) = input_value_for_interceptor {
+                                interceptor.after_import(&interface_name, &func_name, iv, &output_value);
+                            }
+                        }
+
+                        // Encode and write output to memory
                         let bytes = match encode(&output_value) {
                             Ok(b) => b,
                             Err(e) => {
@@ -951,14 +1099,12 @@ impl<'a, 'b, T: Send + Clone + 'static> InterfaceBuilder<'a, 'b, T> {
                             }
                         };
 
-                        // Write data to OUTPUT_BUFFER_OFFSET (after the slots)
                         let data_offset = OUTPUT_BUFFER_OFFSET + 8;
                         if let Err(e) = memory.write(&mut caller, data_offset, &bytes) {
                             report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
                             return -1;
                         }
 
-                        // Write ptr and len to the caller's slots
                         if let Err(e) = memory.write(&mut caller, out_ptr_ptr as usize, &(data_offset as i32).to_le_bytes()) {
                             report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
                             return -1;

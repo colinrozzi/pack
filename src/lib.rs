@@ -60,8 +60,8 @@ pub use metadata::{
 };
 pub use runtime::{
     validate_instance_implements_interface, AsyncCompiledModule, AsyncCtx, AsyncInstance,
-    AsyncRuntime, CompiledModule, Ctx, DefaultHostProvider, ErrorHandler, HostFunctionError,
-    HostFunctionErrorKind, HostFunctionProvider, HostLinkerBuilder, Instance, InterfaceBuilder,
-    InterfaceError, LinkerError, Runtime,
+    AsyncRuntime, CallInterceptor, CompiledModule, Ctx, DefaultHostProvider, ErrorHandler,
+    HostFunctionError, HostFunctionErrorKind, HostFunctionProvider, HostLinkerBuilder, Instance,
+    InterfaceBuilder, InterfaceError, LinkerError, Runtime,
 };
 pub use wit_plus::{Interface, InterfacePath, TypeDef, World, WorldItem};

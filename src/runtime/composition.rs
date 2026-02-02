@@ -34,16 +34,29 @@ use crate::runtime::{
 };
 use wasmtime::{Caller, Engine, Linker, Module, Store};
 
+/// A host function that can be wired into compositions.
+///
+/// Host functions follow the guest-allocates ABI, taking encoded input bytes
+/// and returning encoded output bytes.
+pub type HostFn = Arc<dyn Fn(&[u8]) -> Result<Vec<u8>, String> + Send + Sync>;
+
 /// Builder for creating composed packages with cross-package imports.
 pub struct CompositionBuilder {
     engine: Engine,
     packages: Vec<PackageDefinition>,
+    host_functions: Vec<HostFunctionDef>,
 }
 
 struct PackageDefinition {
     name: String,
     wasm_bytes: Vec<u8>,
     imports: Vec<ImportWiring>,
+}
+
+struct HostFunctionDef {
+    module: String,
+    function: String,
+    handler: HostFn,
 }
 
 #[derive(Clone)]
@@ -60,6 +73,7 @@ impl CompositionBuilder {
         Self {
             engine: Engine::default(),
             packages: Vec::new(),
+            host_functions: Vec::new(),
         }
     }
 
@@ -71,6 +85,73 @@ impl CompositionBuilder {
             imports: Vec::new(),
         });
         self
+    }
+
+    /// Add a host function that can satisfy imports.
+    ///
+    /// The handler receives encoded input bytes and returns encoded output bytes.
+    /// Use `pack::abi::decode` and `pack::abi::encode` to work with Values.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use pack::abi::{decode, encode, Value};
+    ///
+    /// builder.add_host_function("my:interface", "my-func", |input_bytes| {
+    ///     let input: Value = decode(input_bytes)?;
+    ///     // Process input...
+    ///     let output = Value::S64(42);
+    ///     encode(&output).map_err(|e| e.to_string())
+    /// })
+    /// ```
+    pub fn add_host_function<F>(
+        mut self,
+        module: impl Into<String>,
+        function: impl Into<String>,
+        handler: F,
+    ) -> Self
+    where
+        F: Fn(&[u8]) -> Result<Vec<u8>, String> + Send + Sync + 'static,
+    {
+        self.host_functions.push(HostFunctionDef {
+            module: module.into(),
+            function: function.into(),
+            handler: Arc::new(handler),
+        });
+        self
+    }
+
+    /// Add a typed host function that works with Values directly.
+    ///
+    /// This is a convenience wrapper around `add_host_function` that handles
+    /// encoding/decoding automatically.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// builder.add_host_function_typed("my:interface", "double", |input: Value| {
+    ///     match input {
+    ///         Value::S64(n) => Ok(Value::S64(n * 2)),
+    ///         _ => Err("expected s64".to_string()),
+    ///     }
+    /// })
+    /// ```
+    pub fn add_host_function_typed<F>(
+        self,
+        module: impl Into<String>,
+        function: impl Into<String>,
+        handler: F,
+    ) -> Self
+    where
+        F: Fn(Value) -> Result<Value, String> + Send + Sync + 'static,
+    {
+        let module = module.into();
+        let function = function.into();
+        self.add_host_function(module, function, move |input_bytes| {
+            let input = decode(input_bytes).map_err(|e| e.to_string())?;
+            let output = handler(input)?;
+            encode(&output).map_err(|e| e.to_string())
+        })
     }
 
     /// Wire an import from one package to an export from another.
@@ -163,7 +244,34 @@ impl CompositionBuilder {
 
             let mut linker = Linker::<ComposedState>::new(&self.engine);
 
-            // Wire each import
+            // Wire host functions first
+            for host_fn in &self.host_functions {
+                let handler = Arc::clone(&host_fn.handler);
+
+                linker
+                    .func_wrap(
+                        &host_fn.module,
+                        &host_fn.function,
+                        move |mut caller: Caller<'_, ComposedState>,
+                              in_ptr: i32,
+                              in_len: i32,
+                              out_ptr_ptr: i32,
+                              out_len_ptr: i32|
+                              -> i32 {
+                            host_function_call(
+                                &mut caller,
+                                &handler,
+                                in_ptr,
+                                in_len,
+                                out_ptr_ptr,
+                                out_len_ptr,
+                            )
+                        },
+                    )
+                    .map_err(|e| RuntimeError::WasmError(e.to_string()))?;
+            }
+
+            // Wire each cross-package import
             for wiring in &pkg.imports {
                 let source_pkg = wiring.source_package.clone();
                 let source_fn = wiring.source_function.clone();
@@ -370,6 +478,57 @@ fn cross_package_call(
 
     // Write the buffer location to caller's result slots
     let result_ptr = CROSS_CALL_BUFFER_OFFSET as i32;
+    let result_len = result.len() as i32;
+
+    if memory.write(&mut *caller, out_ptr_ptr as usize, &result_ptr.to_le_bytes()).is_err() {
+        return -1;
+    }
+    if memory.write(&mut *caller, out_len_ptr as usize, &result_len.to_le_bytes()).is_err() {
+        return -1;
+    }
+
+    0 // Success
+}
+
+/// Handle a host function call using the guest-allocates ABI.
+///
+/// Similar to cross_package_call but invokes a host-provided function
+/// instead of another WASM package.
+fn host_function_call(
+    caller: &mut Caller<'_, ComposedState>,
+    handler: &HostFn,
+    in_ptr: i32,
+    in_len: i32,
+    out_ptr_ptr: i32,
+    out_len_ptr: i32,
+) -> i32 {
+    // Read input from caller's memory
+    let memory = match caller.get_export("memory") {
+        Some(wasmtime::Extern::Memory(m)) => m,
+        _ => return -1,
+    };
+
+    let mut input_bytes = vec![0u8; in_len as usize];
+    if memory.read(&caller, in_ptr as usize, &mut input_bytes).is_err() {
+        return -1;
+    }
+
+    // Call the host function
+    let result = match handler(&input_bytes) {
+        Ok(bytes) => bytes,
+        Err(_) => return -1,
+    };
+
+    // Write result to caller's memory using a fixed buffer region
+    // (same approach as cross_package_call)
+    const HOST_CALL_BUFFER_OFFSET: usize = RESULT_LEN_OFFSET + 4;
+
+    if memory.write(&mut *caller, HOST_CALL_BUFFER_OFFSET, &result).is_err() {
+        return -1;
+    }
+
+    // Write the buffer location to caller's result slots
+    let result_ptr = HOST_CALL_BUFFER_OFFSET as i32;
     let result_len = result.len() as i32;
 
     if memory.write(&mut *caller, out_ptr_ptr as usize, &result_ptr.to_le_bytes()).is_err() {
