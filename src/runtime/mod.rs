@@ -204,6 +204,8 @@ impl AsyncRuntime {
     pub fn new() -> Self {
         let mut config = Config::new();
         config.async_support(true);
+        // Enable multi-memory for composed modules that merge multiple WASM files
+        config.wasm_multi_memory(true);
         let engine = Engine::new(&config).expect("failed to create async engine");
         Self { engine }
     }

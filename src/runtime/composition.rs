@@ -70,8 +70,12 @@ struct ImportWiring {
 impl CompositionBuilder {
     /// Create a new composition builder.
     pub fn new() -> Self {
+        // Enable multi-memory for composed modules that may come from pack-compose
+        let mut config = wasmtime::Config::new();
+        config.wasm_multi_memory(true);
+        let engine = Engine::new(&config).expect("failed to create engine");
         Self {
-            engine: Engine::default(),
+            engine,
             packages: Vec::new(),
             host_functions: Vec::new(),
         }
@@ -202,16 +206,20 @@ impl CompositionBuilder {
         }));
 
         // Topological sort: instantiate packages without imports first
+        // Note: if there are host functions defined, ALL packages need them,
+        // so treat them all as consumers in that case
+        let has_host_functions = !self.host_functions.is_empty();
+
         let providers: Vec<_> = self
             .packages
             .iter()
-            .filter(|p| p.imports.is_empty())
+            .filter(|p| p.imports.is_empty() && !has_host_functions)
             .collect();
 
         let consumers: Vec<_> = self
             .packages
             .iter()
-            .filter(|p| !p.imports.is_empty())
+            .filter(|p| !p.imports.is_empty() || has_host_functions)
             .collect();
 
         // Instantiate providers first

@@ -49,6 +49,7 @@
 //! ```
 
 pub mod abi;
+pub mod compose;
 pub mod metadata;
 pub mod runtime;
 pub mod wit_plus;
@@ -65,3 +66,5 @@ pub use runtime::{
     InterfaceBuilder, InterfaceError, LinkerError, Runtime,
 };
 pub use wit_plus::{Interface, InterfacePath, TypeDef, World, WorldItem};
+
+pub use compose::{ComposeError, ParsedModule, StaticComposer};

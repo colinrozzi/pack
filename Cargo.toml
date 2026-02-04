@@ -16,6 +16,10 @@ serde_json = "1.0"  # For debugging, can add binary format later
 thiserror = "1.0"
 anyhow = "1.0"
 
+# Static composition - parse and emit WASM modules
+wasmparser = "0.219"
+wasm-encoder = "0.219"
+
 [dev-dependencies]
 wat = "1.0"  # For writing test modules in WAT
 tokio = { version = "1.0", features = ["rt", "macros"] }  # For async tests
