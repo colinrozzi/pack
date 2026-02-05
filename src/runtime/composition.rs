@@ -659,8 +659,14 @@ impl UntypedStore {
         d: i32,
     ) -> Result<i32, ()> {
         match self {
-            UntypedStore::Unit(store) => func.call(&mut *store, (a, b, c, d)).map_err(|_| ()),
-            UntypedStore::Composed(store) => func.call(&mut *store, (a, b, c, d)).map_err(|_| ()),
+            UntypedStore::Unit(store) => func.call(&mut *store, (a, b, c, d)).map_err(|e| {
+                eprintln!("[PACK DEBUG] call_func error: {:?}", e);
+                ()
+            }),
+            UntypedStore::Composed(store) => func.call(&mut *store, (a, b, c, d)).map_err(|e| {
+                eprintln!("[PACK DEBUG] call_func error: {:?}", e);
+                ()
+            }),
         }
     }
 
@@ -766,7 +772,7 @@ impl BuiltComposition {
                 RESULT_PTR_OFFSET as i32,
                 RESULT_LEN_OFFSET as i32,
             )
-            .map_err(|_| RuntimeError::WasmError("Function call failed".into()))?;
+            .map_err(|e| RuntimeError::WasmError(format!("Function call failed: {:?}", e)))?;
 
         // Free the input buffer if dynamically allocated
         if dynamic_input {

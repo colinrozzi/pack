@@ -201,17 +201,27 @@ impl Merger {
                 remap.tables.insert(old_idx, new_idx);
             }
 
-            // Add defined memories
+            // Add defined memories - SHARE memory across all modules
+            // When modules are wired together, they need to share memory for
+            // cross-module function calls to work (strings/data passed by pointer).
+            // We map all module-defined memories to a single shared memory (index 0).
             for (i, mem_ty) in module.memories.iter().enumerate() {
                 let old_idx = module.num_imported_memories + i as u32;
-                let new_idx = merged.add_memory(mem_ty);
+                // Add memory only if this is the first one we've seen
+                let new_idx = if merged.memories.is_empty() {
+                    merged.add_memory(mem_ty)
+                } else {
+                    // Expand the shared memory if this module needs more
+                    merged.expand_memory(mem_ty);
+                    0 // All modules share memory 0
+                };
                 remap.memories.insert(old_idx, new_idx);
             }
 
             // Add defined globals
             for (i, global) in module.globals.iter().enumerate() {
                 let old_idx = module.num_imported_globals + i as u32;
-                let new_idx = merged.add_global(global, remap);
+                let (new_idx, _unified) = merged.add_global(global, remap);
                 remap.globals.insert(old_idx, new_idx);
             }
 
@@ -269,12 +279,17 @@ impl Merger {
             }
         }
 
-        // Step 8: Add data segments
+        // Step 8: Add data segments with relocation to avoid overlap
+        // First module's data stays at original offsets, subsequent modules are relocated
+        let mut cumulative_data_offset = 0u32;
         for module in &sorted_modules {
             let remap = &module_remaps[&module.name];
             for data in &module.data {
-                merged.add_data(data, remap);
+                merged.add_data(data, remap, cumulative_data_offset);
             }
+            // After adding this module's data, update the offset for the next module
+            // Align to 8-byte boundary for safety
+            cumulative_data_offset = (merged.highest_data_addr + 7) & !7;
         }
 
         // Step 9: Add element segments
@@ -395,6 +410,20 @@ struct MergedModule {
     code: Vec<Function>,
     data: Vec<(DataSegmentKind, Vec<u8>)>,
     elements: Vec<MergedElement>,
+
+    /// Highest data segment end address.
+    /// Used to relocate subsequent modules' data to avoid overlap.
+    highest_data_addr: u32,
+
+    /// Index of the unified heap pointer global (mut i32, initial 0xC000).
+    /// When modules share memory, they must share this global so allocations
+    /// from different modules don't overlap.
+    unified_heap_ptr: Option<u32>,
+
+    /// Index of the unified encoding stack pointer global (mut i32, initial 0xB000).
+    /// This is used for CGRF tuple encoding and must be shared when modules
+    /// share memory.
+    unified_enc_tuple_sp: Option<u32>,
 }
 
 struct MergedImport {
@@ -459,6 +488,9 @@ impl MergedModule {
             code: Vec::new(),
             data: Vec::new(),
             elements: Vec::new(),
+            highest_data_addr: 0,
+            unified_heap_ptr: None,
+            unified_enc_tuple_sp: None,
         }
     }
 
@@ -560,10 +592,86 @@ impl MergedModule {
         idx
     }
 
-    fn add_global(&mut self, global: &Global, _remap: &IndexRemap) -> u32 {
+    /// Expand the shared memory (index 0) to accommodate a larger requirement.
+    /// Takes the maximum of the current and new memory limits.
+    fn expand_memory(&mut self, mem_ty: &wasmparser::MemoryType) {
+        if self.memories.is_empty() {
+            return;
+        }
+        let shared = &mut self.memories[0];
+        // Take the maximum initial and maximum sizes
+        shared.initial = shared.initial.max(mem_ty.initial);
+        shared.maximum = match (shared.maximum, mem_ty.maximum) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (Some(a), None) | (None, Some(a)) => Some(a),
+            (None, None) => None,
+        };
+    }
+
+    /// Add a global, unifying heap-related globals when modules share memory.
+    ///
+    /// Wisp-compiled modules have two critical globals that must be shared
+    /// when modules share memory:
+    /// - Heap pointer ($__heap_ptr): mut i32, initial value 0xC000 (49152)
+    /// - Encoding stack pointer ($enc_tuple_sp): mut i32, initial value 0xB000 (45056)
+    ///
+    /// Without unification, each module would allocate from the same starting
+    /// address, causing memory corruption.
+    fn add_global(&mut self, global: &Global, _remap: &IndexRemap) -> (u32, bool) {
+        // Check if this is a heap pointer global (mut i32, value 49152)
+        if self.is_heap_ptr_global(global) {
+            if let Some(unified_idx) = self.unified_heap_ptr {
+                // Return the existing unified heap pointer
+                return (unified_idx, true);
+            } else {
+                // First heap pointer - add it and track
+                let idx = self.next_global_index();
+                self.globals.push((global.ty, global.init_expr.clone()));
+                self.unified_heap_ptr = Some(idx);
+                return (idx, false);
+            }
+        }
+
+        // Check if this is an enc_tuple_sp global (mut i32, value 45056)
+        if self.is_enc_tuple_sp_global(global) {
+            if let Some(unified_idx) = self.unified_enc_tuple_sp {
+                // Return the existing unified enc_tuple_sp
+                return (unified_idx, true);
+            } else {
+                // First enc_tuple_sp - add it and track
+                let idx = self.next_global_index();
+                self.globals.push((global.ty, global.init_expr.clone()));
+                self.unified_enc_tuple_sp = Some(idx);
+                return (idx, false);
+            }
+        }
+
+        // Regular global - add as new
         let idx = self.next_global_index();
         self.globals.push((global.ty, global.init_expr.clone()));
-        idx
+        (idx, false)
+    }
+
+    /// Check if a global is the heap pointer (mut i32, value 0xC000).
+    fn is_heap_ptr_global(&self, global: &Global) -> bool {
+        if !global.ty.mutable {
+            return false;
+        }
+        if global.ty.content_type != wasmparser::ValType::I32 {
+            return false;
+        }
+        matches!(global.init_expr, ConstExpr::I32Const(49152))
+    }
+
+    /// Check if a global is the encoding tuple stack pointer (mut i32, value 0xB000).
+    fn is_enc_tuple_sp_global(&self, global: &Global) -> bool {
+        if !global.ty.mutable {
+            return false;
+        }
+        if global.ty.content_type != wasmparser::ValType::I32 {
+            return false;
+        }
+        matches!(global.init_expr, ConstExpr::I32Const(45056))
     }
 
     fn add_function(&mut self, type_idx: u32) -> u32 {
@@ -576,16 +684,37 @@ impl MergedModule {
         self.code.push(func);
     }
 
-    fn add_data(&mut self, data: &DataSegment, remap: &IndexRemap) {
+    /// Add a data segment with relocation support.
+    /// The `data_offset` parameter specifies how much to offset this segment
+    /// to avoid overlap with other modules' data.
+    fn add_data(&mut self, data: &DataSegment, remap: &IndexRemap, data_offset: u32) {
         let kind = match &data.kind {
             DataSegmentKind::Active {
                 memory_index,
                 offset_expr,
             } => {
                 let new_mem_idx = remap.memories.get(memory_index).copied().unwrap_or(*memory_index);
+                // Apply data offset if this is a constant offset
+                let new_offset = match offset_expr {
+                    ConstExpr::I32Const(orig_offset) => {
+                        let relocated = (*orig_offset as u32).saturating_add(data_offset);
+                        // Track highest data address
+                        let data_end = relocated + data.data.len() as u32;
+                        if data_end > self.highest_data_addr {
+                            self.highest_data_addr = data_end;
+                        }
+                        ConstExpr::I32Const(relocated as i32)
+                    }
+                    _ => {
+                        // For non-constant offsets, we can't easily relocate
+                        // Just track the data size for highest_data_addr
+                        self.highest_data_addr = self.highest_data_addr.max(data.data.len() as u32);
+                        offset_expr.clone()
+                    }
+                };
                 DataSegmentKind::Active {
                     memory_index: new_mem_idx,
-                    offset_expr: offset_expr.clone(),
+                    offset_expr: new_offset,
                 }
             }
             DataSegmentKind::Passive => DataSegmentKind::Passive,
