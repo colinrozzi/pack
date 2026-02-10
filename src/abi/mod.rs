@@ -6,7 +6,7 @@
 
 mod value;
 
-pub use value::{Value, ValueType};
+pub use value::{PackType, Value, ValueType};
 
 use std::collections::{HashMap, HashSet};
 

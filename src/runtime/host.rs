@@ -20,7 +20,7 @@
 //! })?;
 //! ```
 
-use crate::abi::{decode, encode, Value};
+use crate::abi::{decode, encode, PackType, Value};
 use crate::runtime::interceptor::CallInterceptor;
 use crate::runtime::RuntimeError;
 use std::future::Future;
@@ -583,8 +583,8 @@ impl<'a, 'b, T: 'static> InterfaceBuilder<'a, 'b, T> {
     where
         P: TryFrom<Value> + 'static,
         <P as TryFrom<Value>>::Error: std::fmt::Debug,
-        R: Into<Value> + 'static,
-        E: Into<Value> + 'static,
+        R: PackType + 'static,
+        E: PackType + 'static,
         F: Fn(&mut Ctx<'_, T>, P) -> Result<R, E> + Send + Sync + 'static,
     {
         let func = Arc::new(func);
@@ -694,19 +694,18 @@ impl<'a, 'b, T: 'static> InterfaceBuilder<'a, 'b, T> {
                     // Call user function
                     let result = func(&mut ctx, input);
 
-                    // Encode result as WIT result variant
+                    // Encode result as WIT result type
+                    // Use PackType::value_type() to get correct types for both variants
                     let output_value: Value = match result {
-                        Ok(value) => Value::Variant {
-                            type_name: "result".to_string(),
-                            case_name: "ok".to_string(),
-                            tag: 0,
-                            payload: vec![value.into()],
+                        Ok(value) => Value::Result {
+                            ok_type: R::value_type(),
+                            err_type: E::value_type(),
+                            value: Ok(Box::new(value.into())),
                         },
-                        Err(error) => Value::Variant {
-                            type_name: "result".to_string(),
-                            case_name: "error".to_string(),
-                            tag: 1,
-                            payload: vec![error.into()],
+                        Err(error) => Value::Result {
+                            ok_type: R::value_type(),
+                            err_type: E::value_type(),
+                            value: Err(Box::new(error.into())),
                         },
                     };
 
@@ -950,8 +949,8 @@ impl<'a, 'b, T: Send + Clone + 'static> InterfaceBuilder<'a, 'b, T> {
     where
         P: TryFrom<Value> + Send + 'static,
         <P as TryFrom<Value>>::Error: std::fmt::Debug,
-        R: Into<Value> + Send + 'static,
-        E: Into<Value> + Send + 'static,
+        R: PackType + Send + 'static,
+        E: PackType + Send + 'static,
         F: Fn(AsyncCtx<T>, P) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<R, E>> + Send + 'static,
     {
@@ -1067,19 +1066,18 @@ impl<'a, 'b, T: Send + Clone + 'static> InterfaceBuilder<'a, 'b, T> {
                         // Call async function
                         let result = func(ctx, input).await;
 
-                        // Encode result as WIT result variant
+                        // Encode result as WIT result type
+                        // Use PackType::value_type() to get correct types for both variants
                         let output_value: Value = match result {
-                            Ok(value) => Value::Variant {
-                                type_name: "result".to_string(),
-                                case_name: "ok".to_string(),
-                                tag: 0,
-                                payload: vec![value.into()],
+                            Ok(value) => Value::Result {
+                                ok_type: R::value_type(),
+                                err_type: E::value_type(),
+                                value: Ok(Box::new(value.into())),
                             },
-                            Err(error) => Value::Variant {
-                                type_name: "result".to_string(),
-                                case_name: "error".to_string(),
-                                tag: 1,
-                                payload: vec![error.into()],
+                            Err(error) => Value::Result {
+                                ok_type: R::value_type(),
+                                err_type: E::value_type(),
+                                value: Err(Box::new(error.into())),
                             },
                         };
 

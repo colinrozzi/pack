@@ -562,3 +562,531 @@ fn test_error_handler_callback() {
         HostFunctionErrorKind::Decode(_)
     ));
 }
+
+// ============================================================================
+// Result Encoding Tests (Bug fix verification)
+// ============================================================================
+
+/// Test that func_typed_result encodes Ok results as Value::Result, not Value::Variant
+#[test]
+fn test_func_typed_result_encodes_as_value_result_ok() {
+    // Module that wraps a host function call - the host function uses Graph ABI
+    let module_wat = r#"
+    (module
+        (import "test" "maybe_double" (func $maybe_double (param i32 i32 i32 i32) (result i32)))
+        (memory (export "memory") 1)
+
+        (global $result_ptr_offset i32 (i32.const 16384))
+        (global $result_len_offset i32 (i32.const 16388))
+        (global $output_offset i32 (i32.const 16392))
+
+        (func $call_maybe_double (param $in_ptr i32) (param $in_len i32) (param $out_ptr_ptr i32) (param $out_len_ptr i32) (result i32)
+            (local $status i32)
+            (local $result_ptr i32)
+            (local $result_len i32)
+
+            (local.set $status
+                (call $maybe_double
+                    (local.get $in_ptr)
+                    (local.get $in_len)
+                    (global.get $result_ptr_offset)
+                    (global.get $result_len_offset)))
+
+            (if (i32.ne (local.get $status) (i32.const 0))
+                (then (return (local.get $status))))
+
+            (local.set $result_ptr (i32.load (global.get $result_ptr_offset)))
+            (local.set $result_len (i32.load (global.get $result_len_offset)))
+
+            (memory.copy (global.get $output_offset) (local.get $result_ptr) (local.get $result_len))
+
+            (i32.store (local.get $out_ptr_ptr) (global.get $output_offset))
+            (i32.store (local.get $out_len_ptr) (local.get $result_len))
+
+            (i32.const 0)
+        )
+
+        (export "call_maybe_double" (func $call_maybe_double))
+    )
+    "#;
+
+    let wasm_bytes = wat::parse_str(module_wat).expect("parse WAT");
+    let runtime = Runtime::new();
+    let module = runtime.load_module(&wasm_bytes).expect("load module");
+
+    let mut instance = module
+        .instantiate_with_host((), |builder| {
+            builder.interface("test")?.func_typed_result(
+                "maybe_double",
+                |_ctx: &mut pack::Ctx<'_, ()>, input: Value| -> Result<Value, Value> {
+                    // Return Ok with doubled value
+                    match input {
+                        Value::S64(n) => Ok(Value::S64(n * 2)),
+                        other => Ok(other),
+                    }
+                },
+            )?;
+            Ok(())
+        })
+        .expect("instantiate");
+
+    let input = Value::S64(21);
+    let output = instance
+        .call_with_value("call_maybe_double", &input)
+        .expect("call");
+
+    // Verify output is Value::Result with Ok variant, NOT Value::Variant
+    match output {
+        Value::Result { value: Ok(inner), .. } => {
+            assert_eq!(*inner, Value::S64(42)); // 21 * 2 = 42
+        }
+        Value::Variant { type_name, case_name, .. } => {
+            panic!(
+                "Expected Value::Result but got Value::Variant(type_name={}, case_name={})",
+                type_name, case_name
+            );
+        }
+        other => {
+            panic!("Expected Value::Result but got {:?}", other);
+        }
+    }
+}
+
+/// Test that func_typed_result encodes Err results as Value::Result, not Value::Variant
+#[test]
+fn test_func_typed_result_encodes_as_value_result_err() {
+    let module_wat = r#"
+    (module
+        (import "test" "maybe_double" (func $maybe_double (param i32 i32 i32 i32) (result i32)))
+        (memory (export "memory") 1)
+
+        (global $result_ptr_offset i32 (i32.const 16384))
+        (global $result_len_offset i32 (i32.const 16388))
+        (global $output_offset i32 (i32.const 16392))
+
+        (func $call_maybe_double (param $in_ptr i32) (param $in_len i32) (param $out_ptr_ptr i32) (param $out_len_ptr i32) (result i32)
+            (local $status i32)
+            (local $result_ptr i32)
+            (local $result_len i32)
+
+            (local.set $status
+                (call $maybe_double
+                    (local.get $in_ptr)
+                    (local.get $in_len)
+                    (global.get $result_ptr_offset)
+                    (global.get $result_len_offset)))
+
+            (if (i32.ne (local.get $status) (i32.const 0))
+                (then (return (local.get $status))))
+
+            (local.set $result_ptr (i32.load (global.get $result_ptr_offset)))
+            (local.set $result_len (i32.load (global.get $result_len_offset)))
+
+            (memory.copy (global.get $output_offset) (local.get $result_ptr) (local.get $result_len))
+
+            (i32.store (local.get $out_ptr_ptr) (global.get $output_offset))
+            (i32.store (local.get $out_len_ptr) (local.get $result_len))
+
+            (i32.const 0)
+        )
+
+        (export "call_maybe_double" (func $call_maybe_double))
+    )
+    "#;
+
+    let wasm_bytes = wat::parse_str(module_wat).expect("parse WAT");
+    let runtime = Runtime::new();
+    let module = runtime.load_module(&wasm_bytes).expect("load module");
+
+    let mut instance = module
+        .instantiate_with_host((), |builder| {
+            builder.interface("test")?.func_typed_result(
+                "maybe_double",
+                |_ctx: &mut pack::Ctx<'_, ()>, input: Value| -> Result<Value, Value> {
+                    // Return Err for negative numbers
+                    match input {
+                        Value::S64(n) if n < 0 => Err(Value::String("negative not allowed".to_string())),
+                        Value::S64(n) => Ok(Value::S64(n * 2)),
+                        other => Ok(other),
+                    }
+                },
+            )?;
+            Ok(())
+        })
+        .expect("instantiate");
+
+    // Pass negative number to trigger error
+    let input = Value::S64(-5);
+    let output = instance
+        .call_with_value("call_maybe_double", &input)
+        .expect("call");
+
+    // Verify output is Value::Result with Err variant, NOT Value::Variant
+    match output {
+        Value::Result { value: Err(inner), .. } => {
+            assert_eq!(*inner, Value::String("negative not allowed".to_string()));
+        }
+        Value::Variant { type_name, case_name, .. } => {
+            panic!(
+                "Expected Value::Result but got Value::Variant(type_name={}, case_name={})",
+                type_name, case_name
+            );
+        }
+        other => {
+            panic!("Expected Value::Result but got {:?}", other);
+        }
+    }
+}
+
+/// Test that func_async_result encodes Ok results as Value::Result, not Value::Variant
+#[tokio::test]
+async fn test_func_async_result_encodes_as_value_result_ok() {
+    use pack::AsyncRuntime;
+
+    let module_wat = r#"
+    (module
+        (import "test" "async_maybe_double" (func $async_maybe_double (param i32 i32 i32 i32) (result i32)))
+        (memory (export "memory") 1)
+
+        (global $result_ptr_offset i32 (i32.const 16384))
+        (global $result_len_offset i32 (i32.const 16388))
+        (global $output_offset i32 (i32.const 16392))
+
+        (func $call_async (param $in_ptr i32) (param $in_len i32) (param $out_ptr_ptr i32) (param $out_len_ptr i32) (result i32)
+            (local $status i32)
+            (local $result_ptr i32)
+            (local $result_len i32)
+
+            (local.set $status
+                (call $async_maybe_double
+                    (local.get $in_ptr)
+                    (local.get $in_len)
+                    (global.get $result_ptr_offset)
+                    (global.get $result_len_offset)))
+
+            (if (i32.ne (local.get $status) (i32.const 0))
+                (then (return (local.get $status))))
+
+            (local.set $result_ptr (i32.load (global.get $result_ptr_offset)))
+            (local.set $result_len (i32.load (global.get $result_len_offset)))
+
+            (memory.copy (global.get $output_offset) (local.get $result_ptr) (local.get $result_len))
+
+            (i32.store (local.get $out_ptr_ptr) (global.get $output_offset))
+            (i32.store (local.get $out_len_ptr) (local.get $result_len))
+
+            (i32.const 0)
+        )
+
+        (export "call_async" (func $call_async))
+    )
+    "#;
+
+    let wasm_bytes = wat::parse_str(module_wat).expect("parse WAT");
+    let runtime = AsyncRuntime::new();
+    let module = runtime.load_module(&wasm_bytes).expect("load module");
+
+    let mut instance = module
+        .instantiate_with_host_async((), |builder| {
+            builder.interface("test")?.func_async_result(
+                "async_maybe_double",
+                |_ctx: pack::AsyncCtx<()>, input: Value| async move {
+                    // Return Ok with doubled value
+                    let result: Result<Value, Value> = match input {
+                        Value::S64(n) => Ok(Value::S64(n * 2)),
+                        other => Ok(other),
+                    };
+                    result
+                },
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("instantiate");
+
+    let input = Value::S64(21);
+    let output = instance
+        .call_with_value_async("call_async", &input)
+        .await
+        .expect("call");
+
+    // Verify output is Value::Result with Ok variant, NOT Value::Variant
+    match output {
+        Value::Result { value: Ok(inner), .. } => {
+            assert_eq!(*inner, Value::S64(42)); // 21 * 2 = 42
+        }
+        Value::Variant { type_name, case_name, .. } => {
+            panic!(
+                "Expected Value::Result but got Value::Variant(type_name={}, case_name={})",
+                type_name, case_name
+            );
+        }
+        other => {
+            panic!("Expected Value::Result but got {:?}", other);
+        }
+    }
+}
+
+/// Test that func_async_result encodes Err results as Value::Result, not Value::Variant
+#[tokio::test]
+async fn test_func_async_result_encodes_as_value_result_err() {
+    use pack::AsyncRuntime;
+
+    let module_wat = r#"
+    (module
+        (import "test" "async_maybe_double" (func $async_maybe_double (param i32 i32 i32 i32) (result i32)))
+        (memory (export "memory") 1)
+
+        (global $result_ptr_offset i32 (i32.const 16384))
+        (global $result_len_offset i32 (i32.const 16388))
+        (global $output_offset i32 (i32.const 16392))
+
+        (func $call_async (param $in_ptr i32) (param $in_len i32) (param $out_ptr_ptr i32) (param $out_len_ptr i32) (result i32)
+            (local $status i32)
+            (local $result_ptr i32)
+            (local $result_len i32)
+
+            (local.set $status
+                (call $async_maybe_double
+                    (local.get $in_ptr)
+                    (local.get $in_len)
+                    (global.get $result_ptr_offset)
+                    (global.get $result_len_offset)))
+
+            (if (i32.ne (local.get $status) (i32.const 0))
+                (then (return (local.get $status))))
+
+            (local.set $result_ptr (i32.load (global.get $result_ptr_offset)))
+            (local.set $result_len (i32.load (global.get $result_len_offset)))
+
+            (memory.copy (global.get $output_offset) (local.get $result_ptr) (local.get $result_len))
+
+            (i32.store (local.get $out_ptr_ptr) (global.get $output_offset))
+            (i32.store (local.get $out_len_ptr) (local.get $result_len))
+
+            (i32.const 0)
+        )
+
+        (export "call_async" (func $call_async))
+    )
+    "#;
+
+    let wasm_bytes = wat::parse_str(module_wat).expect("parse WAT");
+    let runtime = AsyncRuntime::new();
+    let module = runtime.load_module(&wasm_bytes).expect("load module");
+
+    let mut instance = module
+        .instantiate_with_host_async((), |builder| {
+            builder.interface("test")?.func_async_result(
+                "async_maybe_double",
+                |_ctx: pack::AsyncCtx<()>, input: Value| async move {
+                    // Return Err for negative numbers
+                    let result: Result<Value, Value> = match input {
+                        Value::S64(n) if n < 0 => Err(Value::String("negative not allowed".to_string())),
+                        Value::S64(n) => Ok(Value::S64(n * 2)),
+                        other => Ok(other),
+                    };
+                    result
+                },
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("instantiate");
+
+    // Pass negative number to trigger error
+    let input = Value::S64(-5);
+    let output = instance
+        .call_with_value_async("call_async", &input)
+        .await
+        .expect("call");
+
+    // Verify output is Value::Result with Err variant, NOT Value::Variant
+    match output {
+        Value::Result { value: Err(inner), .. } => {
+            assert_eq!(*inner, Value::String("negative not allowed".to_string()));
+        }
+        Value::Variant { type_name, case_name, .. } => {
+            panic!(
+                "Expected Value::Result but got Value::Variant(type_name={}, case_name={})",
+                type_name, case_name
+            );
+        }
+        other => {
+            panic!("Expected Value::Result but got {:?}", other);
+        }
+    }
+}
+
+// ============================================================================
+// Type Inference Tests (Bug fix verification for different type sizes)
+// ============================================================================
+
+/// Test that func_typed_result correctly encodes Result<Vec<u8>, String> types
+/// even when returning Err (so we don't have an Ok value to infer from).
+///
+/// This is the specific case from the bug report: when ok_type is List<U8> but
+/// we only have an Err value, the ok_type should still be List<U8>, not String.
+#[test]
+fn test_func_typed_result_preserves_ok_type_on_err() {
+    use pack::abi::ValueType;
+
+    let module_wat = r#"
+    (module
+        (import "test" "fetch_bytes" (func $fetch_bytes (param i32 i32 i32 i32) (result i32)))
+        (memory (export "memory") 1)
+
+        (global $result_ptr_offset i32 (i32.const 16384))
+        (global $result_len_offset i32 (i32.const 16388))
+        (global $output_offset i32 (i32.const 16392))
+
+        (func $call_fetch (param $in_ptr i32) (param $in_len i32) (param $out_ptr_ptr i32) (param $out_len_ptr i32) (result i32)
+            (local $status i32)
+            (local $result_ptr i32)
+            (local $result_len i32)
+
+            (local.set $status
+                (call $fetch_bytes
+                    (local.get $in_ptr)
+                    (local.get $in_len)
+                    (global.get $result_ptr_offset)
+                    (global.get $result_len_offset)))
+
+            (if (i32.ne (local.get $status) (i32.const 0))
+                (then (return (local.get $status))))
+
+            (local.set $result_ptr (i32.load (global.get $result_ptr_offset)))
+            (local.set $result_len (i32.load (global.get $result_len_offset)))
+
+            (memory.copy (global.get $output_offset) (local.get $result_ptr) (local.get $result_len))
+
+            (i32.store (local.get $out_ptr_ptr) (global.get $output_offset))
+            (i32.store (local.get $out_len_ptr) (local.get $result_len))
+
+            (i32.const 0)
+        )
+
+        (export "call_fetch" (func $call_fetch))
+    )
+    "#;
+
+    let wasm_bytes = wat::parse_str(module_wat).expect("parse WAT");
+    let runtime = Runtime::new();
+    let module = runtime.load_module(&wasm_bytes).expect("load module");
+
+    let mut instance = module
+        .instantiate_with_host((), |builder| {
+            // Register function returning Result<Vec<u8>, String>
+            builder.interface("test")?.func_typed_result(
+                "fetch_bytes",
+                |_ctx: &mut pack::Ctx<'_, ()>, _input: Value| -> Result<Vec<u8>, String> {
+                    // Return error - we don't have an Ok value to infer from
+                    Err("Resource not found".to_string())
+                },
+            )?;
+            Ok(())
+        })
+        .expect("instantiate");
+
+    let input = Value::String("some_url".to_string());
+    let output = instance
+        .call_with_value("call_fetch", &input)
+        .expect("call");
+
+    // Verify output has correct types even though we returned Err
+    match output {
+        Value::Result { ok_type, err_type, value: Err(inner) } => {
+            // ok_type should be List<U8>, NOT String (the bug was defaulting to String)
+            assert_eq!(ok_type, ValueType::List(Box::new(ValueType::U8)),
+                "ok_type should be List<U8>, not {:?}", ok_type);
+            assert_eq!(err_type, ValueType::String);
+            assert_eq!(*inner, Value::String("Resource not found".to_string()));
+        }
+        other => {
+            panic!("Expected Value::Result with Err, got {:?}", other);
+        }
+    }
+}
+
+/// Test that func_typed_result correctly encodes Result<String, Vec<u8>> types
+/// when returning Ok (so we don't have an Err value to infer from).
+#[test]
+fn test_func_typed_result_preserves_err_type_on_ok() {
+    use pack::abi::ValueType;
+
+    let module_wat = r#"
+    (module
+        (import "test" "process" (func $process (param i32 i32 i32 i32) (result i32)))
+        (memory (export "memory") 1)
+
+        (global $result_ptr_offset i32 (i32.const 16384))
+        (global $result_len_offset i32 (i32.const 16388))
+        (global $output_offset i32 (i32.const 16392))
+
+        (func $call_process (param $in_ptr i32) (param $in_len i32) (param $out_ptr_ptr i32) (param $out_len_ptr i32) (result i32)
+            (local $status i32)
+            (local $result_ptr i32)
+            (local $result_len i32)
+
+            (local.set $status
+                (call $process
+                    (local.get $in_ptr)
+                    (local.get $in_len)
+                    (global.get $result_ptr_offset)
+                    (global.get $result_len_offset)))
+
+            (if (i32.ne (local.get $status) (i32.const 0))
+                (then (return (local.get $status))))
+
+            (local.set $result_ptr (i32.load (global.get $result_ptr_offset)))
+            (local.set $result_len (i32.load (global.get $result_len_offset)))
+
+            (memory.copy (global.get $output_offset) (local.get $result_ptr) (local.get $result_len))
+
+            (i32.store (local.get $out_ptr_ptr) (global.get $output_offset))
+            (i32.store (local.get $out_len_ptr) (local.get $result_len))
+
+            (i32.const 0)
+        )
+
+        (export "call_process" (func $call_process))
+    )
+    "#;
+
+    let wasm_bytes = wat::parse_str(module_wat).expect("parse WAT");
+    let runtime = Runtime::new();
+    let module = runtime.load_module(&wasm_bytes).expect("load module");
+
+    let mut instance = module
+        .instantiate_with_host((), |builder| {
+            // Register function returning Result<String, Vec<u8>>
+            builder.interface("test")?.func_typed_result(
+                "process",
+                |_ctx: &mut pack::Ctx<'_, ()>, _input: Value| -> Result<String, Vec<u8>> {
+                    // Return success - we don't have an Err value to infer from
+                    Ok("Success!".to_string())
+                },
+            )?;
+            Ok(())
+        })
+        .expect("instantiate");
+
+    let input = Value::String("data".to_string());
+    let output = instance
+        .call_with_value("call_process", &input)
+        .expect("call");
+
+    // Verify output has correct types even though we returned Ok
+    match output {
+        Value::Result { ok_type, err_type, value: Ok(inner) } => {
+            assert_eq!(ok_type, ValueType::String);
+            // err_type should be List<U8>, NOT String (the bug was defaulting to String)
+            assert_eq!(err_type, ValueType::List(Box::new(ValueType::U8)),
+                "err_type should be List<U8>, not {:?}", err_type);
+            assert_eq!(*inner, Value::String("Success!".to_string()));
+        }
+        other => {
+            panic!("Expected Value::Result with Ok, got {:?}", other);
+        }
+    }
+}
