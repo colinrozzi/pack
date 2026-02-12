@@ -1238,7 +1238,7 @@ mod tests {
 
         let bytes = encode(&value).expect("encode");
         let decoded = runtime
-            .decode_arg(&interface.types, &bytes, &Type::Named("node".to_string()))
+            .decode_arg(&interface.types, &bytes, &Type::named("node".to_string()))
             .expect("decode");
 
         assert_eq!(decoded, value);
@@ -1258,7 +1258,7 @@ mod tests {
         let bytes = encode(&value).expect("encode");
 
         let err = runtime
-            .decode_arg(&interface.types, &bytes, &Type::Named("node".to_string()))
+            .decode_arg(&interface.types, &bytes, &Type::named("node".to_string()))
             .expect_err("expected error");
 
         match err {
@@ -1285,7 +1285,7 @@ mod tests {
             .encode_result_with_schema(
                 &interface.types,
                 &value,
-                &Type::Named("config".to_string()),
+                &Type::named("config".to_string()),
             )
             .expect_err("expected error");
 

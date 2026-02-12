@@ -51,16 +51,24 @@
 
 pub mod abi;
 pub mod compose;
+pub mod interface_impl;
 pub mod metadata;
 pub mod parser;
 pub mod runtime;
 pub mod types;
 
 pub use abi::{decode, encode};
+pub use interface_impl::{
+    FuncSignature, HostFunc, InterfaceImpl, PackParams, PackType,
+};
 pub use metadata::{
     decode_metadata, decode_metadata_with_hashes, encode_metadata,
+    hash_function, hash_interface, hash_list, hash_option, hash_record,
+    hash_result, hash_tuple, hash_variant, Binding,
     CaseDesc, FieldDesc, FunctionSignature, InterfaceHash, MetadataError,
     MetadataWithHashes, PackageMetadata, ParamSignature, TypeDesc, TypeHash,
+    HASH_BOOL, HASH_CHAR, HASH_F32, HASH_F64, HASH_FLAGS, HASH_S16, HASH_S32,
+    HASH_S64, HASH_S8, HASH_STRING, HASH_U16, HASH_U32, HASH_U64, HASH_U8,
 };
 pub use runtime::{
     validate_instance_implements_interface, AsyncCompiledModule, AsyncCtx, AsyncInstance,

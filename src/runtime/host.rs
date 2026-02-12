@@ -21,6 +21,8 @@
 //! ```
 
 use crate::abi::{decode, encode, PackType, Value};
+use crate::interface_impl::InterfaceImpl;
+use crate::metadata::TypeHash;
 use crate::runtime::interceptor::CallInterceptor;
 use crate::runtime::RuntimeError;
 use std::future::Future;
@@ -339,6 +341,38 @@ impl<'a, T> HostLinkerBuilder<'a, T> {
             error_handler,
             interceptor,
         })
+    }
+
+    /// Start defining an interface from an `InterfaceImpl`, returning the interface hash.
+    ///
+    /// This method combines interface declaration with registration:
+    /// - The `InterfaceImpl` declares the interface structure and computes its hash
+    /// - The returned `InterfaceBuilder` is used to register the actual function implementations
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Declare interface structure (for hashing)
+    /// let interface = InterfaceImpl::new("theater:simple/runtime")
+    ///     .func("log", |msg: String| {})
+    ///     .func("add", |a: i32, b: i32| -> i32 { 0 });
+    ///
+    /// // Register implementations and get the hash
+    /// let (mut iface, hash) = builder.interface_from_impl(&interface)?;
+    /// iface
+    ///     .func_typed("log", |ctx, msg: String| { println!("{}", msg); })?
+    ///     .func_typed("add", |ctx, a: i32, b: i32| -> i32 { a + b })?;
+    ///
+    /// // Use hash for compatibility checking
+    /// println!("Interface hash: {}", hash);
+    /// ```
+    pub fn interface_from_impl(
+        &mut self,
+        interface: &InterfaceImpl,
+    ) -> Result<(InterfaceBuilder<'_, 'a, T>, TypeHash), LinkerError> {
+        let hash = interface.hash();
+        let builder = self.interface(interface.name())?;
+        Ok((builder, hash))
     }
 
     /// Register a provider's functions.
