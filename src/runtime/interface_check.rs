@@ -1,6 +1,7 @@
 //! Interface enforcement - validate WASM modules implement WIT interfaces
 
-use crate::wit_plus::{Function, Interface};
+use crate::parser::Interface;
+use crate::types::Function;
 use thiserror::Error;
 use wasmtime::{Instance, Store};
 
@@ -156,25 +157,21 @@ fn check_function_export<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wit_plus::Type;
+    use crate::types::{Param, Type};
 
     #[test]
     fn expected_signature_graph_abi_for_params() {
-        let func = Function {
-            name: "process".to_string(),
-            params: vec![("x".to_string(), Type::S64)],
-            results: vec![Type::S64],
-        };
+        let func = Function::with_signature(
+            "process",
+            vec![Param::new("x", Type::S64)],
+            vec![Type::S64],
+        );
         assert_eq!(expected_signature_for(&func), ExpectedSignature::GraphAbi);
     }
 
     #[test]
     fn expected_signature_no_args_for_empty() {
-        let func = Function {
-            name: "init".to_string(),
-            params: vec![],
-            results: vec![],
-        };
+        let func = Function::new("init");
         assert_eq!(
             expected_signature_for(&func),
             ExpectedSignature::NoArgsNoResults

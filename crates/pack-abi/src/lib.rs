@@ -26,8 +26,20 @@
 
 extern crate alloc;
 
+mod hash;
 mod value;
 
+pub use hash::{
+    Binding, TypeHash, TypeHasher,
+    // Primitive hashes
+    HASH_BOOL, HASH_CHAR, HASH_F32, HASH_F64, HASH_FLAGS,
+    HASH_S8, HASH_S16, HASH_S32, HASH_S64,
+    HASH_U8, HASH_U16, HASH_U32, HASH_U64,
+    HASH_STRING, HASH_SELF_REF,
+    // Compound hash functions
+    hash_list, hash_option, hash_result, hash_tuple,
+    hash_record, hash_variant, hash_function, hash_interface,
+};
 pub use value::{FromValue, Value, ValueType};
 
 // Re-export derive macro when feature is enabled

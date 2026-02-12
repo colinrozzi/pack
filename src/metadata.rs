@@ -2,79 +2,96 @@
 //!
 //! Packages embed CGRF-encoded metadata accessible via `__pack_types`.
 //! This module provides types and a decoder for that metadata.
+//!
+//! Uses the unified type system from `crate::types`.
+//!
+//! ## Interface Hashes (Merkle Tree)
+//!
+//! Each interface has a content-addressed hash computed from its structure:
+//! - Types are hashed structurally (field names included, type names excluded)
+//! - Functions are hashed by their signature (param types + result types)
+//! - Interfaces include bindings (name → hash pairs)
+//!
+//! This enables O(1) compatibility checking: if hashes match, interfaces are compatible.
 
-use crate::abi::{decode, Value};
+use crate::abi::{decode, encode, Value};
+use crate::types::{Arena, Case, Field, Function, Param, Type, TypePath};
 
-/// Metadata about a package's type signatures.
+// ============================================================================
+// Interface Hashes
+// ============================================================================
+
+/// A 256-bit type hash for Merkle tree-based type compatibility.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TypeHash([u8; 32]);
+
+impl TypeHash {
+    /// Create from raw bytes.
+    pub fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    /// Get the raw bytes.
+    pub fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+
+    /// Create from a tuple of 4 u64s (WASM representation).
+    pub fn from_u64s(a: u64, b: u64, c: u64, d: u64) -> Self {
+        let mut bytes = [0u8; 32];
+        bytes[0..8].copy_from_slice(&a.to_le_bytes());
+        bytes[8..16].copy_from_slice(&b.to_le_bytes());
+        bytes[16..24].copy_from_slice(&c.to_le_bytes());
+        bytes[24..32].copy_from_slice(&d.to_le_bytes());
+        Self(bytes)
+    }
+
+    /// Convert to a tuple of 4 u64s.
+    pub fn to_u64s(&self) -> (u64, u64, u64, u64) {
+        let b = &self.0;
+        (
+            u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]),
+            u64::from_le_bytes([b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]]),
+            u64::from_le_bytes([b[16], b[17], b[18], b[19], b[20], b[21], b[22], b[23]]),
+            u64::from_le_bytes([b[24], b[25], b[26], b[27], b[28], b[29], b[30], b[31]]),
+        )
+    }
+
+    /// Format as hex string (for display).
+    pub fn to_hex(&self) -> String {
+        self.0.iter().map(|b| format!("{:02x}", b)).collect()
+    }
+
+    /// Format as short hex (first 8 chars).
+    pub fn to_short_hex(&self) -> String {
+        self.0.iter().take(4).map(|b| format!("{:02x}", b)).collect()
+    }
+}
+
+impl std::fmt::Display for TypeHash {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.to_short_hex())
+    }
+}
+
+/// An interface with its Merkle-tree hash.
 #[derive(Debug, Clone)]
-pub struct PackageMetadata {
-    pub imports: Vec<FunctionSignature>,
-    pub exports: Vec<FunctionSignature>,
+pub struct InterfaceHash {
+    /// Interface name (e.g., "theater:simple/runtime").
+    pub name: String,
+    /// Content-addressed hash of the interface structure.
+    pub hash: TypeHash,
 }
 
-/// A function signature.
+/// Metadata with interface hashes for compatibility checking.
 #[derive(Debug, Clone)]
-pub struct FunctionSignature {
-    pub interface: String,
-    pub name: String,
-    pub params: Vec<ParamSignature>,
-    pub results: Vec<TypeDesc>,
-}
-
-/// A parameter signature.
-#[derive(Debug, Clone)]
-pub struct ParamSignature {
-    pub name: String,
-    pub ty: TypeDesc,
-}
-
-/// A type descriptor.
-#[derive(Debug, Clone, PartialEq)]
-pub enum TypeDesc {
-    Bool,
-    U8,
-    U16,
-    U32,
-    U64,
-    S8,
-    S16,
-    S32,
-    S64,
-    F32,
-    F64,
-    Char,
-    String,
-    Flags,
-    List(Box<TypeDesc>),
-    Option(Box<TypeDesc>),
-    Result {
-        ok: Box<TypeDesc>,
-        err: Box<TypeDesc>,
-    },
-    Record {
-        name: std::string::String,
-        fields: Vec<FieldDesc>,
-    },
-    Variant {
-        name: std::string::String,
-        cases: Vec<CaseDesc>,
-    },
-    Tuple(Vec<TypeDesc>),
-    Value,
-}
-
-/// A record field descriptor.
-#[derive(Debug, Clone, PartialEq)]
-pub struct FieldDesc {
-    pub name: String,
-    pub ty: TypeDesc,
-}
-
-/// A variant case descriptor.
-#[derive(Debug, Clone, PartialEq)]
-pub struct CaseDesc {
-    pub name: String,
-    pub payload: Option<TypeDesc>,
+pub struct MetadataWithHashes {
+    /// The decoded arena (types, functions).
+    pub arena: Arena,
+    /// Hashes of imported interfaces.
+    pub import_hashes: Vec<InterfaceHash>,
+    /// Hashes of exported interfaces.
+    pub export_hashes: Vec<InterfaceHash>,
 }
 
 /// Errors that can occur when reading metadata.
@@ -91,28 +108,177 @@ pub enum MetadataError {
 
     #[error("invalid metadata structure: {0}")]
     InvalidStructure(String),
+
+    #[error("failed to encode metadata: {0}")]
+    EncodeFailed(String),
 }
 
-/// Decode CGRF bytes into PackageMetadata.
-pub fn decode_metadata(bytes: &[u8]) -> Result<PackageMetadata, MetadataError> {
+// ============================================================================
+// CGRF Type Tags - Wire Format Compatibility
+// ============================================================================
+
+// These tag numbers MUST be preserved for backwards compatibility with existing
+// WASM packages. The CGRF wire format uses these variant tags to encode types.
+const TAG_BOOL: u32 = 0;
+const TAG_U8: u32 = 1;
+const TAG_U16: u32 = 2;
+const TAG_U32: u32 = 3;
+const TAG_U64: u32 = 4;
+const TAG_S8: u32 = 5;
+const TAG_S16: u32 = 6;
+const TAG_S32: u32 = 7;
+const TAG_S64: u32 = 8;
+const TAG_F32: u32 = 9;
+const TAG_F64: u32 = 10;
+const TAG_CHAR: u32 = 11;
+const TAG_STRING: u32 = 12;
+const TAG_FLAGS: u32 = 13;
+const TAG_LIST: u32 = 14;
+const TAG_OPTION: u32 = 15;
+const TAG_RESULT: u32 = 16;
+const TAG_RECORD: u32 = 17;
+const TAG_VARIANT: u32 = 18;
+const TAG_TUPLE: u32 = 19;
+const TAG_VALUE: u32 = 20;
+const TAG_UNIT: u32 = 21;
+
+// ============================================================================
+// Metadata Decoding
+// ============================================================================
+
+/// Decode CGRF bytes into an Arena.
+///
+/// The metadata format is a record with "imports" and "exports" lists,
+/// each containing function signatures. This is converted to an Arena
+/// with two child arenas: one for imports, one for exports.
+pub fn decode_metadata(bytes: &[u8]) -> Result<Arena, MetadataError> {
     let value = decode(bytes).map_err(|e| MetadataError::DecodeFailed(format!("{:?}", e)))?;
 
     match value {
         Value::Record { fields, .. } => {
-            let mut imports = None;
-            let mut exports = None;
+            let mut imports = Vec::new();
+            let mut exports = Vec::new();
 
             for (name, val) in fields {
                 match name.as_str() {
-                    "imports" => imports = Some(decode_func_sig_list(val)?),
-                    "exports" => exports = Some(decode_func_sig_list(val)?),
+                    "imports" => imports = decode_func_sig_list(val)?,
+                    "exports" => exports = decode_func_sig_list(val)?,
                     _ => {}
                 }
             }
 
-            Ok(PackageMetadata {
-                imports: imports.unwrap_or_default(),
-                exports: exports.unwrap_or_default(),
+            // Build an Arena with imports and exports as child arenas
+            let mut arena = Arena::new("package");
+
+            if !imports.is_empty() {
+                let mut import_arena = Arena::new("imports");
+                // Group functions by interface
+                let mut by_interface: std::collections::HashMap<String, Vec<Function>> =
+                    std::collections::HashMap::new();
+                for (interface, func) in imports {
+                    by_interface.entry(interface).or_default().push(func);
+                }
+                for (interface_name, funcs) in by_interface {
+                    let mut interface_arena = Arena::new(interface_name);
+                    for func in funcs {
+                        interface_arena.add_function(func);
+                    }
+                    import_arena.add_child(interface_arena);
+                }
+                arena.add_child(import_arena);
+            }
+
+            if !exports.is_empty() {
+                let mut export_arena = Arena::new("exports");
+                // Group functions by interface
+                let mut by_interface: std::collections::HashMap<String, Vec<Function>> =
+                    std::collections::HashMap::new();
+                for (interface, func) in exports {
+                    by_interface.entry(interface).or_default().push(func);
+                }
+                for (interface_name, funcs) in by_interface {
+                    let mut interface_arena = Arena::new(interface_name);
+                    for func in funcs {
+                        interface_arena.add_function(func);
+                    }
+                    export_arena.add_child(interface_arena);
+                }
+                arena.add_child(export_arena);
+            }
+
+            Ok(arena)
+        }
+        _ => Err(MetadataError::InvalidStructure(
+            "expected record at top level".into(),
+        )),
+    }
+}
+
+/// Decode CGRF bytes into metadata with interface hashes.
+///
+/// This is the preferred decoding function as it includes Merkle-tree hashes
+/// for O(1) interface compatibility checking.
+pub fn decode_metadata_with_hashes(bytes: &[u8]) -> Result<MetadataWithHashes, MetadataError> {
+    let value = decode(bytes).map_err(|e| MetadataError::DecodeFailed(format!("{:?}", e)))?;
+
+    match value {
+        Value::Record { fields, .. } => {
+            let mut imports = Vec::new();
+            let mut exports = Vec::new();
+            let mut import_hashes = Vec::new();
+            let mut export_hashes = Vec::new();
+
+            for (name, val) in fields {
+                match name.as_str() {
+                    "imports" => imports = decode_func_sig_list(val)?,
+                    "exports" => exports = decode_func_sig_list(val)?,
+                    "import-hashes" => import_hashes = decode_interface_hash_list(val)?,
+                    "export-hashes" => export_hashes = decode_interface_hash_list(val)?,
+                    _ => {}
+                }
+            }
+
+            // Build the arena (same as decode_metadata)
+            let mut arena = Arena::new("package");
+
+            if !imports.is_empty() {
+                let mut import_arena = Arena::new("imports");
+                let mut by_interface: std::collections::HashMap<String, Vec<Function>> =
+                    std::collections::HashMap::new();
+                for (interface, func) in imports {
+                    by_interface.entry(interface).or_default().push(func);
+                }
+                for (interface_name, funcs) in by_interface {
+                    let mut interface_arena = Arena::new(interface_name);
+                    for func in funcs {
+                        interface_arena.add_function(func);
+                    }
+                    import_arena.add_child(interface_arena);
+                }
+                arena.add_child(import_arena);
+            }
+
+            if !exports.is_empty() {
+                let mut export_arena = Arena::new("exports");
+                let mut by_interface: std::collections::HashMap<String, Vec<Function>> =
+                    std::collections::HashMap::new();
+                for (interface, func) in exports {
+                    by_interface.entry(interface).or_default().push(func);
+                }
+                for (interface_name, funcs) in by_interface {
+                    let mut interface_arena = Arena::new(interface_name);
+                    for func in funcs {
+                        interface_arena.add_function(func);
+                    }
+                    export_arena.add_child(interface_arena);
+                }
+                arena.add_child(export_arena);
+            }
+
+            Ok(MetadataWithHashes {
+                arena,
+                import_hashes,
+                export_hashes,
             })
         }
         _ => Err(MetadataError::InvalidStructure(
@@ -121,7 +287,57 @@ pub fn decode_metadata(bytes: &[u8]) -> Result<PackageMetadata, MetadataError> {
     }
 }
 
-fn decode_func_sig_list(value: Value) -> Result<Vec<FunctionSignature>, MetadataError> {
+/// Decode a list of interface hashes.
+fn decode_interface_hash_list(value: Value) -> Result<Vec<InterfaceHash>, MetadataError> {
+    match value {
+        Value::List { items, .. } => items.into_iter().map(decode_interface_hash).collect(),
+        _ => Err(MetadataError::InvalidStructure(
+            "expected list of interface hashes".into(),
+        )),
+    }
+}
+
+/// Decode a single interface hash.
+fn decode_interface_hash(value: Value) -> Result<InterfaceHash, MetadataError> {
+    match value {
+        Value::Record { fields, .. } => {
+            let mut name = String::new();
+            let mut hash = TypeHash::from_bytes([0u8; 32]);
+
+            for (field_name, val) in fields {
+                match field_name.as_str() {
+                    "name" => {
+                        if let Value::String(s) = val {
+                            name = s;
+                        }
+                    }
+                    "hash" => {
+                        // Hash is stored as tuple<u64, u64, u64, u64>
+                        if let Value::Tuple(parts) = val {
+                            if parts.len() == 4 {
+                                let a = match &parts[0] { Value::U64(v) => *v, _ => 0 };
+                                let b = match &parts[1] { Value::U64(v) => *v, _ => 0 };
+                                let c = match &parts[2] { Value::U64(v) => *v, _ => 0 };
+                                let d = match &parts[3] { Value::U64(v) => *v, _ => 0 };
+                                hash = TypeHash::from_u64s(a, b, c, d);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            Ok(InterfaceHash { name, hash })
+        }
+        _ => Err(MetadataError::InvalidStructure(
+            "expected record for interface hash".into(),
+        )),
+    }
+}
+
+/// Decode a list of function signatures.
+/// Returns (interface_name, Function) pairs.
+fn decode_func_sig_list(value: Value) -> Result<Vec<(String, Function)>, MetadataError> {
     match value {
         Value::List { items, .. } => items.into_iter().map(decode_func_sig).collect(),
         _ => Err(MetadataError::InvalidStructure(
@@ -130,7 +346,9 @@ fn decode_func_sig_list(value: Value) -> Result<Vec<FunctionSignature>, Metadata
     }
 }
 
-fn decode_func_sig(value: Value) -> Result<FunctionSignature, MetadataError> {
+/// Decode a function signature.
+/// Returns (interface_name, Function).
+fn decode_func_sig(value: Value) -> Result<(String, Function), MetadataError> {
     match value {
         Value::Record { fields, .. } => {
             let mut interface = String::new();
@@ -154,18 +372,13 @@ fn decode_func_sig(value: Value) -> Result<FunctionSignature, MetadataError> {
                         params = decode_param_list(val)?;
                     }
                     "results" => {
-                        results = decode_type_desc_list(val)?;
+                        results = decode_type_list(val)?;
                     }
                     _ => {}
                 }
             }
 
-            Ok(FunctionSignature {
-                interface,
-                name,
-                params,
-                results,
-            })
+            Ok((interface, Function::with_signature(name, params, results)))
         }
         _ => Err(MetadataError::InvalidStructure(
             "expected record for function signature".into(),
@@ -173,7 +386,7 @@ fn decode_func_sig(value: Value) -> Result<FunctionSignature, MetadataError> {
     }
 }
 
-fn decode_param_list(value: Value) -> Result<Vec<ParamSignature>, MetadataError> {
+fn decode_param_list(value: Value) -> Result<Vec<Param>, MetadataError> {
     match value {
         Value::List { items, .. } => items.into_iter().map(decode_param).collect(),
         _ => Err(MetadataError::InvalidStructure(
@@ -182,11 +395,11 @@ fn decode_param_list(value: Value) -> Result<Vec<ParamSignature>, MetadataError>
     }
 }
 
-fn decode_param(value: Value) -> Result<ParamSignature, MetadataError> {
+fn decode_param(value: Value) -> Result<Param, MetadataError> {
     match value {
         Value::Record { fields, .. } => {
             let mut name = String::new();
-            let mut ty = TypeDesc::Value;
+            let mut ty = Type::Value;
 
             for (field_name, val) in fields {
                 match field_name.as_str() {
@@ -196,13 +409,13 @@ fn decode_param(value: Value) -> Result<ParamSignature, MetadataError> {
                         }
                     }
                     "type" => {
-                        ty = decode_type_desc(val)?;
+                        ty = decode_type(val)?;
                     }
                     _ => {}
                 }
             }
 
-            Ok(ParamSignature { name, ty })
+            Ok(Param::new(name, ty))
         }
         _ => Err(MetadataError::InvalidStructure(
             "expected record for parameter".into(),
@@ -210,156 +423,125 @@ fn decode_param(value: Value) -> Result<ParamSignature, MetadataError> {
     }
 }
 
-fn decode_type_desc_list(value: Value) -> Result<Vec<TypeDesc>, MetadataError> {
+fn decode_type_list(value: Value) -> Result<Vec<Type>, MetadataError> {
     match value {
-        Value::List { items, .. } => items.into_iter().map(decode_type_desc).collect(),
+        Value::List { items, .. } => items.into_iter().map(decode_type).collect(),
         _ => Err(MetadataError::InvalidStructure(
-            "expected list of type descriptors".into(),
+            "expected list of types".into(),
         )),
     }
 }
 
-fn decode_type_desc(value: Value) -> Result<TypeDesc, MetadataError> {
+fn decode_type(value: Value) -> Result<Type, MetadataError> {
     match value {
-        Value::Variant { tag, payload, .. } => match tag {
-            0 => Ok(TypeDesc::Bool),
-            1 => Ok(TypeDesc::U8),
-            2 => Ok(TypeDesc::U16),
-            3 => Ok(TypeDesc::U32),
-            4 => Ok(TypeDesc::U64),
-            5 => Ok(TypeDesc::S8),
-            6 => Ok(TypeDesc::S16),
-            7 => Ok(TypeDesc::S32),
-            8 => Ok(TypeDesc::S64),
-            9 => Ok(TypeDesc::F32),
-            10 => Ok(TypeDesc::F64),
-            11 => Ok(TypeDesc::Char),
-            12 => Ok(TypeDesc::String),
-            13 => Ok(TypeDesc::Flags),
-            14 => {
-                let inner = payload.into_iter().next().ok_or_else(|| {
-                    MetadataError::InvalidStructure("list missing element type".into())
-                })?;
-                Ok(TypeDesc::List(Box::new(decode_type_desc(inner)?)))
-            }
-            15 => {
-                let inner = payload.into_iter().next().ok_or_else(|| {
-                    MetadataError::InvalidStructure("option missing inner type".into())
-                })?;
-                Ok(TypeDesc::Option(Box::new(decode_type_desc(inner)?)))
-            }
-            16 => {
-                let record = payload.into_iter().next().ok_or_else(|| {
-                    MetadataError::InvalidStructure("result missing payload".into())
-                })?;
-                match record {
-                    Value::Record { fields, .. } => {
-                        let mut ok = TypeDesc::Bool;
-                        let mut err = TypeDesc::String;
-                        for (name, val) in fields {
-                            match name.as_str() {
-                                "ok" => ok = decode_type_desc(val)?,
-                                "err" => err = decode_type_desc(val)?,
-                                _ => {}
-                            }
-                        }
-                        Ok(TypeDesc::Result {
-                            ok: Box::new(ok),
-                            err: Box::new(err),
-                        })
-                    }
-                    _ => Err(MetadataError::InvalidStructure(
-                        "result payload not a record".into(),
-                    )),
+        Value::Variant { tag, payload, .. } => {
+            let tag = tag as u32;
+            match tag {
+                TAG_BOOL => Ok(Type::Bool),
+                TAG_U8 => Ok(Type::U8),
+                TAG_U16 => Ok(Type::U16),
+                TAG_U32 => Ok(Type::U32),
+                TAG_U64 => Ok(Type::U64),
+                TAG_S8 => Ok(Type::S8),
+                TAG_S16 => Ok(Type::S16),
+                TAG_S32 => Ok(Type::S32),
+                TAG_S64 => Ok(Type::S64),
+                TAG_F32 => Ok(Type::F32),
+                TAG_F64 => Ok(Type::F64),
+                TAG_CHAR => Ok(Type::Char),
+                TAG_STRING => Ok(Type::String),
+                TAG_FLAGS => Ok(Type::Ref(TypePath::simple("flags"))),
+                TAG_LIST => {
+                    let inner = payload.into_iter().next().ok_or_else(|| {
+                        MetadataError::InvalidStructure("list missing element type".into())
+                    })?;
+                    Ok(Type::list(decode_type(inner)?))
                 }
-            }
-            17 => {
-                let record = payload.into_iter().next().ok_or_else(|| {
-                    MetadataError::InvalidStructure("record missing payload".into())
-                })?;
-                decode_record_desc(record)
-            }
-            18 => {
-                let record = payload.into_iter().next().ok_or_else(|| {
-                    MetadataError::InvalidStructure("variant missing payload".into())
-                })?;
-                decode_variant_desc(record)
-            }
-            19 => {
-                let list = payload.into_iter().next().ok_or_else(|| {
-                    MetadataError::InvalidStructure("tuple missing payload".into())
-                })?;
-                match list {
-                    Value::List { items, .. } => {
-                        let descs: Result<Vec<_>, _> =
-                            items.into_iter().map(decode_type_desc).collect();
-                        Ok(TypeDesc::Tuple(descs?))
-                    }
-                    _ => Err(MetadataError::InvalidStructure(
-                        "tuple payload not a list".into(),
-                    )),
+                TAG_OPTION => {
+                    let inner = payload.into_iter().next().ok_or_else(|| {
+                        MetadataError::InvalidStructure("option missing inner type".into())
+                    })?;
+                    Ok(Type::option(decode_type(inner)?))
                 }
-            }
-            20 => Ok(TypeDesc::Value),
-            _ => Err(MetadataError::InvalidStructure(format!(
-                "unknown type-desc tag: {}",
-                tag
-            ))),
-        },
-        _ => Err(MetadataError::InvalidStructure(
-            "expected variant for type-desc".into(),
-        )),
-    }
-}
-
-fn decode_record_desc(value: Value) -> Result<TypeDesc, MetadataError> {
-    match value {
-        Value::Record {
-            fields: rec_fields, ..
-        } => {
-            let mut name = String::new();
-            let mut fields = Vec::new();
-            for (fname, val) in rec_fields {
-                match fname.as_str() {
-                    "name" => {
-                        if let Value::String(s) = val {
-                            name = s;
-                        }
-                    }
-                    "fields" => {
-                        if let Value::List { items, .. } = val {
-                            for item in items {
-                                if let Value::Record {
-                                    fields: ffields, ..
-                                } = item
-                                {
-                                    let mut field_name = String::new();
-                                    let mut field_type = TypeDesc::Value;
-                                    for (fn2, fv) in ffields {
-                                        match fn2.as_str() {
-                                            "name" => {
-                                                if let Value::String(s) = fv {
-                                                    field_name = s;
-                                                }
-                                            }
-                                            "type" => {
-                                                field_type = decode_type_desc(fv)?;
-                                            }
-                                            _ => {}
-                                        }
-                                    }
-                                    fields.push(FieldDesc {
-                                        name: field_name,
-                                        ty: field_type,
-                                    });
+                TAG_RESULT => {
+                    let record = payload.into_iter().next().ok_or_else(|| {
+                        MetadataError::InvalidStructure("result missing payload".into())
+                    })?;
+                    match record {
+                        Value::Record { fields, .. } => {
+                            let mut ok = Type::Unit;
+                            let mut err = Type::Unit;
+                            for (name, val) in fields {
+                                match name.as_str() {
+                                    "ok" => ok = decode_type(val)?,
+                                    "err" => err = decode_type(val)?,
+                                    _ => {}
                                 }
                             }
+                            Ok(Type::result(ok, err))
                         }
+                        _ => Err(MetadataError::InvalidStructure(
+                            "result payload not a record".into(),
+                        )),
                     }
-                    _ => {}
+                }
+                TAG_RECORD => {
+                    let record = payload.into_iter().next().ok_or_else(|| {
+                        MetadataError::InvalidStructure("record missing payload".into())
+                    })?;
+                    decode_record_type(record)
+                }
+                TAG_VARIANT => {
+                    let record = payload.into_iter().next().ok_or_else(|| {
+                        MetadataError::InvalidStructure("variant missing payload".into())
+                    })?;
+                    decode_variant_type(record)
+                }
+                TAG_TUPLE => {
+                    let list = payload.into_iter().next().ok_or_else(|| {
+                        MetadataError::InvalidStructure("tuple missing payload".into())
+                    })?;
+                    match list {
+                        Value::List { items, .. } => {
+                            let types: Result<Vec<_>, _> =
+                                items.into_iter().map(decode_type).collect();
+                            Ok(Type::tuple(types?))
+                        }
+                        _ => Err(MetadataError::InvalidStructure(
+                            "tuple payload not a list".into(),
+                        )),
+                    }
+                }
+                TAG_VALUE => Ok(Type::Value),
+                TAG_UNIT => Ok(Type::Unit),
+                _ => Err(MetadataError::InvalidStructure(format!(
+                    "unknown type tag: {}",
+                    tag
+                ))),
+            }
+        }
+        _ => Err(MetadataError::InvalidStructure(
+            "expected variant for type".into(),
+        )),
+    }
+}
+
+fn decode_record_type(value: Value) -> Result<Type, MetadataError> {
+    match value {
+        Value::Record {
+            fields: rec_fields,
+            ..
+        } => {
+            let mut name = String::new();
+            for (fname, val) in rec_fields {
+                if fname == "name" {
+                    if let Value::String(s) = val {
+                        name = s;
+                    }
                 }
             }
-            Ok(TypeDesc::Record { name, fields })
+            // Records are represented as named type references
+            Ok(Type::Ref(TypePath::simple(name)))
         }
         _ => Err(MetadataError::InvalidStructure(
             "record payload not a record".into(),
@@ -367,63 +549,214 @@ fn decode_record_desc(value: Value) -> Result<TypeDesc, MetadataError> {
     }
 }
 
-fn decode_variant_desc(value: Value) -> Result<TypeDesc, MetadataError> {
+fn decode_variant_type(value: Value) -> Result<Type, MetadataError> {
     match value {
         Value::Record {
-            fields: rec_fields, ..
+            fields: rec_fields,
+            ..
         } => {
             let mut name = String::new();
-            let mut cases = Vec::new();
             for (fname, val) in rec_fields {
-                match fname.as_str() {
-                    "name" => {
-                        if let Value::String(s) = val {
-                            name = s;
-                        }
+                if fname == "name" {
+                    if let Value::String(s) = val {
+                        name = s;
                     }
-                    "cases" => {
-                        if let Value::List { items, .. } = val {
-                            for item in items {
-                                if let Value::Record {
-                                    fields: cfields, ..
-                                } = item
-                                {
-                                    let mut case_name = String::new();
-                                    let mut case_payload = None;
-                                    for (cn, cv) in cfields {
-                                        match cn.as_str() {
-                                            "name" => {
-                                                if let Value::String(s) = cv {
-                                                    case_name = s;
-                                                }
-                                            }
-                                            "payload" => {
-                                                if let Value::Option {
-                                                    value: Some(inner), ..
-                                                } = cv
-                                                {
-                                                    case_payload =
-                                                        Some(decode_type_desc(*inner)?);
-                                                }
-                                            }
-                                            _ => {}
-                                        }
-                                    }
-                                    cases.push(CaseDesc {
-                                        name: case_name,
-                                        payload: case_payload,
-                                    });
-                                }
-                            }
-                        }
-                    }
-                    _ => {}
                 }
             }
-            Ok(TypeDesc::Variant { name, cases })
+            // Variants are represented as named type references
+            Ok(Type::Ref(TypePath::simple(name)))
         }
         _ => Err(MetadataError::InvalidStructure(
             "variant payload not a record".into(),
         )),
+    }
+}
+
+// ============================================================================
+// Metadata Encoding
+// ============================================================================
+
+/// Encode an Arena to CGRF bytes (metadata format).
+///
+/// The Arena is encoded as a record with "imports" and "exports" lists.
+/// Child arenas named "imports" and "exports" are used, with their children
+/// as interfaces containing functions.
+pub fn encode_metadata(arena: &Arena) -> Result<Vec<u8>, MetadataError> {
+    let mut imports = Vec::new();
+    let mut exports = Vec::new();
+
+    for child in &arena.children {
+        match child.name.as_str() {
+            "imports" => {
+                for interface in &child.children {
+                    for func in &interface.functions {
+                        imports.push(encode_func_sig_value(&interface.name, func));
+                    }
+                }
+            }
+            "exports" => {
+                for interface in &child.children {
+                    for func in &interface.functions {
+                        exports.push(encode_func_sig_value(&interface.name, func));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let record = Value::Record {
+        type_name: "PackageMetadata".to_string(),
+        fields: vec![
+            (
+                "imports".to_string(),
+                Value::List {
+                    elem_type: crate::abi::ValueType::Record("FunctionSignature".to_string()),
+                    items: imports,
+                },
+            ),
+            (
+                "exports".to_string(),
+                Value::List {
+                    elem_type: crate::abi::ValueType::Record("FunctionSignature".to_string()),
+                    items: exports,
+                },
+            ),
+        ],
+    };
+
+    encode(&record).map_err(|e| MetadataError::EncodeFailed(format!("{:?}", e)))
+}
+
+fn encode_func_sig_value(interface: &str, func: &Function) -> Value {
+    Value::Record {
+        type_name: "FunctionSignature".to_string(),
+        fields: vec![
+            ("interface".to_string(), Value::String(interface.to_string())),
+            ("name".to_string(), Value::String(func.name.clone())),
+            (
+                "params".to_string(),
+                Value::List {
+                    elem_type: crate::abi::ValueType::Record("ParamSignature".to_string()),
+                    items: func.params.iter().map(encode_param_value).collect(),
+                },
+            ),
+            (
+                "results".to_string(),
+                Value::List {
+                    elem_type: crate::abi::ValueType::Variant("Type".to_string()),
+                    items: func.results.iter().map(encode_type_value).collect(),
+                },
+            ),
+        ],
+    }
+}
+
+fn encode_param_value(param: &Param) -> Value {
+    Value::Record {
+        type_name: "ParamSignature".to_string(),
+        fields: vec![
+            ("name".to_string(), Value::String(param.name.clone())),
+            ("type".to_string(), encode_type_value(&param.ty)),
+        ],
+    }
+}
+
+fn encode_type_value(ty: &Type) -> Value {
+    let (tag, payload) = match ty {
+        Type::Unit => (TAG_UNIT as usize, vec![]),
+        Type::Bool => (TAG_BOOL as usize, vec![]),
+        Type::U8 => (TAG_U8 as usize, vec![]),
+        Type::U16 => (TAG_U16 as usize, vec![]),
+        Type::U32 => (TAG_U32 as usize, vec![]),
+        Type::U64 => (TAG_U64 as usize, vec![]),
+        Type::S8 => (TAG_S8 as usize, vec![]),
+        Type::S16 => (TAG_S16 as usize, vec![]),
+        Type::S32 => (TAG_S32 as usize, vec![]),
+        Type::S64 => (TAG_S64 as usize, vec![]),
+        Type::F32 => (TAG_F32 as usize, vec![]),
+        Type::F64 => (TAG_F64 as usize, vec![]),
+        Type::Char => (TAG_CHAR as usize, vec![]),
+        Type::String => (TAG_STRING as usize, vec![]),
+        Type::List(inner) => (TAG_LIST as usize, vec![encode_type_value(inner)]),
+        Type::Option(inner) => (TAG_OPTION as usize, vec![encode_type_value(inner)]),
+        Type::Result { ok, err } => (
+            TAG_RESULT as usize,
+            vec![Value::Record {
+                type_name: "ResultPayload".to_string(),
+                fields: vec![
+                    ("ok".to_string(), encode_type_value(ok)),
+                    ("err".to_string(), encode_type_value(err)),
+                ],
+            }],
+        ),
+        Type::Tuple(types) => (
+            TAG_TUPLE as usize,
+            vec![Value::List {
+                elem_type: crate::abi::ValueType::Variant("Type".to_string()),
+                items: types.iter().map(encode_type_value).collect(),
+            }],
+        ),
+        Type::Ref(path) => {
+            let name = path.segments.join("::");
+            (
+                TAG_VARIANT as usize,
+                vec![Value::Record {
+                    type_name: "TypeRef".to_string(),
+                    fields: vec![("name".to_string(), Value::String(name))],
+                }],
+            )
+        }
+        Type::Value => (TAG_VALUE as usize, vec![]),
+    };
+
+    Value::Variant {
+        type_name: "Type".to_string(),
+        case_name: format!("tag{}", tag),
+        tag,
+        payload,
+    }
+}
+
+// ============================================================================
+// Legacy Type Aliases (for backward compatibility during migration)
+// ============================================================================
+
+/// Legacy type alias for backward compatibility.
+/// Use `crate::types::Type` instead.
+pub type TypeDesc = Type;
+
+/// Legacy type alias for backward compatibility.
+/// Use `crate::types::Field` instead.
+pub type FieldDesc = Field;
+
+/// Legacy type alias for backward compatibility.
+/// Use `crate::types::Case` instead.
+pub type CaseDesc = Case;
+
+/// Legacy type alias for backward compatibility.
+/// Use `crate::types::Param` instead.
+pub type ParamSignature = Param;
+
+/// Legacy type alias for backward compatibility.
+/// Use `crate::types::Function` instead.
+pub type FunctionSignature = Function;
+
+/// Legacy type alias for backward compatibility.
+/// Use `crate::types::Arena` instead.
+pub type PackageMetadata = Arena;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_type_tags_preserved() {
+        // Verify tag constants match expected values for wire format compatibility
+        assert_eq!(TAG_BOOL, 0);
+        assert_eq!(TAG_U8, 1);
+        assert_eq!(TAG_STRING, 12);
+        assert_eq!(TAG_VALUE, 20);
+        assert_eq!(TAG_UNIT, 21);
     }
 }

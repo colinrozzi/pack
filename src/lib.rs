@@ -10,7 +10,8 @@
 //! ┌─────────────────────────────────────────┐
 //! │           Composite Runtime             │
 //! │                                         │
-//! │  wit_plus  - Extended WIT parsing       │
+//! │  types     - Unified type system        │
+//! │  parser    - Extended WIT parsing       │
 //! │  abi       - Type encoding/decoding     │
 //! │  runtime   - Package instantiation      │
 //! │                                         │
@@ -51,13 +52,15 @@
 pub mod abi;
 pub mod compose;
 pub mod metadata;
+pub mod parser;
 pub mod runtime;
-pub mod wit_plus;
+pub mod types;
 
 pub use abi::{decode, encode};
 pub use metadata::{
-    decode_metadata, CaseDesc, FieldDesc, FunctionSignature, MetadataError, PackageMetadata,
-    ParamSignature, TypeDesc,
+    decode_metadata, decode_metadata_with_hashes, encode_metadata,
+    CaseDesc, FieldDesc, FunctionSignature, InterfaceHash, MetadataError,
+    MetadataWithHashes, PackageMetadata, ParamSignature, TypeDesc, TypeHash,
 };
 pub use runtime::{
     validate_instance_implements_interface, AsyncCompiledModule, AsyncCtx, AsyncInstance,
@@ -65,6 +68,7 @@ pub use runtime::{
     HostFunctionError, HostFunctionErrorKind, HostFunctionProvider, HostLinkerBuilder, Instance,
     InterfaceBuilder, InterfaceError, LinkerError, Runtime,
 };
-pub use wit_plus::{Interface, InterfacePath, TypeDef, World, WorldItem};
+pub use parser::{Interface, InterfacePath, TypeDef, World, WorldItem};
+pub use types::{Arena, Case, Field, Function, Param, Type, TypePath};
 
 pub use compose::{ComposeError, ParsedModule, StaticComposer};

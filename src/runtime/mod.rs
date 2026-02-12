@@ -20,7 +20,8 @@ pub use interface_check::{
 };
 
 use crate::abi::{decode, encode, Value};
-use crate::wit_plus::{decode_with_schema, encode_with_schema, Interface, Type, TypeDef};
+use crate::parser::{decode_with_schema, encode_with_schema, Interface};
+use crate::types::{Type, TypeDef};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -1215,7 +1216,8 @@ impl<T> Instance<T> {
 mod tests {
     use super::*;
     use crate::abi::Value;
-    use crate::wit_plus::{parse_interface, Type};
+    use crate::parser::parse_interface;
+    use crate::types::Type;
 
     #[test]
     fn decode_arg_roundtrip() {

@@ -12,5 +12,7 @@ derive = ["pack-derive"]
 [dependencies]
 # no_std compatible hash map
 hashbrown = "0.14"
+# SHA-256 for type hashing (no_std compatible)
+sha2 = { version = "0.10", default-features = false }
 # Optional derive macro
 pack-derive = { path = "../pack-derive", optional = true }

@@ -2,8 +2,8 @@
 //!
 //! Tests that validate WASM modules implement WIT interfaces correctly.
 
+use pack::parser::parse_interface;
 use pack::runtime::InterfaceError;
-use pack::wit_plus::parse_interface;
 use pack::Runtime;
 
 /// A module with the correct Graph ABI signature: (i32, i32) -> i64

@@ -101,6 +101,27 @@ All values use a schema-aware graph encoding. The runtime:
 This format supports shared subtrees and cycles and enables future zero/low-copy
 views over the arena.
 
+## Interface Hashing
+
+Pack uses **Merkle-tree hashing** for O(1) interface compatibility checking. Every type, function, and interface has a content-addressed hash:
+
+```
+Actor A                              Actor B
+   │                                    │
+   │ import-hashes:                     │ export-hashes:
+   │ "math/ops" → a1b2c3d4...           │ "math/ops" → a1b2c3d4...
+   │                                    │
+   └──────────── hashes match ──────────┘
+                    ✓ compatible!
+```
+
+Key design decisions:
+- **Type names excluded**: `Point` and `Vec2` with same structure have same hash (structural typing)
+- **Field names included**: `{x: s32}` ≠ `{y: s32}` (access patterns matter)
+- **Interface bindings included**: Interface hash includes name→type mappings
+
+See [docs/INTERFACE-HASHING.md](docs/INTERFACE-HASHING.md) for details.
+
 ## Compatibility
 
 WIT+ is a new dialect and is not wire-compatible with canonical ABI components.
@@ -169,6 +190,7 @@ interface config {
 - [x] **S-expression Evaluator** - Full Lisp-like evaluator as demo package
 - [x] **Interface Enforcement** - Validate WASM modules implement WIT interfaces
 - [x] **Flexible Host Functions** - Namespaced interfaces, typed functions, provider pattern
+- [x] **Interface Hashing** - Merkle-tree hashes for O(1) compatibility checking
 
 ### Project Structure
 

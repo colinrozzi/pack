@@ -3,8 +3,8 @@
 //! Parses top-level type definitions and validates named references.
 
 use super::{
-    EnumDef, FlagsDef, Interface, InterfaceExport, InterfaceImport, InterfacePath, ParseError,
-    RecordDef, Type, TypeDef, VariantCase, VariantDef, World, WorldItem,
+    Case, Field, Function, Interface, InterfaceExport, InterfaceImport, InterfacePath,
+    Param, ParseError, Type, TypeDef, World, WorldItem,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -41,7 +41,7 @@ pub fn parse_interface(src: &str) -> Result<Interface, ParseError> {
 /// # Example
 ///
 /// ```
-/// use pack::wit_plus::parse_world;
+/// use pack::parser::parse_world;
 ///
 /// let src = r#"
 ///     world my-component {
@@ -272,7 +272,7 @@ fn parse_alias(parser: &mut Parser) -> Result<TypeDef, ParseError> {
     let name = parser.expect_ident()?;
     parser.expect_symbol('=')?;
     let ty = parse_type(parser)?;
-    Ok(TypeDef::Alias(name, ty))
+    Ok(TypeDef::alias(name, ty))
 }
 
 fn parse_record(parser: &mut Parser) -> Result<TypeDef, ParseError> {
@@ -284,11 +284,11 @@ fn parse_record(parser: &mut Parser) -> Result<TypeDef, ParseError> {
         let field_name = parser.expect_ident()?;
         parser.expect_symbol(':')?;
         let field_type = parse_type(parser)?;
-        fields.push((field_name, field_type));
+        fields.push(Field::new(field_name, field_type));
         parser.accept_symbol(',');
     }
 
-    Ok(TypeDef::Record(RecordDef { name, fields }))
+    Ok(TypeDef::record(name, fields))
 }
 
 fn parse_variant(parser: &mut Parser) -> Result<TypeDef, ParseError> {
@@ -298,21 +298,18 @@ fn parse_variant(parser: &mut Parser) -> Result<TypeDef, ParseError> {
 
     while !parser.accept_symbol('}') {
         let case_name = parser.expect_ident()?;
-        let payload = if parser.accept_symbol('(') {
+        let case = if parser.accept_symbol('(') {
             let ty = parse_type(parser)?;
             parser.expect_symbol(')')?;
-            Some(ty)
+            Case::new(case_name, ty)
         } else {
-            None
+            Case::unit(case_name)
         };
-        cases.push(VariantCase {
-            name: case_name,
-            payload,
-        });
+        cases.push(case);
         parser.accept_symbol(',');
     }
 
-    Ok(TypeDef::Variant(VariantDef { name, cases }))
+    Ok(TypeDef::variant(name, cases))
 }
 
 fn parse_enum(parser: &mut Parser) -> Result<TypeDef, ParseError> {
@@ -326,7 +323,7 @@ fn parse_enum(parser: &mut Parser) -> Result<TypeDef, ParseError> {
         parser.accept_symbol(',');
     }
 
-    Ok(TypeDef::Enum(EnumDef { name, cases }))
+    Ok(TypeDef::enumeration(name, cases))
 }
 
 fn parse_flags(parser: &mut Parser) -> Result<TypeDef, ParseError> {
@@ -340,10 +337,10 @@ fn parse_flags(parser: &mut Parser) -> Result<TypeDef, ParseError> {
         parser.accept_symbol(',');
     }
 
-    Ok(TypeDef::Flags(FlagsDef { name, flags }))
+    Ok(TypeDef::flags(name, flags))
 }
 
-fn try_parse_named_func(parser: &mut Parser) -> Result<Option<super::Function>, ParseError> {
+fn try_parse_named_func(parser: &mut Parser) -> Result<Option<Function>, ParseError> {
     let (Token::Ident(name), Token::Symbol(':'), Token::Ident(func_kw)) =
         (parser.peek().clone(), parser.peek_n(1).clone(), parser.peek_n(2).clone())
     else {
@@ -365,7 +362,7 @@ fn try_parse_named_func(parser: &mut Parser) -> Result<Option<super::Function>, 
 fn parse_func(
     parser: &mut Parser,
     name_override: Option<String>,
-) -> Result<super::Function, ParseError> {
+) -> Result<Function, ParseError> {
     let name = match name_override {
         Some(name) => name,
         None => parser.expect_ident()?,
@@ -382,11 +379,7 @@ fn parse_func(
         Vec::new()
     };
 
-    Ok(super::Function {
-        name,
-        params,
-        results,
-    })
+    Ok(Function::with_signature(name, params, results))
 }
 
 fn parse_import_block(parser: &mut Parser) -> Result<InterfaceImport, ParseError> {
@@ -405,7 +398,7 @@ fn parse_export_block(parser: &mut Parser) -> Result<InterfaceExport, ParseError
     Ok(InterfaceExport { name, functions })
 }
 
-fn parse_function_block(parser: &mut Parser) -> Result<Vec<super::Function>, ParseError> {
+fn parse_function_block(parser: &mut Parser) -> Result<Vec<Function>, ParseError> {
     let mut functions = Vec::new();
 
     while !parser.is_eof() {
@@ -429,7 +422,7 @@ fn parse_function_block(parser: &mut Parser) -> Result<Vec<super::Function>, Par
     Ok(functions)
 }
 
-fn parse_params(parser: &mut Parser) -> Result<Vec<(String, Type)>, ParseError> {
+fn parse_params(parser: &mut Parser) -> Result<Vec<Param>, ParseError> {
     let mut params = Vec::new();
     if matches!(parser.peek(), Token::Symbol(')')) {
         return Ok(params);
@@ -439,7 +432,7 @@ fn parse_params(parser: &mut Parser) -> Result<Vec<(String, Type)>, ParseError> 
         let name = parser.expect_ident()?;
         parser.expect_symbol(':')?;
         let ty = parse_type(parser)?;
-        params.push((name, ty));
+        params.push(Param::new(name, ty));
         if matches!(parser.peek(), Token::Symbol(')')) {
             break;
         }
@@ -488,12 +481,12 @@ fn parse_type(parser: &mut Parser) -> Result<Type, ParseError> {
         "f64" => Ok(Type::F64),
         "char" => Ok(Type::Char),
         "string" => Ok(Type::String),
-        "self" => Ok(Type::SelfRef),
+        "self" => Ok(Type::self_ref()),
         "list" => parse_single_param(parser, Type::list),
         "option" => parse_single_param(parser, Type::option),
         "tuple" => parse_tuple(parser),
         "result" => parse_result(parser),
-        _ => Ok(Type::Named(ident)),
+        _ => Ok(Type::named(ident)),
     }
 }
 
@@ -525,18 +518,18 @@ fn parse_tuple(parser: &mut Parser) -> Result<Type, ParseError> {
 
 fn parse_result(parser: &mut Parser) -> Result<Type, ParseError> {
     parser.expect_symbol('<')?;
-    let ok = parse_optional_type(parser)?;
+    let ok = parse_result_type(parser)?;
     parser.expect_symbol(',')?;
-    let err = parse_optional_type(parser)?;
+    let err = parse_result_type(parser)?;
     parser.expect_symbol('>')?;
     Ok(Type::result(ok, err))
 }
 
-fn parse_optional_type(parser: &mut Parser) -> Result<Option<Type>, ParseError> {
+fn parse_result_type(parser: &mut Parser) -> Result<Type, ParseError> {
     if parser.accept_ident("_") {
-        Ok(None)
+        Ok(Type::Unit)
     } else {
-        Ok(Some(parse_type(parser)?))
+        parse_type(parser)
     }
 }
 

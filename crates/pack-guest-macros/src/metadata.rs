@@ -1,8 +1,18 @@
 //! Compile-time metadata encoding for pack_types!() macro.
 //!
 //! Converts type descriptors to `pack_abi::Value` and encodes to CGRF bytes.
+//! Also computes Merkle-tree hashes for type compatibility checking.
 
-use pack_abi::{encode, Value, ValueType};
+use pack_abi::{
+    encode, Value, ValueType, TypeHash, Binding,
+    HASH_BOOL, HASH_U8, HASH_U16, HASH_U32, HASH_U64,
+    HASH_S8, HASH_S16, HASH_S32, HASH_S64,
+    HASH_F32, HASH_F64, HASH_CHAR, HASH_STRING, HASH_FLAGS,
+    HASH_SELF_REF,
+    hash_list, hash_option, hash_result, hash_tuple,
+    hash_record, hash_variant, hash_function, hash_interface,
+};
+use std::collections::HashMap;
 
 /// A function signature for metadata.
 pub struct FuncSig {
@@ -166,6 +176,106 @@ impl TypeDesc {
             TypeDesc::Value => variant_no_payload("value", 20),
         }
     }
+
+    /// Compute the Merkle-tree hash of this type.
+    ///
+    /// Type names are NOT included (structural hashing).
+    /// Field/case names ARE included.
+    pub fn to_hash(&self) -> TypeHash {
+        match self {
+            TypeDesc::Bool => HASH_BOOL,
+            TypeDesc::U8 => HASH_U8,
+            TypeDesc::U16 => HASH_U16,
+            TypeDesc::U32 => HASH_U32,
+            TypeDesc::U64 => HASH_U64,
+            TypeDesc::S8 => HASH_S8,
+            TypeDesc::S16 => HASH_S16,
+            TypeDesc::S32 => HASH_S32,
+            TypeDesc::S64 => HASH_S64,
+            TypeDesc::F32 => HASH_F32,
+            TypeDesc::F64 => HASH_F64,
+            TypeDesc::Char => HASH_CHAR,
+            TypeDesc::String => HASH_STRING,
+            TypeDesc::Flags => HASH_FLAGS,
+            TypeDesc::List(inner) => hash_list(&inner.to_hash()),
+            TypeDesc::Option(inner) => hash_option(&inner.to_hash()),
+            TypeDesc::Result { ok, err } => hash_result(&ok.to_hash(), &err.to_hash()),
+            TypeDesc::Tuple(items) => {
+                let hashes: Vec<_> = items.iter().map(|t| t.to_hash()).collect();
+                hash_tuple(&hashes)
+            }
+            TypeDesc::Record { fields, .. } => {
+                // Sort fields by name for canonical ordering
+                let mut sorted: Vec<_> = fields.iter()
+                    .map(|(n, t)| (n.as_str(), t.to_hash()))
+                    .collect();
+                sorted.sort_by(|a, b| a.0.cmp(b.0));
+                hash_record(&sorted)
+            }
+            TypeDesc::Variant { cases, .. } => {
+                // Sort cases by name for canonical ordering
+                let mut sorted: Vec<_> = cases.iter()
+                    .map(|(n, t)| (n.as_str(), t.as_ref().map(|td| td.to_hash())))
+                    .collect();
+                sorted.sort_by(|a, b| a.0.cmp(b.0));
+                hash_variant(&sorted)
+            }
+            TypeDesc::Value => HASH_SELF_REF, // Treat 'value' as self-ref for now
+        }
+    }
+}
+
+/// Compute the hash for a function signature.
+pub fn hash_func_sig(sig: &FuncSig) -> TypeHash {
+    let param_hashes: Vec<_> = sig.params.iter().map(|(_, t)| t.to_hash()).collect();
+    let result_hashes: Vec<_> = sig.results.iter().map(|t| t.to_hash()).collect();
+    hash_function(&param_hashes, &result_hashes)
+}
+
+/// An interface with its computed hash.
+pub struct InterfaceHash {
+    pub name: String,
+    pub hash: TypeHash,
+}
+
+/// Compute per-interface hashes from function signatures.
+///
+/// Groups functions by interface name and computes a hash for each interface.
+pub fn compute_interface_hashes(funcs: &[FuncSig]) -> Vec<InterfaceHash> {
+    // Group functions by interface
+    let mut by_interface: HashMap<&str, Vec<&FuncSig>> = HashMap::new();
+    for sig in funcs {
+        by_interface.entry(&sig.interface).or_default().push(sig);
+    }
+
+    // Compute hash for each interface
+    let mut result: Vec<InterfaceHash> = by_interface.into_iter()
+        .map(|(iface_name, funcs)| {
+            // Create bindings for each function (sorted by name)
+            let mut bindings: Vec<_> = funcs.iter()
+                .map(|f| Binding {
+                    name: f.name.as_str(),
+                    hash: hash_func_sig(f),
+                })
+                .collect();
+            bindings.sort_by(|a, b| a.name.cmp(b.name));
+
+            let iface_hash = hash_interface(
+                iface_name,
+                &[], // No type bindings for now (types are inlined)
+                &bindings,
+            );
+
+            InterfaceHash {
+                name: iface_name.to_string(),
+                hash: iface_hash,
+            }
+        })
+        .collect();
+
+    // Sort by interface name for deterministic output
+    result.sort_by(|a, b| a.name.cmp(&b.name));
+    result
 }
 
 fn variant_no_payload(case_name: &str, tag: usize) -> Value {
@@ -211,8 +321,29 @@ fn func_sig_to_value(sig: &FuncSig) -> Value {
     }
 }
 
-/// Encode metadata (imports and exports) into CGRF bytes.
+/// Convert an InterfaceHash to a Value for encoding.
+fn interface_hash_to_value(ih: &InterfaceHash) -> Value {
+    let (a, b, c, d) = ih.hash.to_u64s();
+    Value::Record {
+        type_name: "interface-hash".into(),
+        fields: vec![
+            ("name".into(), Value::String(ih.name.clone())),
+            ("hash".into(), Value::Tuple(vec![
+                Value::U64(a),
+                Value::U64(b),
+                Value::U64(c),
+                Value::U64(d),
+            ])),
+        ],
+    }
+}
+
+/// Encode metadata (imports, exports, and interface hashes) into CGRF bytes.
 pub fn encode_metadata(imports: &[FuncSig], exports: &[FuncSig]) -> Vec<u8> {
+    // Compute interface hashes
+    let import_hashes = compute_interface_hashes(imports);
+    let export_hashes = compute_interface_hashes(exports);
+
     let metadata = Value::Record {
         type_name: "package-metadata".into(),
         fields: vec![
@@ -228,6 +359,20 @@ pub fn encode_metadata(imports: &[FuncSig], exports: &[FuncSig]) -> Vec<u8> {
                 Value::List {
                     elem_type: ValueType::Record("".into()),
                     items: exports.iter().map(func_sig_to_value).collect(),
+                },
+            ),
+            (
+                "import-hashes".into(),
+                Value::List {
+                    elem_type: ValueType::Record("".into()),
+                    items: import_hashes.iter().map(interface_hash_to_value).collect(),
+                },
+            ),
+            (
+                "export-hashes".into(),
+                Value::List {
+                    elem_type: ValueType::Record("".into()),
+                    items: export_hashes.iter().map(interface_hash_to_value).collect(),
                 },
             ),
         ],

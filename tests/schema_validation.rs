@@ -1,8 +1,9 @@
 use pack::abi::{encode, GraphBuffer, Node, NodeKind, Value, ValueType};
-use pack::wit_plus::{
-    decode_with_schema, encode_with_schema, parse_interface, validate_graph_against_type, Type,
+use pack::parser::{
+    decode_with_schema, encode_with_schema, parse_interface, validate_graph_against_type,
     ValidationError,
 };
+use pack::types::Type;
 
 #[test]
 fn validate_graph_against_schema() {
@@ -32,7 +33,7 @@ fn validate_graph_against_schema() {
     let bytes = encode(&list).expect("encode");
     let buffer = GraphBuffer::from_bytes(&bytes).expect("from_bytes");
 
-    validate_graph_against_type(&interface.types, &buffer, &Type::Named("node".to_string()))
+    validate_graph_against_type(&interface.types, &buffer, &Type::named("node"))
         .expect("schema validate");
 }
 
@@ -67,7 +68,7 @@ fn reject_variant_tag_out_of_range() {
     bytes.extend_from_slice(&0u32.to_le_bytes()); // no payload
 
     let buffer = GraphBuffer::from_bytes(&bytes).expect("from_bytes");
-    let err = validate_graph_against_type(&interface.types, &buffer, &Type::Named("node".to_string()))
+    let err = validate_graph_against_type(&interface.types, &buffer, &Type::named("node"))
         .expect_err("expected validation error");
 
     match err {
@@ -142,7 +143,7 @@ fn decode_with_schema_roundtrip() {
     };
     let bytes = encode(&value).expect("encode");
     let decoded =
-        decode_with_schema(&interface.types, &bytes, &Type::Named("node".to_string()), None)
+        decode_with_schema(&interface.types, &bytes, &Type::named("node"), None)
             .expect("decode");
 
     assert_eq!(decoded, value);
@@ -163,7 +164,7 @@ fn decode_with_schema_rejects_mismatch() {
     let err = decode_with_schema(
         &interface.types,
         &bytes,
-        &Type::Named("node".to_string()),
+        &Type::named("node"),
         None,
     )
     .expect_err("expected validation error");
@@ -190,7 +191,7 @@ fn validate_flags_mask() {
     validate_graph_against_type(
         &interface.types,
         &buffer,
-        &Type::Named("mode".to_string()),
+        &Type::named("mode"),
     )
     .expect("schema validate");
 }
@@ -212,7 +213,7 @@ fn encode_with_schema_rejects_record_field_order() {
         ],
     };
 
-    let err = encode_with_schema(&interface.types, &value, &Type::Named("config".to_string()))
+    let err = encode_with_schema(&interface.types, &value, &Type::named("config"))
         .expect_err("expected error");
 
     match err {
