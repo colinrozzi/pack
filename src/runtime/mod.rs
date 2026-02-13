@@ -575,6 +575,46 @@ impl<T: Send> AsyncInstance<T> {
 
         crate::metadata::decode_metadata(&metadata_bytes)
     }
+
+    /// Read embedded type metadata with interface hashes from the package (async).
+    ///
+    /// Like `types()`, but also decodes interface hashes for compatibility checking.
+    pub async fn types_with_hashes(&mut self) -> Result<crate::metadata::MetadataWithHashes, crate::metadata::MetadataError> {
+        let types_func = self
+            .instance
+            .get_typed_func::<(i32, i32), i32>(&mut self.store, "__pack_types")
+            .map_err(|_| crate::metadata::MetadataError::NotFound)?;
+
+        let status = types_func
+            .call_async(&mut self.store, (RESULT_PTR_OFFSET as i32, RESULT_LEN_OFFSET as i32))
+            .await
+            .map_err(|e| crate::metadata::MetadataError::CallFailed(e.to_string()))?;
+
+        if status != 0 {
+            return Err(crate::metadata::MetadataError::CallFailed(
+                "non-zero status from __pack_types".into(),
+            ));
+        }
+
+        let memory = self.get_memory()
+            .map_err(|e| crate::metadata::MetadataError::CallFailed(e.to_string()))?;
+        let mut ptr_bytes = [0u8; 4];
+        let mut len_bytes = [0u8; 4];
+        memory.read(&self.store, RESULT_PTR_OFFSET, &mut ptr_bytes)
+            .map_err(|e| crate::metadata::MetadataError::CallFailed(e.to_string()))?;
+        memory.read(&self.store, RESULT_LEN_OFFSET, &mut len_bytes)
+            .map_err(|e| crate::metadata::MetadataError::CallFailed(e.to_string()))?;
+
+        let out_ptr = i32::from_le_bytes(ptr_bytes) as usize;
+        let out_len = i32::from_le_bytes(len_bytes) as usize;
+
+        // Read metadata bytes (static data, no __pack_free needed)
+        let mut metadata_bytes = vec![0u8; out_len];
+        memory.read(&self.store, out_ptr, &mut metadata_bytes)
+            .map_err(|e| crate::metadata::MetadataError::CallFailed(e.to_string()))?;
+
+        crate::metadata::decode_metadata_with_hashes(&metadata_bytes)
+    }
 }
 
 /// Type alias for async host function return type.
@@ -962,6 +1002,45 @@ impl InstanceWithHost {
 
         crate::metadata::decode_metadata(&metadata_bytes)
     }
+
+    /// Read embedded type metadata with interface hashes from the package.
+    ///
+    /// Like `types()`, but also decodes interface hashes for compatibility checking.
+    pub fn types_with_hashes(&mut self) -> Result<crate::metadata::MetadataWithHashes, crate::metadata::MetadataError> {
+        let types_func = self
+            .instance
+            .get_typed_func::<(i32, i32), i32>(&mut self.store, "__pack_types")
+            .map_err(|_| crate::metadata::MetadataError::NotFound)?;
+
+        let status = types_func
+            .call(&mut self.store, (RESULT_PTR_OFFSET as i32, RESULT_LEN_OFFSET as i32))
+            .map_err(|e| crate::metadata::MetadataError::CallFailed(e.to_string()))?;
+
+        if status != 0 {
+            return Err(crate::metadata::MetadataError::CallFailed(
+                "non-zero status from __pack_types".into(),
+            ));
+        }
+
+        let memory = self.get_memory()
+            .map_err(|e| crate::metadata::MetadataError::CallFailed(e.to_string()))?;
+        let mut ptr_bytes = [0u8; 4];
+        let mut len_bytes = [0u8; 4];
+        memory.read(&self.store, RESULT_PTR_OFFSET, &mut ptr_bytes)
+            .map_err(|e| crate::metadata::MetadataError::CallFailed(e.to_string()))?;
+        memory.read(&self.store, RESULT_LEN_OFFSET, &mut len_bytes)
+            .map_err(|e| crate::metadata::MetadataError::CallFailed(e.to_string()))?;
+
+        let out_ptr = i32::from_le_bytes(ptr_bytes) as usize;
+        let out_len = i32::from_le_bytes(len_bytes) as usize;
+
+        // Read metadata bytes (static data, no __pack_free needed)
+        let mut metadata_bytes = vec![0u8; out_len];
+        memory.read(&self.store, out_ptr, &mut metadata_bytes)
+            .map_err(|e| crate::metadata::MetadataError::CallFailed(e.to_string()))?;
+
+        crate::metadata::decode_metadata_with_hashes(&metadata_bytes)
+    }
 }
 
 // Implement Instance methods for both () and HostState
@@ -1209,6 +1288,45 @@ impl<T> Instance<T> {
             .map_err(|e| crate::metadata::MetadataError::CallFailed(e.to_string()))?;
 
         crate::metadata::decode_metadata(&metadata_bytes)
+    }
+
+    /// Read embedded type metadata with interface hashes from the package.
+    ///
+    /// Like `types()`, but also decodes interface hashes for compatibility checking.
+    pub fn types_with_hashes(&mut self) -> Result<crate::metadata::MetadataWithHashes, crate::metadata::MetadataError> {
+        let types_func = self
+            .instance
+            .get_typed_func::<(i32, i32), i32>(&mut self.store, "__pack_types")
+            .map_err(|_| crate::metadata::MetadataError::NotFound)?;
+
+        let status = types_func
+            .call(&mut self.store, (RESULT_PTR_OFFSET as i32, RESULT_LEN_OFFSET as i32))
+            .map_err(|e| crate::metadata::MetadataError::CallFailed(e.to_string()))?;
+
+        if status != 0 {
+            return Err(crate::metadata::MetadataError::CallFailed(
+                "non-zero status from __pack_types".into(),
+            ));
+        }
+
+        let memory = self.get_memory()
+            .map_err(|e| crate::metadata::MetadataError::CallFailed(e.to_string()))?;
+        let mut ptr_bytes = [0u8; 4];
+        let mut len_bytes = [0u8; 4];
+        memory.read(&self.store, RESULT_PTR_OFFSET, &mut ptr_bytes)
+            .map_err(|e| crate::metadata::MetadataError::CallFailed(e.to_string()))?;
+        memory.read(&self.store, RESULT_LEN_OFFSET, &mut len_bytes)
+            .map_err(|e| crate::metadata::MetadataError::CallFailed(e.to_string()))?;
+
+        let out_ptr = i32::from_le_bytes(ptr_bytes) as usize;
+        let out_len = i32::from_le_bytes(len_bytes) as usize;
+
+        // Read metadata bytes (static data, no __pack_free needed)
+        let mut metadata_bytes = vec![0u8; out_len];
+        memory.read(&self.store, out_ptr, &mut metadata_bytes)
+            .map_err(|e| crate::metadata::MetadataError::CallFailed(e.to_string()))?;
+
+        crate::metadata::decode_metadata_with_hashes(&metadata_bytes)
     }
 }
 

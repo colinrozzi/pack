@@ -71,6 +71,54 @@ impl Arena {
     pub fn find_function(&self, name: &str) -> Option<&Function> {
         self.functions.iter().find(|f| f.name == name)
     }
+
+    /// Get all imported functions from this package arena.
+    ///
+    /// Returns functions from the "imports" child arena, flattened across interfaces.
+    /// Each function includes its interface name in the `interface` field.
+    pub fn imports(&self) -> Vec<Function> {
+        self.children
+            .iter()
+            .find(|c| c.name == "imports")
+            .map(|imports_arena| {
+                imports_arena
+                    .children
+                    .iter()
+                    .flat_map(|interface| {
+                        interface.functions.iter().map(|f| {
+                            let mut func = f.clone();
+                            func.interface = interface.name.clone();
+                            func
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Get all exported functions from this package arena.
+    ///
+    /// Returns functions from the "exports" child arena, flattened across interfaces.
+    /// Each function includes its interface name in the `interface` field.
+    pub fn exports(&self) -> Vec<Function> {
+        self.children
+            .iter()
+            .find(|c| c.name == "exports")
+            .map(|exports_arena| {
+                exports_arena
+                    .children
+                    .iter()
+                    .flat_map(|interface| {
+                        interface.functions.iter().map(|f| {
+                            let mut func = f.clone();
+                            func.interface = interface.name.clone();
+                            func
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
 }
 
 // ============================================================================
@@ -82,6 +130,9 @@ impl Arena {
 pub struct Function {
     /// Function name
     pub name: String,
+    /// Interface this function belongs to (for metadata)
+    #[serde(default)]
+    pub interface: String,
     /// Local type definitions (scoped to this function)
     pub types: Vec<TypeDef>,
     /// Function parameters
@@ -95,6 +146,7 @@ impl Function {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
+            interface: String::new(),
             types: Vec::new(),
             params: Vec::new(),
             results: Vec::new(),
@@ -109,6 +161,23 @@ impl Function {
     ) -> Self {
         Self {
             name: name.into(),
+            interface: String::new(),
+            types: Vec::new(),
+            params,
+            results,
+        }
+    }
+
+    /// Create a function with interface and signature.
+    pub fn with_interface(
+        name: impl Into<String>,
+        interface: impl Into<String>,
+        params: Vec<Param>,
+        results: Vec<Type>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            interface: interface.into(),
             types: Vec::new(),
             params,
             results,

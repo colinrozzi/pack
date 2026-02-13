@@ -62,7 +62,8 @@ pub use interface_impl::{
     FuncSignature, HostFunc, InterfaceImpl, PackParams, PackType,
 };
 pub use metadata::{
-    decode_metadata, decode_metadata_with_hashes, encode_metadata,
+    decode_metadata, decode_metadata_with_hashes, encode_metadata, encode_metadata_with_hashes,
+    compute_interface_hash, compute_interface_hashes, hash_type, hash_function_from_sig,
     hash_function, hash_interface, hash_list, hash_option, hash_record,
     hash_result, hash_tuple, hash_variant, Binding,
     CaseDesc, FieldDesc, FunctionSignature, InterfaceHash, MetadataError,

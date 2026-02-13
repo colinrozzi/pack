@@ -23,19 +23,19 @@ fn test_echo_metadata() {
     let metadata = instance.types().expect("should have metadata");
 
     // Echo has no imports
-    assert!(metadata.imports.is_empty(), "echo should have no imports");
+    assert!(metadata.imports().is_empty(), "echo should have no imports");
 
     // Echo has 2 exports: echo and transform
-    assert_eq!(metadata.exports.len(), 2, "echo should have 2 exports");
+    assert_eq!(metadata.exports().len(), 2, "echo should have 2 exports");
 
-    let echo_fn = metadata.exports.iter().find(|f| f.name == "echo").expect("echo export");
+    let echo_fn = metadata.exports().into_iter().find(|f| f.name == "echo").expect("echo export");
     assert_eq!(echo_fn.params.len(), 1);
     assert_eq!(echo_fn.params[0].name, "input");
     assert_eq!(echo_fn.params[0].ty, TypeDesc::Value);
     assert_eq!(echo_fn.results.len(), 1);
     assert_eq!(echo_fn.results[0], TypeDesc::Value);
 
-    let transform_fn = metadata.exports.iter().find(|f| f.name == "transform").expect("transform export");
+    let transform_fn = metadata.exports().into_iter().find(|f| f.name == "transform").expect("transform export");
     assert_eq!(transform_fn.params.len(), 1);
     assert_eq!(transform_fn.params[0].name, "input");
     assert_eq!(transform_fn.params[0].ty, TypeDesc::Value);
@@ -51,10 +51,10 @@ fn test_doubler_metadata() {
 
     let metadata = instance.types().expect("should have metadata");
 
-    assert!(metadata.imports.is_empty());
-    assert_eq!(metadata.exports.len(), 1);
+    assert!(metadata.imports().is_empty());
+    assert_eq!(metadata.exports().len(), 1);
 
-    let double_fn = &metadata.exports[0];
+    let double_fn = &metadata.exports()[0];
     assert_eq!(double_fn.name, "double");
     assert_eq!(double_fn.params.len(), 1);
     assert_eq!(double_fn.params[0].name, "input");
@@ -78,8 +78,8 @@ fn test_adder_metadata_with_imports() {
     let metadata = composition.types("adder").expect("adder metadata");
 
     // Adder imports from "math"
-    assert_eq!(metadata.imports.len(), 1);
-    let import_fn = &metadata.imports[0];
+    assert_eq!(metadata.imports().len(), 1);
+    let import_fn = &metadata.imports()[0];
     assert_eq!(import_fn.interface, "math");
     assert_eq!(import_fn.name, "double");
     assert_eq!(import_fn.params.len(), 1);
@@ -89,8 +89,8 @@ fn test_adder_metadata_with_imports() {
     assert_eq!(import_fn.results[0], TypeDesc::S64);
 
     // Adder exports "process"
-    assert_eq!(metadata.exports.len(), 1);
-    let export_fn = &metadata.exports[0];
+    assert_eq!(metadata.exports().len(), 1);
+    let export_fn = &metadata.exports()[0];
     assert_eq!(export_fn.name, "process");
     assert_eq!(export_fn.params[0].ty, TypeDesc::Value);
 }
@@ -186,12 +186,12 @@ fn test_metadata_roundtrip() {
     let bytes = encode(&metadata_value).expect("encode");
     let decoded = decode_metadata(&bytes).expect("decode");
 
-    assert_eq!(decoded.imports.len(), 0);
-    assert_eq!(decoded.exports.len(), 1);
-    assert_eq!(decoded.exports[0].name, "my_func");
-    assert_eq!(decoded.exports[0].params[0].name, "x");
-    assert_eq!(decoded.exports[0].params[0].ty, TypeDesc::S64);
-    assert_eq!(decoded.exports[0].results[0], TypeDesc::String);
+    assert_eq!(decoded.imports().len(), 0);
+    assert_eq!(decoded.exports().len(), 1);
+    assert_eq!(decoded.exports()[0].name, "my_func");
+    assert_eq!(decoded.exports()[0].params[0].name, "x");
+    assert_eq!(decoded.exports()[0].params[0].ty, TypeDesc::S64);
+    assert_eq!(decoded.exports()[0].results[0], TypeDesc::String);
 }
 
 #[test]
@@ -264,10 +264,10 @@ fn test_metadata_with_list_type() {
     let bytes = encode(&metadata_value).expect("encode");
     let decoded = decode_metadata(&bytes).expect("decode");
 
-    assert_eq!(decoded.exports[0].name, "sum");
+    assert_eq!(decoded.exports()[0].name, "sum");
     assert_eq!(
-        decoded.exports[0].params[0].ty,
+        decoded.exports()[0].params[0].ty,
         TypeDesc::List(Box::new(TypeDesc::S64))
     );
-    assert_eq!(decoded.exports[0].results[0], TypeDesc::S64);
+    assert_eq!(decoded.exports()[0].results[0], TypeDesc::S64);
 }

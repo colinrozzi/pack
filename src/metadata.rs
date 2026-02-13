@@ -343,6 +343,104 @@ pub struct InterfaceHash {
     pub hash: TypeHash,
 }
 
+// ============================================================================
+// Type Hashing from Arena Types
+// ============================================================================
+
+/// Compute the TypeHash for a Type from the types module.
+///
+/// This is used when computing interface hashes from Arena metadata.
+pub fn hash_type(ty: &Type) -> TypeHash {
+    match ty {
+        Type::Unit => hash_tuple(&[]), // Unit is empty tuple
+        Type::Bool => HASH_BOOL,
+        Type::U8 => HASH_U8,
+        Type::U16 => HASH_U16,
+        Type::U32 => HASH_U32,
+        Type::U64 => HASH_U64,
+        Type::S8 => HASH_S8,
+        Type::S16 => HASH_S16,
+        Type::S32 => HASH_S32,
+        Type::S64 => HASH_S64,
+        Type::F32 => HASH_F32,
+        Type::F64 => HASH_F64,
+        Type::Char => HASH_CHAR,
+        Type::String => HASH_STRING,
+        Type::List(inner) => hash_list(&hash_type(inner)),
+        Type::Option(inner) => hash_option(&hash_type(inner)),
+        Type::Result { ok, err } => hash_result(&hash_type(ok), &hash_type(err)),
+        Type::Tuple(types) => {
+            let hashes: Vec<_> = types.iter().map(hash_type).collect();
+            hash_tuple(&hashes)
+        }
+        Type::Ref(path) => {
+            // Named type reference - hash based on the path string
+            let path_str = path.to_string();
+            let mut hasher = sha2::Sha256::new();
+            hasher.update(b"ref:");
+            hasher.update(path_str.as_bytes());
+            TypeHash::from_bytes(hasher.finalize().into())
+        }
+        Type::Value => {
+            // Dynamic value type
+            let mut hasher = sha2::Sha256::new();
+            hasher.update(b"value");
+            TypeHash::from_bytes(hasher.finalize().into())
+        }
+    }
+}
+
+/// Compute the hash for a function from the types module.
+pub fn hash_function_from_sig(func: &Function) -> TypeHash {
+    let param_hashes: Vec<_> = func.params.iter().map(|p| hash_type(&p.ty)).collect();
+    let result_hashes: Vec<_> = func.results.iter().map(hash_type).collect();
+    hash_function(&param_hashes, &result_hashes)
+}
+
+/// Compute the interface hash for an Arena containing functions.
+///
+/// The Arena is treated as an interface - its name and function signatures
+/// are hashed to produce a content-addressed interface hash.
+pub fn compute_interface_hash(interface_arena: &Arena) -> TypeHash {
+    // Create bindings for each function (sorted by name for determinism)
+    let mut bindings: Vec<_> = interface_arena
+        .functions
+        .iter()
+        .map(|f| Binding {
+            name: &f.name,
+            hash: hash_function_from_sig(f),
+        })
+        .collect();
+    bindings.sort_by(|a, b| a.name.cmp(b.name));
+
+    hash_interface(
+        &interface_arena.name,
+        &[], // No type bindings for now
+        &bindings,
+    )
+}
+
+/// Compute interface hashes for all interfaces in an Arena's imports or exports section.
+///
+/// Returns a list of (interface_name, interface_hash) pairs.
+pub fn compute_interface_hashes(arena: &Arena, section: &str) -> Vec<InterfaceHash> {
+    let mut result = Vec::new();
+
+    for child in &arena.children {
+        if child.name == section {
+            // Each child of "imports" or "exports" is an interface
+            for interface_arena in &child.children {
+                result.push(InterfaceHash {
+                    name: interface_arena.name.clone(),
+                    hash: compute_interface_hash(interface_arena),
+                });
+            }
+        }
+    }
+
+    result
+}
+
 /// Metadata with interface hashes for compatibility checking.
 #[derive(Debug, Clone)]
 pub struct MetadataWithHashes {
@@ -572,15 +670,34 @@ fn decode_interface_hash(value: Value) -> Result<InterfaceHash, MetadataError> {
                         }
                     }
                     "hash" => {
-                        // Hash is stored as tuple<u64, u64, u64, u64>
-                        if let Value::Tuple(parts) = val {
-                            if parts.len() == 4 {
-                                let a = match &parts[0] { Value::U64(v) => *v, _ => 0 };
-                                let b = match &parts[1] { Value::U64(v) => *v, _ => 0 };
-                                let c = match &parts[2] { Value::U64(v) => *v, _ => 0 };
-                                let d = match &parts[3] { Value::U64(v) => *v, _ => 0 };
-                                hash = TypeHash::from_u64s(a, b, c, d);
+                        // Hash can be stored as list<u8> or tuple<u64, u64, u64, u64>
+                        match val {
+                            Value::List { items, .. } => {
+                                // List of u8 bytes
+                                let bytes: Vec<u8> = items
+                                    .into_iter()
+                                    .filter_map(|v| match v {
+                                        Value::U8(b) => Some(b),
+                                        _ => None,
+                                    })
+                                    .collect();
+                                if bytes.len() == 32 {
+                                    let mut arr = [0u8; 32];
+                                    arr.copy_from_slice(&bytes);
+                                    hash = TypeHash::from_bytes(arr);
+                                }
                             }
+                            Value::Tuple(parts) => {
+                                // Legacy: tuple of 4 u64s
+                                if parts.len() == 4 {
+                                    let a = match &parts[0] { Value::U64(v) => *v, _ => 0 };
+                                    let b = match &parts[1] { Value::U64(v) => *v, _ => 0 };
+                                    let c = match &parts[2] { Value::U64(v) => *v, _ => 0 };
+                                    let d = match &parts[3] { Value::U64(v) => *v, _ => 0 };
+                                    hash = TypeHash::from_u64s(a, b, c, d);
+                                }
+                            }
+                            _ => {}
                         }
                     }
                     _ => {}
@@ -1006,6 +1123,103 @@ pub type FunctionSignature = Function;
 /// Use `crate::types::Arena` instead.
 pub type PackageMetadata = Arena;
 
+// ============================================================================
+// Metadata Encoding with Hashes
+// ============================================================================
+
+/// Encode an Arena to CGRF bytes with interface hashes included.
+///
+/// This is the preferred encoding function as it includes Merkle-tree hashes
+/// for O(1) interface compatibility checking at runtime.
+///
+/// The output format includes:
+/// - `imports`: List of function signatures
+/// - `exports`: List of function signatures
+/// - `import-hashes`: List of (interface_name, hash) pairs
+/// - `export-hashes`: List of (interface_name, hash) pairs
+pub fn encode_metadata_with_hashes(arena: &Arena) -> Result<Vec<u8>, MetadataError> {
+    let mut imports = Vec::new();
+    let mut exports = Vec::new();
+
+    // Collect function signatures (same as encode_metadata)
+    for child in &arena.children {
+        match child.name.as_str() {
+            "imports" => {
+                for interface in &child.children {
+                    for func in &interface.functions {
+                        imports.push(encode_func_sig_value(&interface.name, func));
+                    }
+                }
+            }
+            "exports" => {
+                for interface in &child.children {
+                    for func in &interface.functions {
+                        exports.push(encode_func_sig_value(&interface.name, func));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Compute interface hashes
+    let import_hashes = compute_interface_hashes(arena, "imports");
+    let export_hashes = compute_interface_hashes(arena, "exports");
+
+    let record = Value::Record {
+        type_name: "PackageMetadata".to_string(),
+        fields: vec![
+            (
+                "imports".to_string(),
+                Value::List {
+                    elem_type: crate::abi::ValueType::Record("FunctionSignature".to_string()),
+                    items: imports,
+                },
+            ),
+            (
+                "exports".to_string(),
+                Value::List {
+                    elem_type: crate::abi::ValueType::Record("FunctionSignature".to_string()),
+                    items: exports,
+                },
+            ),
+            (
+                "import-hashes".to_string(),
+                Value::List {
+                    elem_type: crate::abi::ValueType::Record("InterfaceHash".to_string()),
+                    items: import_hashes.iter().map(encode_interface_hash_value).collect(),
+                },
+            ),
+            (
+                "export-hashes".to_string(),
+                Value::List {
+                    elem_type: crate::abi::ValueType::Record("InterfaceHash".to_string()),
+                    items: export_hashes.iter().map(encode_interface_hash_value).collect(),
+                },
+            ),
+        ],
+    };
+
+    encode(&record).map_err(|e| MetadataError::EncodeFailed(format!("{:?}", e)))
+}
+
+/// Encode an InterfaceHash as a CGRF Value.
+fn encode_interface_hash_value(ih: &InterfaceHash) -> Value {
+    Value::Record {
+        type_name: "InterfaceHash".to_string(),
+        fields: vec![
+            ("name".to_string(), Value::String(ih.name.clone())),
+            (
+                "hash".to_string(),
+                Value::List {
+                    elem_type: crate::abi::ValueType::U8,
+                    items: ih.hash.as_bytes().iter().map(|&b| Value::U8(b)).collect(),
+                },
+            ),
+        ],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1018,5 +1232,132 @@ mod tests {
         assert_eq!(TAG_STRING, 12);
         assert_eq!(TAG_VALUE, 20);
         assert_eq!(TAG_UNIT, 21);
+    }
+
+    #[test]
+    fn test_hash_type_primitives() {
+        assert_eq!(hash_type(&Type::Bool), HASH_BOOL);
+        assert_eq!(hash_type(&Type::String), HASH_STRING);
+        assert_eq!(hash_type(&Type::S32), HASH_S32);
+        assert_eq!(hash_type(&Type::U8), HASH_U8);
+    }
+
+    #[test]
+    fn test_hash_type_compound() {
+        let list_hash = hash_type(&Type::List(Box::new(Type::U8)));
+        let expected = hash_list(&HASH_U8);
+        assert_eq!(list_hash, expected);
+
+        let option_hash = hash_type(&Type::Option(Box::new(Type::String)));
+        let expected = hash_option(&HASH_STRING);
+        assert_eq!(option_hash, expected);
+
+        let result_hash = hash_type(&Type::Result {
+            ok: Box::new(Type::String),
+            err: Box::new(Type::String),
+        });
+        let expected = hash_result(&HASH_STRING, &HASH_STRING);
+        assert_eq!(result_hash, expected);
+    }
+
+    #[test]
+    fn test_compute_interface_hash() {
+        // Create a simple interface arena with two functions
+        let mut interface = Arena::new("test:example/api");
+        interface.add_function(Function::with_signature(
+            "greet",
+            vec![Param::new("name", Type::String)],
+            vec![Type::String],
+        ));
+        interface.add_function(Function::with_signature(
+            "add",
+            vec![Param::new("a", Type::S32), Param::new("b", Type::S32)],
+            vec![Type::S32],
+        ));
+
+        let hash1 = compute_interface_hash(&interface);
+
+        // Same interface should produce same hash
+        let hash2 = compute_interface_hash(&interface);
+        assert_eq!(hash1, hash2);
+
+        // Different function order should produce same hash (sorted by name)
+        let mut interface_reordered = Arena::new("test:example/api");
+        interface_reordered.add_function(Function::with_signature(
+            "add",
+            vec![Param::new("a", Type::S32), Param::new("b", Type::S32)],
+            vec![Type::S32],
+        ));
+        interface_reordered.add_function(Function::with_signature(
+            "greet",
+            vec![Param::new("name", Type::String)],
+            vec![Type::String],
+        ));
+        let hash3 = compute_interface_hash(&interface_reordered);
+        assert_eq!(hash1, hash3);
+    }
+
+    #[test]
+    fn test_compute_interface_hash_differs_on_signature() {
+        let mut interface1 = Arena::new("test:api");
+        interface1.add_function(Function::with_signature(
+            "foo",
+            vec![Param::new("x", Type::S32)],
+            vec![Type::S32],
+        ));
+
+        let mut interface2 = Arena::new("test:api");
+        interface2.add_function(Function::with_signature(
+            "foo",
+            vec![Param::new("x", Type::S64)], // Different type!
+            vec![Type::S64],
+        ));
+
+        assert_ne!(
+            compute_interface_hash(&interface1),
+            compute_interface_hash(&interface2)
+        );
+    }
+
+    #[test]
+    fn test_encode_metadata_with_hashes_roundtrip() {
+        // Build an arena with imports and exports
+        let mut arena = Arena::new("package");
+
+        let mut imports = Arena::new("imports");
+        let mut runtime_interface = Arena::new("theater:simple/runtime");
+        runtime_interface.add_function(Function::with_signature(
+            "log",
+            vec![Param::new("msg", Type::String)],
+            vec![],
+        ));
+        imports.add_child(runtime_interface);
+        arena.add_child(imports);
+
+        let mut exports = Arena::new("exports");
+        let mut actor_interface = Arena::new("theater:simple/actor");
+        actor_interface.add_function(Function::with_signature(
+            "init",
+            vec![Param::new("data", Type::List(Box::new(Type::U8)))],
+            vec![Type::List(Box::new(Type::U8))],
+        ));
+        exports.add_child(actor_interface);
+        arena.add_child(exports);
+
+        // Encode with hashes
+        let bytes = encode_metadata_with_hashes(&arena).expect("encoding failed");
+
+        // Decode and verify hashes are present
+        let decoded = decode_metadata_with_hashes(&bytes).expect("decoding failed");
+
+        assert_eq!(decoded.import_hashes.len(), 1);
+        assert_eq!(decoded.import_hashes[0].name, "theater:simple/runtime");
+
+        assert_eq!(decoded.export_hashes.len(), 1);
+        assert_eq!(decoded.export_hashes[0].name, "theater:simple/actor");
+
+        // Verify hashes are non-zero
+        assert!(!decoded.import_hashes[0].hash.as_bytes().iter().all(|&b| b == 0));
+        assert!(!decoded.export_hashes[0].hash.as_bytes().iter().all(|&b| b == 0));
     }
 }
