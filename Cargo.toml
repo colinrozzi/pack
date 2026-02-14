@@ -4,7 +4,14 @@ version = "0.1.0"
 edition = "2021"
 description = "A package runtime with extended WIT support for recursive types"
 
+[[bin]]
+name = "pack"
+path = "src/main.rs"
+
 [dependencies]
+# CLI
+clap = { version = "4.0", features = ["derive"] }
+
 # WASM execution with async support
 wasmtime = "27"
 

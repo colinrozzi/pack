@@ -22,7 +22,7 @@
 //! builder.register_interface(&interface)?;
 //! ```
 
-use crate::metadata::TypeHash;
+use crate::metadata::{TypeHash, HASH_SELF_REF};
 use crate::types::Type;
 use sha2::Digest;
 
@@ -120,6 +120,12 @@ impl PackType for char {
 impl PackType for String {
     fn pack_type() -> Type {
         Type::String
+    }
+}
+
+impl PackType for crate::abi::Value {
+    fn pack_type() -> Type {
+        Type::Value
     }
 }
 
@@ -234,12 +240,8 @@ fn type_to_hash(ty: &Type) -> TypeHash {
             hasher.update(path_str.as_bytes());
             TypeHash::from_bytes(hasher.finalize().into())
         }
-        // Dynamic value type - gets its own distinct hash
-        Type::Value => {
-            let mut hasher = sha2::Sha256::new();
-            hasher.update(b"value");
-            TypeHash::from_bytes(hasher.finalize().into())
-        }
+        // Dynamic value type - use HASH_SELF_REF for consistency with pack-guest-macros
+        Type::Value => HASH_SELF_REF,
     }
 }
 

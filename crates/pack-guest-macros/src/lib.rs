@@ -1351,12 +1351,33 @@ fn parse_and_encode_metadata(input: &str) -> Result<Vec<u8>, String> {
     Ok(metadata::encode_metadata(&imports, &exports))
 }
 
+/// Parse an interface path like "theater:simple/runtime" or just "math".
+/// Collects identifiers and the symbols `:` and `/` until it hits a `{`.
+fn parse_interface_path(parser: &mut wit_parser::Parser) -> Result<String, String> {
+    let mut path = parser.expect_ident().map_err(|e| e.to_string())?;
+
+    // Continue collecting path components: namespace:package/interface
+    loop {
+        if parser.accept_symbol(':') {
+            path.push(':');
+            path.push_str(&parser.expect_ident().map_err(|e| e.to_string())?);
+        } else if parser.accept_symbol('/') {
+            path.push('/');
+            path.push_str(&parser.expect_ident().map_err(|e| e.to_string())?);
+        } else {
+            break;
+        }
+    }
+
+    Ok(path)
+}
+
 fn parse_import_sigs(
     parser: &mut wit_parser::Parser,
     sigs: &mut Vec<metadata::FuncSig>,
 ) -> Result<(), String> {
     while !parser.peek_is_symbol('}') && !parser.is_eof() {
-        let iface_name = parser.expect_ident().map_err(|e| e.to_string())?;
+        let iface_name = parse_interface_path(parser)?;
         parser.expect_symbol('{').map_err(|e| e.to_string())?;
         parse_func_sigs_into(parser, &iface_name, sigs)?;
         parser.expect_symbol('}').map_err(|e| e.to_string())?;
@@ -1365,13 +1386,51 @@ fn parse_import_sigs(
     Ok(())
 }
 
+/// Parse a full function path like "theater:simple/actor.init" and return (interface, name).
+/// If there's no dot, returns (default_interface, full_path).
+///
+/// Handles the tricky case where "name: func" needs to NOT consume the colon,
+/// but "namespace:package/interface.name" SHOULD consume the colon as part of the path.
+fn parse_function_path(parser: &mut wit_parser::Parser, default_interface: &str) -> Result<(String, String), String> {
+    let mut path = parser.expect_ident().map_err(|e| e.to_string())?;
+
+    // Continue collecting path components: namespace:package/interface.funcname
+    // But be careful: "name: func" should NOT consume the colon!
+    // We peek ahead to see if the colon is followed by an identifier that's not "func"
+    loop {
+        if parser.peek_is_symbol(':') {
+            // Peek at what comes after the colon
+            // If it's "func", this colon is the separator, not part of the path
+            if parser.peek_n_is_ident(1, "func") {
+                break;
+            }
+            // It's part of the path
+            parser.accept_symbol(':');
+            path.push(':');
+            path.push_str(&parser.expect_ident().map_err(|e| e.to_string())?);
+        } else if parser.accept_symbol('/') {
+            path.push('/');
+            path.push_str(&parser.expect_ident().map_err(|e| e.to_string())?);
+        } else if parser.accept_symbol('.') {
+            // The dot separates interface from function name
+            let func_name = parser.expect_ident().map_err(|e| e.to_string())?;
+            return Ok((path, func_name));
+        } else {
+            break;
+        }
+    }
+
+    // No dot found, use the whole thing as the function name
+    Ok((default_interface.to_string(), path))
+}
+
 fn parse_func_sigs_into(
     parser: &mut wit_parser::Parser,
     interface: &str,
     sigs: &mut Vec<metadata::FuncSig>,
 ) -> Result<(), String> {
     while !parser.peek_is_symbol('}') && !parser.is_eof() {
-        let name = parser.expect_ident().map_err(|e| e.to_string())?;
+        let (iface, name) = parse_function_path(parser, interface)?;
         parser.expect_symbol(':').map_err(|e| e.to_string())?;
         parser.accept_ident("func");
 
@@ -1391,7 +1450,7 @@ fn parse_func_sigs_into(
             .collect();
 
         sigs.push(metadata::FuncSig {
-            interface: interface.to_string(),
+            interface: iface,
             name: func.name,
             params,
             results,

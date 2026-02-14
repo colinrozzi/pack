@@ -66,7 +66,26 @@ impl TypeHash {
     pub fn to_short_hex(&self) -> String {
         self.0.iter().take(4).map(|b| format!("{:02x}", b)).collect()
     }
+
+    /// Const function to create from bytes (for compile-time constants).
+    pub const fn from_bytes_const(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
 }
+
+/// Placeholder for self-references and dynamic value types.
+///
+/// Used for:
+/// - Recursive types where a type references itself
+/// - The `value` type which represents any Pack value dynamically
+///
+/// This matches the HASH_SELF_REF constant in pack-abi for consistency.
+pub const HASH_SELF_REF: TypeHash = TypeHash::from_bytes_const([
+    0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+]);
 
 impl std::fmt::Display for TypeHash {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -382,10 +401,8 @@ pub fn hash_type(ty: &Type) -> TypeHash {
             TypeHash::from_bytes(hasher.finalize().into())
         }
         Type::Value => {
-            // Dynamic value type
-            let mut hasher = sha2::Sha256::new();
-            hasher.update(b"value");
-            TypeHash::from_bytes(hasher.finalize().into())
+            // Dynamic value type - use HASH_SELF_REF for consistency with pack-guest-macros
+            HASH_SELF_REF
         }
     }
 }
