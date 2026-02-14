@@ -315,6 +315,43 @@ impl InterfaceImpl {
         )
     }
 
+    /// Compute the interface hash for a subset of functions.
+    ///
+    /// This enables partial interface matching - an actor that imports only
+    /// some functions from an interface can still verify compatibility with
+    /// a handler that exports the full interface.
+    ///
+    /// Returns None if any requested function is not found in this interface.
+    pub fn hash_subset(&self, function_names: &[&str]) -> Option<TypeHash> {
+        use crate::metadata::Binding;
+
+        // Find the requested functions and compute their hashes
+        let mut bindings = Vec::with_capacity(function_names.len());
+        for name in function_names {
+            let func = self.functions.iter().find(|f| f.name == *name)?;
+            bindings.push(Binding {
+                name: &func.name,
+                hash: func.hash(),
+            });
+        }
+
+        // Sort by name for deterministic hashing
+        bindings.sort_by(|a, b| a.name.cmp(b.name));
+
+        Some(crate::metadata::hash_interface(
+            &self.name,
+            &[], // No type bindings for now
+            &bindings,
+        ))
+    }
+
+    /// Get the hash for a specific function by name.
+    ///
+    /// Useful for per-function verification.
+    pub fn function_hash(&self, name: &str) -> Option<TypeHash> {
+        self.functions.iter().find(|f| f.name == name).map(|f| f.hash())
+    }
+
     /// Get the interface name.
     pub fn name(&self) -> &str {
         &self.name

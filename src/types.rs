@@ -119,6 +119,27 @@ impl Arena {
             })
             .unwrap_or_default()
     }
+
+    /// Get imported function names for a specific interface.
+    ///
+    /// Useful for subset hash verification - given an interface name,
+    /// returns the names of functions the actor imports from it.
+    pub fn imported_function_names(&self, interface_name: &str) -> Vec<String> {
+        self.imports()
+            .into_iter()
+            .filter(|f| f.interface == interface_name)
+            .map(|f| f.name)
+            .collect()
+    }
+
+    /// Get exported function names for a specific interface.
+    pub fn exported_function_names(&self, interface_name: &str) -> Vec<String> {
+        self.exports()
+            .into_iter()
+            .filter(|f| f.interface == interface_name)
+            .map(|f| f.name)
+            .collect()
+    }
 }
 
 // ============================================================================
