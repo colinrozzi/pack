@@ -50,6 +50,7 @@
 //! ```
 
 pub mod abi;
+pub mod codegen;
 pub mod compose;
 pub mod interface_impl;
 pub mod metadata;
@@ -77,7 +78,13 @@ pub use runtime::{
     HostFunctionError, HostFunctionErrorKind, HostFunctionProvider, HostLinkerBuilder, Instance,
     InterfaceBuilder, InterfaceError, LinkerError, Runtime,
 };
-pub use parser::{Interface, InterfacePath, TypeDef, World, WorldItem};
+pub use parser::{
+    parse_pact, parse_pact_dir, parse_pact_dir_with_registry, parse_pact_file,
+    Interface, InterfacePath, InterfaceTypes, Metadata, MetadataValue, PactExport,
+    PactFileError, PactImport, PactInterface, PactUse, TypeDef, TypeParam, TypeRegistry,
+    World, WorldItem,
+};
 pub use types::{Arena, Case, Field, Function, Param, Type, TypePath};
 
+pub use codegen::generate_rust;
 pub use compose::{ComposeError, ParsedModule, StaticComposer};

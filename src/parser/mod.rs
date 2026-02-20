@@ -1,11 +1,17 @@
-//! WIT+ Parser
+//! WIT+ and Pact Parser
 //!
-//! Parses a WIT+ dialect with recursion allowed by default.
+//! Parses WIT+ and Pact interface definitions.
 //! The module focuses on parsing; types are defined in `crate::types`.
 
+mod pact;
 mod wit;
 mod validation;
 
+pub use pact::{
+    parse_pact, parse_pact_dir, parse_pact_dir_with_registry, parse_pact_file,
+    InterfaceTypes, Metadata, MetadataValue, PactExport, PactFileError, PactImport,
+    PactInterface, PactUse, TypeParam, TypeRegistry,
+};
 pub use wit::{parse_interface, parse_world};
 pub use validation::{
     decode_with_schema, encode_with_schema, validate_graph_against_type, ValidationError,

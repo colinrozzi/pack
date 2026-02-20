@@ -8,6 +8,10 @@ description = "A package runtime with extended WIT support for recursive types"
 name = "pack"
 path = "src/main.rs"
 
+[[bin]]
+name = "pact"
+path = "src/bin/pact.rs"
+
 [dependencies]
 # CLI
 clap = { version = "4.0", features = ["derive"] }
