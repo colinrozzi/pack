@@ -1267,6 +1267,8 @@ pub fn import_from(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// # Syntax
 ///
+/// ## Inline syntax:
+///
 /// ```ignore
 /// pack_guest::pack_types! {
 ///     exports {
@@ -1290,11 +1292,33 @@ pub fn import_from(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///     }
 /// }
 /// ```
+///
+/// ## File-based syntax:
+///
+/// ```ignore
+/// pack_guest::pack_types!(file = "actor.types");
+/// ```
+///
+/// The file path is relative to the crate's `CARGO_MANIFEST_DIR`.
 #[proc_macro]
 pub fn pack_types(input: TokenStream) -> TokenStream {
     let input_str = input.to_string();
 
-    match parse_and_encode_metadata(&input_str) {
+    // Check if this is a file reference: file = "path"
+    let content = if input_str.trim().starts_with("file") {
+        match parse_file_reference(&input_str) {
+            Ok(c) => c,
+            Err(e) => {
+                return syn::Error::new(proc_macro2::Span::call_site(), e)
+                    .to_compile_error()
+                    .into();
+            }
+        }
+    } else {
+        input_str
+    };
+
+    match parse_and_encode_metadata(&content) {
         Ok(bytes) => {
             let byte_literals: Vec<proc_macro2::TokenStream> = bytes
                 .iter()
@@ -1325,6 +1349,37 @@ pub fn pack_types(input: TokenStream) -> TokenStream {
             .to_compile_error()
             .into(),
     }
+}
+
+/// Parse a file reference like `file = "path/to/file.types"` and read the file content.
+fn parse_file_reference(input: &str) -> Result<String, String> {
+    // Parse: file = "path"
+    let input = input.trim();
+
+    // Strip "file" prefix
+    let rest = input.strip_prefix("file")
+        .ok_or("expected 'file = \"path\"'")?
+        .trim();
+
+    // Strip "="
+    let rest = rest.strip_prefix('=')
+        .ok_or("expected '=' after 'file'")?
+        .trim();
+
+    // Strip quotes and get path
+    let path = rest.trim_matches('"');
+    if path.is_empty() {
+        return Err("file path cannot be empty".to_string());
+    }
+
+    // Get the manifest directory (crate root)
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
+        .map_err(|_| "CARGO_MANIFEST_DIR not set")?;
+
+    let full_path = std::path::Path::new(&manifest_dir).join(path);
+
+    std::fs::read_to_string(&full_path)
+        .map_err(|e| format!("failed to read '{}': {}", full_path.display(), e))
 }
 
 fn parse_and_encode_metadata(input: &str) -> Result<Vec<u8>, String> {

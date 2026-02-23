@@ -14,7 +14,7 @@
 //! - **`Value` kept** as dynamic escape hatch
 
 use serde::{Deserialize, Serialize};
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
 
 // ============================================================================
 // Arena - Core Scoping Structure

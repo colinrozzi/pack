@@ -1096,6 +1096,8 @@ fn parse_type(parser: &mut Parser) -> Result<Type, ParseError> {
         "char" => Ok(Type::Char),
         "string" => Ok(Type::String),
         "self" => Ok(Type::self_ref()),
+        "value" => Ok(Type::Value),
+        "_" => Ok(Type::Tuple(vec![])), // Unit type, used in result<_, E> for void ok type
         "list" => parse_generic_type(parser, |t| Type::list(t)),
         "option" => parse_generic_type(parser, |t| Type::option(t)),
         "tuple" => parse_tuple(parser),
@@ -1132,14 +1134,16 @@ fn parse_tuple(parser: &mut Parser) -> Result<Type, ParseError> {
 
 fn parse_result(parser: &mut Parser) -> Result<Type, ParseError> {
     parser.expect_symbol('<')?;
+    // For compatibility with pack-guest-macros, `_` maps to Bool for ok type
     let ok = if parser.accept_ident("_") {
-        Type::Unit
+        Type::Bool
     } else {
         parse_type(parser)?
     };
     parser.expect_symbol(',')?;
+    // For compatibility with pack-guest-macros, `_` maps to String for err type
     let err = if parser.accept_ident("_") {
-        Type::Unit
+        Type::String
     } else {
         parse_type(parser)?
     };

@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use crate::abi::{encode, Decoder, GraphBuffer, GraphCodec, Limits, NodeKind, Value};
-use crate::types::{Case, Field, Type, TypeDef, TypePath};
+use crate::types::{Case, Field, Type, TypeDef};
 use thiserror::Error;
 
 #[derive(Debug, Error)]

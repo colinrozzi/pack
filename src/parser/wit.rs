@@ -1,6 +1,11 @@
 //! Minimal WIT+ parser scaffold.
 //!
 //! Parses top-level type definitions and validates named references.
+//!
+//! # Deprecated
+//!
+//! This parser is deprecated in favor of the Pact parser (`parser::pact`).
+//! Use `parse_pact()` instead of `parse_interface()` for new code.
 
 use super::{
     Case, Field, Function, Interface, InterfaceExport, InterfaceImport, InterfacePath,
@@ -14,6 +19,7 @@ enum Token {
     Eof,
 }
 
+#[deprecated(since = "0.2.0", note = "Use parse_pact() instead")]
 pub fn parse_interface(src: &str) -> Result<Interface, ParseError> {
     let tokens = tokenize(src)?;
     let mut parser = Parser::new(tokens);
@@ -56,6 +62,7 @@ pub fn parse_interface(src: &str) -> Result<Interface, ParseError> {
 /// assert_eq!(world.imports.len(), 2);
 /// assert_eq!(world.exports.len(), 1);
 /// ```
+#[deprecated(since = "0.2.0", note = "Use parse_pact() instead")]
 pub fn parse_world(src: &str) -> Result<World, ParseError> {
     let tokens = tokenize(src)?;
     let mut parser = Parser::new(tokens);

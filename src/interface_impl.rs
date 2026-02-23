@@ -22,7 +22,8 @@
 //! builder.register_interface(&interface)?;
 //! ```
 
-use crate::metadata::{TypeHash, HASH_SELF_REF};
+use crate::metadata::TypeHash;
+use crate::parser::{MetadataValue, PactExport, PactInterface};
 use crate::types::Type;
 use sha2::Digest;
 
@@ -363,6 +364,56 @@ impl InterfaceImpl {
     pub fn signatures(&self) -> &[FuncSignature] {
         &self.functions
     }
+
+    /// Create an InterfaceImpl from a parsed PactInterface.
+    ///
+    /// This constructs the full interface name from the `@package` metadata and
+    /// the interface name, then extracts all exported function signatures.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let pact = parse_pact(include_str!("../../../pact/runtime.pact"))
+    ///     .expect("embedded runtime.pact should be valid");
+    /// let interface = InterfaceImpl::from_pact(&pact);
+    /// ```
+    pub fn from_pact(pact: &PactInterface) -> Self {
+        // Get package from metadata (e.g., "theater:simple")
+        let package = pact
+            .metadata
+            .iter()
+            .find(|m| m.name == "package")
+            .and_then(|m| match &m.value {
+                MetadataValue::String(s) => Some(s.as_str()),
+                _ => None,
+            })
+            .unwrap_or("");
+
+        // Construct full interface name: "package/interface-name"
+        let full_name = if package.is_empty() {
+            pact.name.clone()
+        } else {
+            format!("{}/{}", package, pact.name)
+        };
+
+        let mut interface = InterfaceImpl::new(full_name);
+
+        // Extract function signatures from exports
+        for export in &pact.exports {
+            if let PactExport::Function(func) = export {
+                let params: Vec<Type> = func.params.iter().map(|p| p.ty.clone()).collect();
+                let results: Vec<Type> = func.results.clone();
+
+                interface.functions.push(FuncSignature {
+                    name: func.name.clone(),
+                    params,
+                    results,
+                });
+            }
+        }
+
+        interface
+    }
 }
 
 // ============================================================================
@@ -526,5 +577,105 @@ mod tests {
             .func("foo", |x: i64| -> i64 { x });  // Different type!
 
         assert_ne!(interface1.hash(), interface2.hash());
+    }
+
+    #[test]
+    fn test_from_pact_basic() {
+        use crate::parser::parse_pact;
+
+        let src = r#"
+            interface runtime {
+                @package: string = "theater:simple"
+
+                exports {
+                    log: func(msg: string)
+                    get-chain: func() -> list<u8>
+                    shutdown: func(data: option<list<u8>>) -> result<_, string>
+                }
+            }
+        "#;
+
+        let pact = parse_pact(src).expect("should parse");
+        let interface = InterfaceImpl::from_pact(&pact);
+
+        assert_eq!(interface.name(), "theater:simple/runtime");
+        assert_eq!(interface.functions.len(), 3);
+
+        // Check function names
+        let names: Vec<&str> = interface.functions.iter().map(|f| f.name.as_str()).collect();
+        assert!(names.contains(&"log"));
+        assert!(names.contains(&"get-chain"));
+        assert!(names.contains(&"shutdown"));
+
+        // Check log function signature
+        let log_fn = interface.functions.iter().find(|f| f.name == "log").unwrap();
+        assert_eq!(log_fn.params.len(), 1);
+        assert!(matches!(log_fn.params[0], Type::String));
+        assert!(log_fn.results.is_empty());
+
+        // Check get-chain function signature
+        let get_chain_fn = interface.functions.iter().find(|f| f.name == "get-chain").unwrap();
+        assert!(get_chain_fn.params.is_empty());
+        assert_eq!(get_chain_fn.results.len(), 1);
+        assert!(matches!(get_chain_fn.results[0], Type::List(_)));
+    }
+
+    #[test]
+    fn test_from_pact_hash_determinism() {
+        use crate::parser::parse_pact;
+
+        let src = r#"
+            interface test {
+                @package: string = "my:package"
+
+                exports {
+                    add: func(a: s32, b: s32) -> s32
+                    subtract: func(a: s32, b: s32) -> s32
+                }
+            }
+        "#;
+
+        let pact1 = parse_pact(src).expect("should parse");
+        let pact2 = parse_pact(src).expect("should parse");
+
+        let interface1 = InterfaceImpl::from_pact(&pact1);
+        let interface2 = InterfaceImpl::from_pact(&pact2);
+
+        assert_eq!(interface1.hash(), interface2.hash());
+    }
+
+    #[test]
+    fn test_from_pact_matches_hand_coded() {
+        use crate::parser::parse_pact;
+
+        // Hand-coded interface
+        let hand_coded = InterfaceImpl::new("test:example/calculator")
+            .func("add", |_a: i32, _b: i32| -> i32 { 0 })
+            .func("subtract", |_a: i32, _b: i32| -> i32 { 0 });
+
+        // Pact-based interface
+        let src = r#"
+            interface calculator {
+                @package: string = "test:example"
+
+                exports {
+                    add: func(a: s32, b: s32) -> s32
+                    subtract: func(a: s32, b: s32) -> s32
+                }
+            }
+        "#;
+
+        let pact = parse_pact(src).expect("should parse");
+        let from_pact = InterfaceImpl::from_pact(&pact);
+
+        // Names should match
+        assert_eq!(hand_coded.name(), from_pact.name());
+
+        // Hashes should match
+        assert_eq!(
+            hand_coded.hash(),
+            from_pact.hash(),
+            "Hand-coded interface hash should match pact-based interface hash"
+        );
     }
 }

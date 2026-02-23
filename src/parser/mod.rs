@@ -12,6 +12,11 @@ pub use pact::{
     InterfaceTypes, Metadata, MetadataValue, PactExport, PactFileError, PactImport,
     PactInterface, PactUse, TypeParam, TypeRegistry,
 };
+
+// WIT+ parser is deprecated - use parse_pact() instead.
+// Kept for internal tests only.
+#[doc(hidden)]
+#[allow(deprecated)]
 pub use wit::{parse_interface, parse_world};
 pub use validation::{
     decode_with_schema, encode_with_schema, validate_graph_against_type, ValidationError,
