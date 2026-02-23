@@ -357,6 +357,7 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 /// Result of validating an export against WIT
+#[allow(dead_code)]
 struct WitValidationResult {
     /// The derived export name (from the WIT path)
     pub derived_name: Option<String>,

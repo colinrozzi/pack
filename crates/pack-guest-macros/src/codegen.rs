@@ -758,6 +758,7 @@ pub fn generate_world_types(world: &World) -> TokenStream {
 }
 
 /// Get export function info from a world
+#[allow(dead_code)]
 pub fn get_world_exports(world: &World) -> Vec<&Function> {
     let mut exports = Vec::new();
     for item in &world.exports {
@@ -775,6 +776,7 @@ pub fn get_world_exports(world: &World) -> Vec<&Function> {
 }
 
 /// Get import function info from a world
+#[allow(dead_code)]
 pub fn get_world_imports(world: &World) -> Vec<(&str, &Function)> {
     let mut imports = Vec::new();
     for item in &world.imports {
@@ -1042,6 +1044,7 @@ fn format_wit_type(ty: &Type) -> String {
 }
 
 /// Information about an expected export
+#[allow(dead_code)]
 pub struct ExportInfo {
     pub name: String,
     pub export_name: String,
@@ -1123,6 +1126,7 @@ pub fn generate_export_metadata(registry: &WitRegistry, world: &World) -> TokenS
 }
 
 /// Collect export information for the #[export] macro to use
+#[allow(dead_code)]
 pub fn collect_exports(registry: &WitRegistry, world: &World) -> Vec<ExportInfo> {
     let mut exports = Vec::new();
 

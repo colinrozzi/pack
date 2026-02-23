@@ -125,6 +125,7 @@ impl WitRegistry {
     }
 
     /// Check if a function exists (by simple name) in any export
+    #[allow(dead_code)]
     pub fn has_export_function(&self, func_name: &str) -> bool {
         for world in &self.worlds {
             for export in &world.exports {
@@ -362,6 +363,7 @@ pub enum WorldItem {
 
 /// A parsed WIT+ world
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct World {
     pub name: String,
     pub types: Vec<TypeDef>,
@@ -371,6 +373,7 @@ pub struct World {
 
 /// Parse error
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct ParseError {
     pub message: String,
     pub span: Span,
@@ -734,7 +737,7 @@ fn parse_interface(parser: &mut Parser) -> Result<Interface, ParseError> {
 
         // Otherwise, try to parse a function
         // Format: name: func(...) -> ...
-        if let (Token::Ident(func_name), Token::Symbol(':')) =
+        if let (Token::Ident(_func_name), Token::Symbol(':')) =
             (parser.peek().clone(), parser.peek_n(1).clone())
         {
             let func_name = parser.expect_ident()?;
