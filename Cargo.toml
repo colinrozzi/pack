@@ -34,6 +34,9 @@ wasm-encoder = "0.219"
 # Hashing for interface compatibility
 sha2 = "0.10"
 
+# Re-export pack-abi types for unified Value/FromValue/ConversionError
+pack-abi = { path = "crates/pack-abi", features = ["std", "serde"] }
+
 [dev-dependencies]
 wat = "1.0"  # For writing test modules in WAT
 tokio = { version = "1.0", features = ["rt", "macros"] }  # For async tests

@@ -6,7 +6,11 @@
 
 mod value;
 
-pub use value::{PackType, Value, ValueType};
+// Re-export PackType from local module (maps Rust types to Pack types)
+pub use value::PackType;
+
+// Re-export Value types from pack_abi for unified type system
+pub use pack_abi::{ConversionError, FromValue, Value, ValueType};
 
 use std::collections::{HashMap, HashSet};
 

@@ -34,7 +34,15 @@ pub extern crate alloc;
 pub use pack_guest_macros::{export, import, import_from, pack_types, wit, world};
 
 // Re-export useful types from pack-abi
-pub use pack_abi::{decode, encode, ConversionError, Value, ValueType};
+pub use pack_abi::{decode, encode, ConversionError, FromValue, Value, ValueType};
+
+// Re-export derive macro
+#[cfg(feature = "derive")]
+pub use pack_derive::GraphValue;
+
+// Re-export pack-abi as composite_abi for derive macro compatibility
+// The derive macro generates code that references composite_abi
+pub use pack_abi as composite_abi;
 
 // Re-export dlmalloc for the setup_guest macro
 #[doc(hidden)]

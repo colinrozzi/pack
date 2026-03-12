@@ -21,11 +21,16 @@ struct ExportArgs {
     name: Option<String>,
     /// WIT function name to validate/match against (e.g., "init")
     wit: Option<String>,
+    /// State type for Theater actor functions (e.g., "MyState")
+    /// When set, the first parameter is treated as state that gets automatically
+    /// extracted from Option<Value> and the return tuple's first element is
+    /// wrapped back as new state.
+    state: Option<String>,
 }
 
 impl Parse for ExportArgs {
     fn parse(input: ParseStream) -> syn::Result<Self> {
-        let mut args = ExportArgs { name: None, wit: None };
+        let mut args = ExportArgs { name: None, wit: None, state: None };
 
         if input.is_empty() {
             return Ok(args);
@@ -39,10 +44,11 @@ impl Parse for ExportArgs {
             match ident.to_string().as_str() {
                 "name" => args.name = Some(lit.value()),
                 "wit" => args.wit = Some(lit.value()),
+                "state" => args.state = Some(lit.value()),
                 other => {
                     return Err(syn::Error::new(
                         ident.span(),
-                        format!("unexpected attribute `{}`, expected `name` or `wit`", other),
+                        format!("unexpected attribute `{}`, expected `name`, `wit`, or `state`", other),
                     ));
                 }
             }
@@ -71,6 +77,12 @@ impl Parse for ExportArgs {
 /// extracts typed parameters from the input and wraps the result. Parameters must
 /// implement `TryFrom<Value>` and return type must implement `Into<Value>`.
 ///
+/// **State mode** (with `state` attribute): For Theater actors, the macro handles
+/// state extraction and wrapping automatically. The first parameter is the state type,
+/// and the return must be `Result<(StateType, Output), Error>`. The macro extracts
+/// state from `Option<Value>`, passes it to your function, and wraps the new state
+/// back for the runtime.
+///
 /// # Example
 ///
 /// ```ignore
@@ -84,16 +96,25 @@ impl Parse for ExportArgs {
 /// }
 ///
 /// // Typed mode with WIT validation
-/// // The macro extracts the state param and wraps the Result
-/// #[export(wit = "theater:simple/actor.init")]
-/// fn init(state: Option<Vec<u8>>) -> Result<(Option<Vec<u8>>,), String> {
-///     Ok((state,))
-/// }
-///
-/// // Multiple typed parameters
 /// #[export(wit = "my:package/geo.translate")]
 /// fn translate(p: Point, dx: i32, dy: i32) -> Point {
 ///     Point { x: p.x + dx, y: p.y + dy }
+/// }
+///
+/// // State mode for Theater actors - state automatically extracted/wrapped
+/// #[derive(Clone, Default, IntoValue, FromValue)]
+/// struct MyState { count: i32 }
+///
+/// #[export(name = "theater:simple/actor.init", state = "MyState")]
+/// fn init(state: MyState) -> Result<(MyState, ()), String> {
+///     Ok((state, ()))
+/// }
+///
+/// #[export(name = "theater:simple/counter.increment", state = "MyState")]
+/// fn increment(state: MyState, amount: i32) -> Result<(MyState, i32), String> {
+///     let mut new_state = state;
+///     new_state.count += amount;
+///     Ok((new_state, new_state.count))
 /// }
 /// ```
 ///
@@ -216,7 +237,141 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
     });
 
     // Generate the parameter extraction and function call based on mode
-    let call_body = if is_value_mode {
+    let call_body = if args.state.is_some() {
+        // State mode for Theater actors
+        // Input: Tuple([Option<state_value>, params...])
+        // Output: Result<Tuple([Option<new_state>, output]), error>
+
+        if param_names.is_empty() {
+            return syn::Error::new_spanned(
+                &input_fn.sig,
+                "state mode requires at least one parameter (the state)"
+            ).to_compile_error().into();
+        }
+
+        let state_name = &param_names[0];
+        let state_type = &param_types[0];
+
+        // Remaining parameters (after state)
+        let other_param_names: Vec<_> = param_names.iter().skip(1).collect();
+        let other_param_types: Vec<_> = param_types.iter().skip(1).collect();
+
+        // Generate extraction for other parameters
+        let param_extractions = if other_param_names.is_empty() {
+            quote! {}
+        } else if other_param_names.len() == 1 {
+            let name = &other_param_names[0];
+            let ty = &other_param_types[0];
+            quote! {
+                let #name: #ty = match params_value.try_into() {
+                    Ok(v) => v,
+                    Err(_) => return Err("failed to convert parameter"),
+                };
+            }
+        } else {
+            let indices: Vec<_> = (0..other_param_names.len()).collect();
+            let extractions = other_param_names.iter().zip(other_param_types.iter()).zip(indices.iter()).map(|((name, ty), idx)| {
+                quote! {
+                    let #name: #ty = match param_items.get(#idx).cloned() {
+                        Some(v) => match v.try_into() {
+                            Ok(converted) => converted,
+                            Err(_) => return Err("failed to convert parameter"),
+                        },
+                        None => return Err("missing parameter in tuple"),
+                    };
+                }
+            });
+            quote! {
+                let param_items = match params_value {
+                    pack_guest::Value::Tuple(items) => items,
+                    _ => return Err("expected tuple of parameters"),
+                };
+                #(#extractions)*
+            }
+        };
+
+        let call_args = param_names.iter();
+
+        quote! {
+            // State mode: Input is Tuple([Option<state>, params])
+            let (state_opt, params_value) = match value {
+                pack_guest::Value::Tuple(mut items) if items.len() >= 1 => {
+                    let state_opt = items.remove(0);
+                    let params = if items.len() == 1 {
+                        items.remove(0)
+                    } else if items.is_empty() {
+                        pack_guest::Value::Tuple(pack_guest::__alloc::vec![])
+                    } else {
+                        pack_guest::Value::Tuple(items)
+                    };
+                    (state_opt, params)
+                },
+                _ => return Err("expected tuple with state and params"),
+            };
+
+            // Extract state from Option<Value>
+            let #state_name: #state_type = match state_opt {
+                pack_guest::Value::Option { value: Some(inner), .. } => {
+                    match (*inner).try_into() {
+                        Ok(v) => v,
+                        Err(_) => return Err("failed to convert state"),
+                    }
+                },
+                pack_guest::Value::Option { value: None, .. } => {
+                    // No state yet, use Default
+                    Default::default()
+                },
+                other => {
+                    // Try direct conversion (state might not be wrapped in Option)
+                    match other.try_into() {
+                        Ok(v) => v,
+                        Err(_) => return Err("failed to convert state (expected Option<state>)"),
+                    }
+                }
+            };
+
+            // Extract other parameters
+            #param_extractions
+
+            // Call user's function
+            let result = #inner_fn_name(#(#call_args),*);
+
+            // Handle Result: convert (NewState, Output) to proper Value format
+            match result {
+                Ok((new_state, output)) => {
+                    // Wrap new state in Option
+                    let state_value: pack_guest::Value = new_state.into();
+                    let state_opt = pack_guest::Value::Option {
+                        inner_type: state_value.infer_type(),
+                        value: Some(pack_guest::__alloc::boxed::Box::new(state_value)),
+                    };
+                    let output_value: pack_guest::Value = output.into();
+
+                    // Return Result<Tuple([Option<state>, output]), _>
+                    Ok(pack_guest::Value::Result {
+                        ok_type: pack_guest::ValueType::Tuple(pack_guest::__alloc::vec![
+                            pack_guest::ValueType::Option(pack_guest::__alloc::boxed::Box::new(pack_guest::ValueType::Bool)),
+                            pack_guest::ValueType::Bool,
+                        ]),
+                        err_type: pack_guest::ValueType::String,
+                        value: Ok(pack_guest::__alloc::boxed::Box::new(
+                            pack_guest::Value::Tuple(pack_guest::__alloc::vec![state_opt, output_value])
+                        )),
+                    })
+                },
+                Err(e) => {
+                    // Return error
+                    Ok(pack_guest::Value::Result {
+                        ok_type: pack_guest::ValueType::Bool,
+                        err_type: pack_guest::ValueType::String,
+                        value: Err(pack_guest::__alloc::boxed::Box::new(
+                            pack_guest::Value::String(e.into())
+                        )),
+                    })
+                }
+            }
+        }
+    } else if is_value_mode {
         // Value mode - pass the Value directly (backward compatible)
         let param_name = &param_names[0];
         let param_type = &param_types[0];
@@ -775,9 +930,10 @@ pub fn import(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     // Build the return value handling
+    // Use FromValue::from_value() to support nested Option/Result types
     let return_handling = if has_return {
         quote! {
-            match result.try_into() {
+            match pack_guest::FromValue::from_value(result) {
                 Ok(v) => v,
                 Err(_) => panic!("failed to convert import result"),
             }

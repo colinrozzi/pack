@@ -8,6 +8,7 @@ description = "Graph-encoded ABI for Pack runtime - supports recursive types"
 default = ["std"]
 std = []
 derive = ["pack-derive"]
+serde = ["dep:serde"]
 
 [dependencies]
 # no_std compatible hash map
@@ -16,3 +17,5 @@ hashbrown = "0.14"
 sha2 = { version = "0.10", default-features = false }
 # Optional derive macro
 pack-derive = { path = "../pack-derive", optional = true }
+# Optional serde support for host-side usage
+serde = { version = "1.0", default-features = false, features = ["derive", "alloc"], optional = true }

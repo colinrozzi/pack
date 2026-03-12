@@ -6,6 +6,7 @@ use alloc::vec::Vec;
 
 /// Runtime type representation for CGRF v2
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ValueType {
     Bool,
     U8,
@@ -31,6 +32,7 @@ pub enum ValueType {
 
 /// A runtime value that can be passed across package boundaries
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Value {
     // Primitives
     Bool(bool),
@@ -423,6 +425,13 @@ impl<T: TryFrom<Value, Error = ConversionError>> FromValue for T {
     }
 }
 
+/// FromValue implementation for Value itself (identity conversion)
+impl FromValue for Value {
+    fn from_value(v: Value) -> Result<Self, ConversionError> {
+        Ok(v)
+    }
+}
+
 /// FromValue implementation for Option<T> - uses FromValue bound to avoid coherence issues
 impl<T: FromValue> FromValue for Option<T> {
     fn from_value(v: Value) -> Result<Self, ConversionError> {
@@ -433,6 +442,37 @@ impl<T: FromValue> FromValue for Option<T> {
                 Ok(Some(value))
             }
             other => Err(ConversionError::ExpectedOption(format!("{:?}", other))),
+        }
+    }
+}
+
+/// FromValue implementation for Result<T, E> - uses FromValue bounds to support nested Option types
+impl<T: FromValue, E: FromValue> FromValue for core::result::Result<T, E> {
+    fn from_value(v: Value) -> Result<Self, ConversionError> {
+        match v {
+            Value::Result { value: Ok(inner), .. } => {
+                let value = T::from_value(*inner)
+                    .map_err(|e| ConversionError::PayloadError(Box::new(e)))?;
+                Ok(Ok(value))
+            }
+            Value::Result { value: Err(inner), .. } => {
+                let value = E::from_value(*inner)
+                    .map_err(|e| ConversionError::PayloadError(Box::new(e)))?;
+                Ok(Err(value))
+            }
+            // Also support legacy variant encoding for backwards compatibility
+            Value::Variant { tag: 0, payload, .. } if !payload.is_empty() => {
+                let value = T::from_value(payload.into_iter().next().unwrap())
+                    .map_err(|e| ConversionError::PayloadError(Box::new(e)))?;
+                Ok(Ok(value))
+            }
+            Value::Variant { tag: 1, payload, .. } if !payload.is_empty() => {
+                let value = E::from_value(payload.into_iter().next().unwrap())
+                    .map_err(|e| ConversionError::PayloadError(Box::new(e)))?;
+                Ok(Err(value))
+            }
+            Value::Variant { tag, .. } => Err(ConversionError::UnknownTag { tag, max: 1 }),
+            other => Err(ConversionError::ExpectedVariant(format!("{:?}", other))),
         }
     }
 }
@@ -596,37 +636,8 @@ impl<T: Into<Value>, E: Into<Value>> From<core::result::Result<T, E>> for Value 
     }
 }
 
-impl<T: TryFrom<Value, Error = ConversionError>, E: TryFrom<Value, Error = ConversionError>>
-    TryFrom<Value> for core::result::Result<T, E>
-{
-    type Error = ConversionError;
-    fn try_from(v: Value) -> core::result::Result<Self, Self::Error> {
-        match v {
-            Value::Result { value: Ok(inner), .. } => {
-                let value = T::try_from(*inner)
-                    .map_err(|e| ConversionError::PayloadError(Box::new(e)))?;
-                Ok(Ok(value))
-            }
-            Value::Result { value: Err(inner), .. } => {
-                let value = E::try_from(*inner)
-                    .map_err(|e| ConversionError::PayloadError(Box::new(e)))?;
-                Ok(Err(value))
-            }
-            // Also support legacy variant encoding for backwards compatibility
-            Value::Variant { tag: 0, payload, .. } if !payload.is_empty() => {
-                let value = T::try_from(payload.into_iter().next().unwrap())
-                    .map_err(|e| ConversionError::PayloadError(Box::new(e)))?;
-                Ok(Ok(value))
-            }
-            Value::Variant { tag: 1, payload, .. } if !payload.is_empty() => {
-                let value = E::try_from(payload.into_iter().next().unwrap())
-                    .map_err(|e| ConversionError::PayloadError(Box::new(e)))?;
-                Ok(Err(value))
-            }
-            Value::Variant { tag, .. } => Err(ConversionError::UnknownTag { tag, max: 1 }),
-            other => Err(ConversionError::ExpectedVariant(format!("{:?}", other))),
-        }
-    }
-}
+// Note: TryFrom<Value> for Result<T, E> is NOT implemented directly.
+// Use FromValue::from_value() instead, which supports nested Option types.
+// The FromValue impl for Result<T, E> is above with the other FromValue impls.
 
 use alloc::format;
