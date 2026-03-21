@@ -9,8 +9,8 @@ mod validation;
 
 pub use pact::{
     parse_pact, parse_pact_dir, parse_pact_dir_with_registry, parse_pact_file,
-    InterfaceTypes, Metadata, MetadataValue, PactExport, PactFileError, PactImport,
-    PactInterface, PactUse, TypeParam, TypeRegistry,
+    InterfaceAlias, InterfaceTypes, Metadata, MetadataValue, PactExport, PactFileError,
+    PactImport, PactInterface, PactUse, ResolvedScope, ResolvedUse, TypeParam, TypeRegistry,
 };
 
 // WIT+ parser is deprecated - use parse_pact() instead.

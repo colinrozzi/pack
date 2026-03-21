@@ -56,6 +56,7 @@ pub mod interface_impl;
 pub mod metadata;
 pub mod parser;
 pub mod runtime;
+pub mod transform;
 pub mod types;
 
 pub use abi::{decode, encode};
@@ -80,10 +81,11 @@ pub use runtime::{
 };
 pub use parser::{
     parse_pact, parse_pact_dir, parse_pact_dir_with_registry, parse_pact_file,
-    Interface, InterfacePath, InterfaceTypes, Metadata, MetadataValue, PactExport,
-    PactFileError, PactImport, PactInterface, PactUse, TypeDef, TypeParam, TypeRegistry,
-    World, WorldItem,
+    Interface, InterfaceAlias, InterfacePath, InterfaceTypes, Metadata, MetadataValue, PactExport,
+    PactFileError, PactImport, PactInterface, PactUse, ResolvedScope, ResolvedUse, TypeDef,
+    TypeParam, TypeRegistry, World, WorldItem,
 };
+pub use transform::{InterfaceTransform, RpcTransform, TransformRegistry};
 pub use types::{Arena, Case, Field, Function, Param, Type, TypePath};
 
 pub use codegen::generate_rust;

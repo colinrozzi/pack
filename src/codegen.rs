@@ -243,7 +243,8 @@ fn type_to_rust(ty: &Type) -> String {
 // ============================================================================
 
 fn to_pascal_case(s: &str) -> String {
-    s.split(|c| c == '-' || c == '_')
+    s.split(|c| c == '-' || c == '_' || c == '(' || c == ')' || c == '<' || c == '>' || c == ',')
+        .filter(|part| !part.is_empty())
         .map(|part| {
             let mut chars = part.chars();
             match chars.next() {
@@ -259,8 +260,10 @@ fn to_snake_case(s: &str) -> String {
     let mut prev_lower = false;
 
     for c in s.chars() {
-        if c == '-' {
-            result.push('_');
+        if c == '-' || c == '(' || c == ')' || c == '<' || c == '>' || c == ',' {
+            if !result.is_empty() && !result.ends_with('_') {
+                result.push('_');
+            }
             prev_lower = false;
         } else if c.is_uppercase() {
             if prev_lower {
@@ -272,6 +275,11 @@ fn to_snake_case(s: &str) -> String {
             result.push(c);
             prev_lower = c.is_lowercase();
         }
+    }
+
+    // Trim trailing underscore
+    if result.ends_with('_') {
+        result.pop();
     }
 
     result
@@ -363,5 +371,23 @@ mod tests {
         assert!(code.contains("pub const READ: Self"));
         assert!(code.contains("pub const WRITE: Self"));
         assert!(code.contains("fn contains(self, other: Self)"));
+    }
+
+    #[test]
+    fn test_name_conversions() {
+        // Basic conversions
+        assert_eq!(to_pascal_case("my-interface"), "MyInterface");
+        assert_eq!(to_pascal_case("my_interface"), "MyInterface");
+        assert_eq!(to_snake_case("MyInterface"), "my_interface");
+
+        // Transform names: rpc(calculator) -> RpcCalculator
+        assert_eq!(to_pascal_case("rpc(calculator)"), "RpcCalculator");
+        assert_eq!(to_snake_case("rpc(calculator)"), "rpc_calculator");
+
+        // Nested transforms: traced(rpc(calculator))
+        assert_eq!(to_pascal_case("traced(rpc(calculator))"), "TracedRpcCalculator");
+
+        // Generic-style: list<string>
+        assert_eq!(to_pascal_case("list<string>"), "ListString");
     }
 }

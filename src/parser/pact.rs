@@ -35,6 +35,8 @@ pub struct PactInterface {
     pub exports: Vec<PactExport>,
     /// Nested interfaces
     pub children: Vec<PactInterface>,
+    /// Interface aliases (transformed interfaces)
+    pub aliases: Vec<InterfaceAlias>,
 }
 
 impl PactInterface {
@@ -48,6 +50,7 @@ impl PactInterface {
             imports: Vec::new(),
             exports: Vec::new(),
             children: Vec::new(),
+            aliases: Vec::new(),
         }
     }
 
@@ -177,10 +180,18 @@ pub struct TypeParam {
 }
 
 /// A use declaration for bringing types into scope.
+///
+/// Supports both direct interface imports and transformed interfaces:
+/// - `use types.{chain, actor-id}` - import specific items from interface
+/// - `use logger` - import all items from interface
+/// - `use rpc(calculator)` - import transformed interface
 #[derive(Debug, Clone)]
 pub struct PactUse {
-    /// Source interface name
+    /// Source interface name, or transform name if transform_args is non-empty
     pub interface: String,
+    /// Transform arguments (e.g., ["calculator"] for rpc(calculator))
+    /// When non-empty, `interface` is the transform name
+    pub transform_args: Vec<String>,
     /// Items to bring into scope (empty means all)
     pub items: Vec<String>,
 }
@@ -203,6 +214,19 @@ pub enum PactExport {
     Function(Function),
     /// Export a type
     Type(TypeDef),
+}
+
+/// An interface alias, representing a transformed interface.
+///
+/// Example: `interface calc-client = rpc(calculator)`
+#[derive(Debug, Clone)]
+pub struct InterfaceAlias {
+    /// The alias name (e.g., "calc-client")
+    pub name: String,
+    /// The transform to apply (e.g., "rpc")
+    pub transform: String,
+    /// Arguments to the transform (e.g., ["calculator"])
+    pub args: Vec<String>,
 }
 
 // ============================================================================
@@ -715,6 +739,140 @@ impl TypeRegistry {
 
         Ok(scope)
     }
+
+    /// Resolve a `use` declaration with transform support.
+    ///
+    /// If the use declaration is a transform (e.g., `use rpc(calculator)`),
+    /// applies the transform to the base interface and returns types from
+    /// the transformed interface.
+    pub fn resolve_use_with_transforms(
+        &self,
+        use_decl: &PactUse,
+        transforms: &crate::transform::TransformRegistry,
+    ) -> Result<ResolvedUse, String> {
+        if use_decl.transform_args.is_empty() {
+            // Normal use declaration
+            let types = self.resolve_use(use_decl)?;
+            Ok(ResolvedUse::Types(types))
+        } else {
+            // Transform use declaration: use rpc(calculator)
+            // interface field is the transform name, transform_args[0] is the base interface
+            let transform_name = &use_decl.interface;
+            let base_interface_name = use_decl.transform_args.first()
+                .ok_or_else(|| "Transform requires at least one argument".to_string())?;
+
+            let transform = transforms.get(transform_name)
+                .ok_or_else(|| format!("Unknown transform: {}", transform_name))?;
+
+            let base_interface = self.get_interface(base_interface_name)
+                .ok_or_else(|| format!("Unknown interface: {}", base_interface_name))?;
+
+            let transformed = transform.transform(base_interface);
+
+            // If items are specified, filter to just those
+            if use_decl.items.is_empty() {
+                Ok(ResolvedUse::TransformedInterface(transformed))
+            } else {
+                // Return specific types from the transformed interface
+                let mut types = Vec::new();
+                for item in &use_decl.items {
+                    let typedef = transformed.types.iter()
+                        .find(|t| t.name() == item)
+                        .ok_or_else(|| format!("Type {} not found in transformed interface", item))?;
+                    types.push((item.clone(), typedef.clone()));
+                }
+                Ok(ResolvedUse::Types(types))
+            }
+        }
+    }
+
+    /// Create a resolved scope with transform support.
+    ///
+    /// Like `resolve_scope`, but handles transformed interfaces from `use` declarations.
+    pub fn resolve_scope_with_transforms(
+        &self,
+        interface: &PactInterface,
+        transforms: &crate::transform::TransformRegistry,
+    ) -> Result<ResolvedScope, String> {
+        let mut scope = ResolvedScope::default();
+
+        // Add the interface's own types
+        for typedef in &interface.types {
+            scope.types.insert(typedef.name().to_string(), typedef.clone());
+        }
+
+        // Resolve each `use` and add those types/interfaces
+        for use_decl in &interface.uses {
+            match self.resolve_use_with_transforms(use_decl, transforms)? {
+                ResolvedUse::Types(types) => {
+                    for (name, typedef) in types {
+                        scope.types.insert(name, typedef);
+                    }
+                }
+                ResolvedUse::TransformedInterface(iface) => {
+                    // Add all types from the transformed interface
+                    for typedef in &iface.types {
+                        scope.types.insert(typedef.name().to_string(), typedef.clone());
+                    }
+                    // Store the transformed interface for function resolution
+                    scope.transformed_interfaces.push(iface);
+                }
+            }
+        }
+
+        // Resolve interface aliases
+        for alias in &interface.aliases {
+            let transform = transforms.get(&alias.transform)
+                .ok_or_else(|| format!("Unknown transform: {}", alias.transform))?;
+
+            let base_name = alias.args.first()
+                .ok_or_else(|| format!("Interface alias {} requires a base interface", alias.name))?;
+
+            let base_interface = self.get_interface(base_name)
+                .ok_or_else(|| format!("Unknown interface: {}", base_name))?;
+
+            let transformed = transform.transform(base_interface);
+            scope.aliased_interfaces.insert(alias.name.clone(), transformed);
+        }
+
+        Ok(scope)
+    }
+
+    /// Get a transformed interface by applying a transform to a base interface.
+    pub fn get_transformed_interface(
+        &self,
+        transform_name: &str,
+        base_interface_name: &str,
+        transforms: &crate::transform::TransformRegistry,
+    ) -> Result<PactInterface, String> {
+        let transform = transforms.get(transform_name)
+            .ok_or_else(|| format!("Unknown transform: {}", transform_name))?;
+
+        let base_interface = self.get_interface(base_interface_name)
+            .ok_or_else(|| format!("Unknown interface: {}", base_interface_name))?;
+
+        Ok(transform.transform(base_interface))
+    }
+}
+
+/// Result of resolving a use declaration.
+#[derive(Debug, Clone)]
+pub enum ResolvedUse {
+    /// A list of types to bring into scope
+    Types(Vec<(String, TypeDef)>),
+    /// A transformed interface (all exports wrapped)
+    TransformedInterface(PactInterface),
+}
+
+/// A resolved scope including types and transformed interfaces.
+#[derive(Debug, Clone, Default)]
+pub struct ResolvedScope {
+    /// Types in scope (including imported and transformed)
+    pub types: HashMap<String, TypeDef>,
+    /// Transformed interfaces from `use rpc(calc)` style imports
+    pub transformed_interfaces: Vec<PactInterface>,
+    /// Interface aliases from `interface foo = rpc(bar)`
+    pub aliased_interfaces: HashMap<String, PactInterface>,
 }
 
 /// Parse a directory and build both the interface tree and type registry.
@@ -735,6 +893,32 @@ fn parse_interface(parser: &mut Parser) -> Result<PactInterface, ParseError> {
     parser.expect_symbol('}')?;
 
     Ok(interface)
+}
+
+/// Parse an interface alias: `transform(arg1, arg2, ...)`
+///
+/// Called after `interface name =` has been parsed.
+fn parse_interface_alias(parser: &mut Parser, name: String) -> Result<InterfaceAlias, ParseError> {
+    let transform = parser.expect_ident()?;
+    parser.expect_symbol('(')?;
+
+    let mut args = Vec::new();
+    while !parser.accept_symbol(')') {
+        let arg = parser.expect_ident()?;
+        args.push(arg);
+        if !parser.accept_symbol(',') {
+            // Allow trailing comma or no comma before )
+            if !matches!(parser.peek(), Token::Symbol(')')) {
+                parser.expect_symbol(',')?;
+            }
+        }
+    }
+
+    Ok(InterfaceAlias {
+        name,
+        transform,
+        args,
+    })
 }
 
 fn parse_interface_body(parser: &mut Parser, interface: &mut PactInterface) -> Result<(), ParseError> {
@@ -781,8 +965,22 @@ fn parse_interface_body(parser: &mut Parser, interface: &mut PactInterface) -> R
                 parser.expect_symbol('}')?;
             }
             "interface" => {
-                let child = parse_interface(parser)?;
-                interface.children.push(child);
+                // Could be:
+                // - interface name { ... }     (nested interface)
+                // - interface name = rpc(calc) (interface alias)
+                let name = parser.expect_ident()?;
+                if parser.accept_symbol('=') {
+                    // Interface alias: interface name = transform(args)
+                    let alias = parse_interface_alias(parser, name)?;
+                    interface.aliases.push(alias);
+                } else {
+                    // Normal nested interface
+                    let mut child = PactInterface::new(name);
+                    parser.expect_symbol('{')?;
+                    parse_interface_body(parser, &mut child)?;
+                    parser.expect_symbol('}')?;
+                    interface.children.push(child);
+                }
             }
             "use" => {
                 let use_decl = parse_use(parser)?;
@@ -950,11 +1148,29 @@ fn parse_flags(parser: &mut Parser) -> Result<TypeDef, ParseError> {
 }
 
 fn parse_use(parser: &mut Parser) -> Result<PactUse, ParseError> {
-    // Parse: use <interface>.{item1, item2, ...}
-    // Or:    use <interface>
-    let interface_name = parser.expect_ident()?;
+    // Parse variants:
+    // - use <interface>
+    // - use <interface>.{item1, item2, ...}
+    // - use <transform>(<arg1>, <arg2>, ...)
+    // - use <transform>(<arg1>, ...).{item1, item2, ...}
+    let name = parser.expect_ident()?;
 
+    let mut transform_args = Vec::new();
     let mut items = Vec::new();
+
+    // Check for transform arguments: (arg1, arg2, ...)
+    if parser.accept_symbol('(') {
+        while !parser.accept_symbol(')') {
+            let arg = parser.expect_ident()?;
+            transform_args.push(arg);
+            if !parser.accept_symbol(',') {
+                // Allow trailing comma or no comma before )
+                if !matches!(parser.peek(), Token::Symbol(')')) {
+                    parser.expect_symbol(',')?;
+                }
+            }
+        }
+    }
 
     // Check for dot-delimited items: .{item1, item2}
     if parser.accept_symbol('.') {
@@ -972,7 +1188,8 @@ fn parse_use(parser: &mut Parser) -> Result<PactUse, ParseError> {
     }
 
     Ok(PactUse {
-        interface: interface_name,
+        interface: name,
+        transform_args,
         items,
     })
 }
@@ -1587,5 +1804,132 @@ mod tests {
         assert!(client_scope.contains_key("channel-accept"));
         let channel_accept = client_scope.get("channel-accept").unwrap();
         assert!(matches!(channel_accept, TypeDef::Record { .. }));
+    }
+
+    #[test]
+    fn resolve_use_with_transforms() {
+        use crate::transform::TransformRegistry;
+
+        let calc_src = r#"
+            interface calculator {
+                exports {
+                    add: func(a: s32, b: s32) -> s32
+                }
+            }
+        "#;
+
+        let caller_src = r#"
+            interface caller {
+                use rpc(calculator)
+            }
+        "#;
+
+        let calc_iface = parse_pact(calc_src).expect("parse");
+        let caller_iface = parse_pact(caller_src).expect("parse");
+
+        let mut root = PactInterface::new("root");
+        root.children.push(calc_iface);
+        root.children.push(caller_iface);
+
+        let type_registry = TypeRegistry::from_interface(&root);
+        let transform_registry = TransformRegistry::with_builtins();
+
+        // Resolve the caller's scope with transforms
+        let caller = type_registry.get_interface("caller").unwrap();
+        let scope = type_registry.resolve_scope_with_transforms(caller, &transform_registry)
+            .expect("resolve scope");
+
+        // Should have rpc-error type from the transform
+        assert!(scope.types.contains_key("rpc-error"));
+
+        // Should have one transformed interface
+        assert_eq!(scope.transformed_interfaces.len(), 1);
+        assert_eq!(scope.transformed_interfaces[0].name, "rpc(calculator)");
+    }
+
+    #[test]
+    fn resolve_interface_alias_with_transforms() {
+        use crate::transform::TransformRegistry;
+
+        let calc_src = r#"
+            interface calculator {
+                exports {
+                    add: func(a: s32, b: s32) -> s32
+                }
+            }
+        "#;
+
+        let aliases_src = r#"
+            interface aliases {
+                interface calc-client = rpc(calculator)
+            }
+        "#;
+
+        let calc_iface = parse_pact(calc_src).expect("parse");
+        let aliases_iface = parse_pact(aliases_src).expect("parse");
+
+        let mut root = PactInterface::new("root");
+        root.children.push(calc_iface);
+        root.children.push(aliases_iface);
+
+        let type_registry = TypeRegistry::from_interface(&root);
+        let transform_registry = TransformRegistry::with_builtins();
+
+        // Resolve the aliases interface scope with transforms
+        let aliases = type_registry.get_interface("aliases").unwrap();
+        let scope = type_registry.resolve_scope_with_transforms(aliases, &transform_registry)
+            .expect("resolve scope");
+
+        // Should have calc-client alias
+        assert!(scope.aliased_interfaces.contains_key("calc-client"));
+
+        let calc_client = &scope.aliased_interfaces["calc-client"];
+        assert_eq!(calc_client.name, "rpc(calculator)");
+
+        // Should have rpc-error type
+        assert!(calc_client.types.iter().any(|t| t.name() == "rpc-error"));
+    }
+
+    #[test]
+    fn get_transformed_interface() {
+        use crate::transform::TransformRegistry;
+
+        let calc_src = r#"
+            interface calculator {
+                exports {
+                    add: func(a: s32, b: s32) -> s32
+                    divide: func(a: s32, b: s32) -> result<s32, string>
+                }
+            }
+        "#;
+
+        let calc_iface = parse_pact(calc_src).expect("parse");
+        let mut root = PactInterface::new("root");
+        root.children.push(calc_iface);
+
+        let type_registry = TypeRegistry::from_interface(&root);
+        let transform_registry = TransformRegistry::with_builtins();
+
+        let transformed = type_registry.get_transformed_interface(
+            "rpc",
+            "calculator",
+            &transform_registry
+        ).expect("get transformed");
+
+        assert_eq!(transformed.name, "rpc(calculator)");
+
+        // Check exports are wrapped
+        assert_eq!(transformed.exports.len(), 2);
+        for export in &transformed.exports {
+            if let PactExport::Function(func) = export {
+                assert_eq!(func.results.len(), 1);
+                match &func.results[0] {
+                    Type::Result { err, .. } => {
+                        assert_eq!(**err, Type::named("rpc-error"));
+                    }
+                    _ => panic!("Expected result type"),
+                }
+            }
+        }
     }
 }

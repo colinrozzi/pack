@@ -40,3 +40,7 @@ pack-abi = { path = "crates/pack-abi", features = ["std", "serde"] }
 [dev-dependencies]
 wat = "1.0"  # For writing test modules in WAT
 tokio = { version = "1.0", features = ["rt", "macros"] }  # For async tests
+
+[[example]]
+name = "transforms"
+path = "examples/transforms/main.rs"
