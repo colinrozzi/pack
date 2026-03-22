@@ -263,9 +263,20 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
             let name = &other_param_names[0];
             let ty = &other_param_types[0];
             quote! {
-                let #name: #ty = match params_value.try_into() {
-                    Ok(v) => v,
-                    Err(_) => return Err("failed to convert parameter"),
+                // For single param, unwrap from tuple if needed
+                let #name: #ty = match params_value {
+                    pack_guest::Value::Tuple(mut items) if items.len() == 1 => {
+                        match items.remove(0).try_into() {
+                            Ok(v) => v,
+                            Err(_) => return Err("failed to convert parameter"),
+                        }
+                    },
+                    other => {
+                        match other.try_into() {
+                            Ok(v) => v,
+                            Err(_) => return Err("failed to convert parameter"),
+                        }
+                    }
                 };
             }
         } else {
