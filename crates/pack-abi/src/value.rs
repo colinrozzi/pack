@@ -1,6 +1,7 @@
 //! Runtime values
 
 use alloc::boxed::Box;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -191,6 +192,42 @@ impl<T: Into<Value>> From<Vec<T>> for Value {
         // Infer elem_type from first item, default to S32
         let elem_type = items.first().map(|v| v.infer_type()).unwrap_or(ValueType::S32);
         Value::List { elem_type, items }
+    }
+}
+
+impl<T: Into<Value>, const N: usize> From<[T; N]> for Value {
+    fn from(v: [T; N]) -> Self {
+        let items: Vec<Value> = v.into_iter().map(Into::into).collect();
+        let elem_type = items.first().map(|v| v.infer_type()).unwrap_or(ValueType::S32);
+        Value::List { elem_type, items }
+    }
+}
+
+impl<T: TryFrom<Value, Error = ConversionError>, const N: usize> TryFrom<Value> for [T; N] {
+    type Error = ConversionError;
+    fn try_from(v: Value) -> Result<Self, Self::Error> {
+        match v {
+            Value::List { items, .. } => {
+                if items.len() != N {
+                    return Err(ConversionError::WrongFieldCount {
+                        expected: N,
+                        got: items.len(),
+                    });
+                }
+                let vec: Vec<T> = items
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, item)| {
+                        T::try_from(item)
+                            .map_err(|e| ConversionError::IndexError(i, Box::new(e)))
+                    })
+                    .collect::<Result<Vec<T>, _>>()?;
+                vec.try_into().map_err(|_| ConversionError::ExpectedList(
+                    String::from("array conversion failed"),
+                ))
+            }
+            other => Err(ConversionError::ExpectedList(format!("{:?}", other))),
+        }
     }
 }
 
@@ -398,6 +435,68 @@ impl<T: TryFrom<Value, Error = ConversionError>> TryFrom<Value> for Vec<T> {
                 .enumerate()
                 .map(|(i, item)| {
                     T::try_from(item).map_err(|e| ConversionError::IndexError(i, Box::new(e)))
+                })
+                .collect(),
+            other => Err(ConversionError::ExpectedList(format!("{:?}", other))),
+        }
+    }
+}
+
+impl<T: Into<Value> + Ord> From<BTreeSet<T>> for Value {
+    fn from(v: BTreeSet<T>) -> Self {
+        let items: Vec<Value> = v.into_iter().map(Into::into).collect();
+        let elem_type = items.first().map(|v| v.infer_type()).unwrap_or(ValueType::S32);
+        Value::List { elem_type, items }
+    }
+}
+
+impl<T: TryFrom<Value, Error = ConversionError> + Ord> TryFrom<Value> for BTreeSet<T> {
+    type Error = ConversionError;
+    fn try_from(v: Value) -> Result<Self, Self::Error> {
+        match v {
+            Value::List { items, .. } => items
+                .into_iter()
+                .enumerate()
+                .map(|(i, item)| {
+                    T::try_from(item).map_err(|e| ConversionError::IndexError(i, Box::new(e)))
+                })
+                .collect(),
+            other => Err(ConversionError::ExpectedList(format!("{:?}", other))),
+        }
+    }
+}
+
+impl<K: Into<Value> + Ord, V: Into<Value>> From<BTreeMap<K, V>> for Value {
+    fn from(v: BTreeMap<K, V>) -> Self {
+        let items: Vec<Value> = v
+            .into_iter()
+            .map(|(k, v)| Value::Tuple(Vec::from([k.into(), v.into()])))
+            .collect();
+        let elem_type = items.first().map(|v| v.infer_type()).unwrap_or(ValueType::S32);
+        Value::List { elem_type, items }
+    }
+}
+
+impl<K: TryFrom<Value, Error = ConversionError> + Ord, V: TryFrom<Value, Error = ConversionError>>
+    TryFrom<Value> for BTreeMap<K, V>
+{
+    type Error = ConversionError;
+    fn try_from(v: Value) -> Result<Self, Self::Error> {
+        match v {
+            Value::List { items, .. } => items
+                .into_iter()
+                .enumerate()
+                .map(|(i, item)| match item {
+                    Value::Tuple(mut fields) if fields.len() == 2 => {
+                        let v_val = fields.pop().unwrap();
+                        let k_val = fields.pop().unwrap();
+                        let k = K::try_from(k_val)
+                            .map_err(|e| ConversionError::IndexError(i, Box::new(e)))?;
+                        let v = V::try_from(v_val)
+                            .map_err(|e| ConversionError::IndexError(i, Box::new(e)))?;
+                        Ok((k, v))
+                    }
+                    other => Err(ConversionError::ExpectedTuple(format!("{:?}", other))),
                 })
                 .collect(),
             other => Err(ConversionError::ExpectedList(format!("{:?}", other))),
