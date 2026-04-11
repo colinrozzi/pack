@@ -482,7 +482,7 @@ fn rust_package_transform_nested() {
 
     // Test transform on nested structure - doubles all S64 values
     let input = Value::List {
-        elem_type: ValueType::S64,
+        elem_type: ValueType::Variant("node".to_string()),
         items: vec![
             Value::S64(10),
             Value::S64(20),
@@ -496,7 +496,7 @@ fn rust_package_transform_nested() {
     };
 
     let expected = Value::List {
-        elem_type: ValueType::S64,
+        elem_type: ValueType::Variant("node".to_string()),
         items: vec![
             Value::S64(20),  // 10 * 2
             Value::S64(40),  // 20 * 2

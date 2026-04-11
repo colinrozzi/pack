@@ -75,6 +75,7 @@ pub enum NodeKind {
     Char = 0x12,
     Flags = 0x13,
     Result = 0x14,
+    Array = 0x15,
 }
 
 #[derive(Debug, Clone)]
@@ -305,6 +306,22 @@ impl GraphBuffer {
                 }
                 // v2 format nodes with variable-length headers - skip detailed validation
                 // The actual decode will catch any format errors
+                NodeKind::Array => {
+                    // Array: [elem_type:u8, count:u32, data:u8*]
+                    let elem_type = decode_value_type(&mut cursor)?;
+                    let width = fixed_width(&elem_type).ok_or_else(|| {
+                        AbiError::InvalidEncoding(format!(
+                            "Non-primitive element type in Array at node {index}"
+                        ))
+                    })?;
+                    let count = cursor.read_u32()? as usize;
+                    if count > limits.max_sequence_len {
+                        return Err(AbiError::InvalidEncoding(format!(
+                            "Sequence too large at node {index}"
+                        )));
+                    }
+                    cursor.read_bytes(count * width)?;
+                }
                 NodeKind::List | NodeKind::Option | NodeKind::Record | NodeKind::Variant | NodeKind::Result => {
                     // These have variable-length type tags or string headers
                     // Skip detailed validation, just ensure payload is not too large (already checked)
@@ -396,6 +413,7 @@ fn node_kind_from_u8(value: u8) -> Result<NodeKind, AbiError> {
         0x12 => Ok(NodeKind::Char),
         0x13 => Ok(NodeKind::Flags),
         0x14 => Ok(NodeKind::Result),
+        0x15 => Ok(NodeKind::Array),
         _ => Err(AbiError::InvalidTag(value)),
     }
 }
@@ -421,6 +439,73 @@ const TYPE_S16: u8 = 0x11;
 const TYPE_CHAR: u8 = 0x12;
 const TYPE_FLAGS: u8 = 0x13;
 const TYPE_RESULT: u8 = 0x14;
+
+/// Returns the byte width of a fixed-size primitive ValueType, or None for compound types.
+fn fixed_width(ty: &ValueType) -> Option<usize> {
+    match ty {
+        ValueType::Bool | ValueType::U8 | ValueType::S8 => Some(1),
+        ValueType::U16 | ValueType::S16 => Some(2),
+        ValueType::U32 | ValueType::S32 | ValueType::F32 | ValueType::Char => Some(4),
+        ValueType::U64 | ValueType::S64 | ValueType::F64 | ValueType::Flags => Some(8),
+        _ => None,
+    }
+}
+
+/// Encode a single primitive value into a contiguous byte buffer (for Array nodes).
+fn encode_array_element(value: &Value, expected: &ValueType, out: &mut Vec<u8>) -> Result<(), AbiError> {
+    match (value, expected) {
+        (Value::Bool(v), ValueType::Bool) => out.push(if *v { 1 } else { 0 }),
+        (Value::U8(v), ValueType::U8) => out.push(*v),
+        (Value::S8(v), ValueType::S8) => out.push(*v as u8),
+        (Value::U16(v), ValueType::U16) => out.extend_from_slice(&v.to_le_bytes()),
+        (Value::S16(v), ValueType::S16) => out.extend_from_slice(&v.to_le_bytes()),
+        (Value::U32(v), ValueType::U32) => out.extend_from_slice(&v.to_le_bytes()),
+        (Value::S32(v), ValueType::S32) => out.extend_from_slice(&v.to_le_bytes()),
+        (Value::U64(v), ValueType::U64) => out.extend_from_slice(&v.to_le_bytes()),
+        (Value::S64(v), ValueType::S64) => out.extend_from_slice(&v.to_le_bytes()),
+        (Value::F32(v), ValueType::F32) => out.extend_from_slice(&v.to_le_bytes()),
+        (Value::F64(v), ValueType::F64) => out.extend_from_slice(&v.to_le_bytes()),
+        (Value::Char(v), ValueType::Char) => out.extend_from_slice(&(*v as u32).to_le_bytes()),
+        (Value::Flags(v), ValueType::Flags) => out.extend_from_slice(&v.to_le_bytes()),
+        _ => return Err(AbiError::InvalidEncoding(
+            "Array element type mismatch".to_string(),
+        )),
+    }
+    Ok(())
+}
+
+/// Decode a single primitive value from a cursor (for Array nodes).
+fn decode_array_element(cursor: &mut Cursor<'_>, elem_type: &ValueType) -> Result<Value, AbiError> {
+    Ok(match elem_type {
+        ValueType::Bool => Value::Bool(cursor.read_u8()? != 0),
+        ValueType::U8 => Value::U8(cursor.read_u8()?),
+        ValueType::S8 => Value::S8(cursor.read_u8()? as i8),
+        ValueType::U16 => Value::U16(cursor.read_u16()?),
+        ValueType::S16 => Value::S16(cursor.read_u16()? as i16),
+        ValueType::U32 => Value::U32(cursor.read_u32()?),
+        ValueType::S32 => Value::S32(cursor.read_u32()? as i32),
+        ValueType::U64 => Value::U64(cursor.read_u64()?),
+        ValueType::S64 => Value::S64(cursor.read_u64()? as i64),
+        ValueType::F32 => {
+            let raw = cursor.read_u32()?;
+            Value::F32(f32::from_le_bytes(raw.to_le_bytes()))
+        }
+        ValueType::F64 => {
+            let raw = cursor.read_u64()?;
+            Value::F64(f64::from_le_bytes(raw.to_le_bytes()))
+        }
+        ValueType::Char => {
+            let raw = cursor.read_u32()?;
+            Value::Char(char::from_u32(raw).ok_or_else(|| {
+                AbiError::InvalidEncoding("Invalid char in array".to_string())
+            })?)
+        }
+        ValueType::Flags => Value::Flags(cursor.read_u64()?),
+        _ => return Err(AbiError::InvalidEncoding(
+            "Non-primitive type in array".to_string(),
+        )),
+    })
+}
 
 /// Encode a ValueType to bytes (for CGRF v2 payloads)
 fn encode_value_type(ty: &ValueType, out: &mut Vec<u8>) {
@@ -596,7 +681,32 @@ impl GraphCodec for Value {
                     payload,
                 }))
             }
+            Value::List { elem_type, items }
+                if fixed_width(elem_type).is_some()
+                    && items.iter().all(|v| v.infer_type() == *elem_type) =>
+            {
+                // Array: contiguous encoding for fixed-size primitive lists
+                // Format: [elem_type:u8, count:u32, data:u8*]
+                let width = fixed_width(elem_type).unwrap();
+                let mut payload = Vec::with_capacity(1 + 4 + items.len() * width);
+                encode_value_type(elem_type, &mut payload);
+                payload.extend_from_slice(&(items.len() as u32).to_le_bytes());
+                for item in items {
+                    encode_array_element(item, elem_type, &mut payload)?;
+                }
+                Ok(encoder.push_node(Node {
+                    kind: NodeKind::Array,
+                    payload,
+                }))
+            }
             Value::List { elem_type, items } => {
+                // Primitive elem_types must use Array encoding — reject mismatched items
+                if fixed_width(elem_type).is_some() {
+                    return Err(AbiError::InvalidEncoding(
+                        "List with primitive elem_type contains non-matching items; \
+                         fix the elem_type or the items".to_string(),
+                    ));
+                }
                 // Encode children first
                 let mut child_indices = Vec::with_capacity(items.len());
                 for item in items {
@@ -798,9 +908,24 @@ fn decode_value(
                 .map_err(|_| AbiError::InvalidEncoding("Invalid UTF-8".to_string()))?;
             Value::String(value.to_string())
         }
+        NodeKind::Array => {
+            // Array: [elem_type:u8, count:u32, data:u8*]
+            let elem_type = decode_value_type(&mut cursor)?;
+            let count = cursor.read_u32()? as usize;
+            let mut items = Vec::with_capacity(count);
+            for _ in 0..count {
+                items.push(decode_array_element(&mut cursor, &elem_type)?);
+            }
+            Value::List { elem_type, items }
+        }
         NodeKind::List => {
             // v2 format: [elem_type:type_tag*, count:u32, child_indices:u32*]
             let elem_type = decode_value_type(&mut cursor)?;
+            if fixed_width(&elem_type).is_some() {
+                return Err(AbiError::InvalidEncoding(
+                    "List node with primitive elem_type; expected Array node".to_string(),
+                ));
+            }
             let count = cursor.read_u32()? as usize;
             let mut items = Vec::with_capacity(count);
             for _ in 0..count {

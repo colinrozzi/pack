@@ -142,20 +142,38 @@ fn validate_type(
         Type::Char => expect_kind(index, node.kind, NodeKind::Char),
         Type::String => expect_kind(index, node.kind, NodeKind::String),
         Type::List(inner) => {
-            expect_kind(index, node.kind, NodeKind::List)?;
-            let mut cursor = PayloadCursor::new(&node.payload);
-            // v2 format: [elem_type:type_tag*, count:u32, child_indices:u32*]
-            cursor.skip_value_type()?;
-            let count = cursor.read_u32()? as usize;
-            let mut child_indices = Vec::with_capacity(count);
-            for _ in 0..count {
-                child_indices.push(cursor.read_u32()?);
+            if node.kind == NodeKind::Array {
+                // Array encoding for fixed-size primitive lists
+                let mut cursor = PayloadCursor::new(&node.payload);
+                cursor.skip_value_type()?; // elem_type tag
+                let count = cursor.read_u32()? as usize;
+                // Compute element width from the inner type
+                let width = match inner.as_ref() {
+                    Type::Bool | Type::U8 | Type::S8 => 1,
+                    Type::U16 | Type::S16 => 2,
+                    Type::U32 | Type::S32 | Type::F32 | Type::Char => 4,
+                    Type::U64 | Type::S64 | Type::F64 => 8,
+                    _ => return Err(expect_kind(index, node.kind, NodeKind::List).unwrap_err()),
+                };
+                cursor.read_bytes(count * width)?;
+                cursor.finish(index)?;
+                Ok(())
+            } else {
+                expect_kind(index, node.kind, NodeKind::List)?;
+                let mut cursor = PayloadCursor::new(&node.payload);
+                // v2 format: [elem_type:type_tag*, count:u32, child_indices:u32*]
+                cursor.skip_value_type()?;
+                let count = cursor.read_u32()? as usize;
+                let mut child_indices = Vec::with_capacity(count);
+                for _ in 0..count {
+                    child_indices.push(cursor.read_u32()?);
+                }
+                cursor.finish(index)?;
+                for child in child_indices {
+                    validate_type(buffer, child, inner, self_name, types, assigned)?;
+                }
+                Ok(())
             }
-            cursor.finish(index)?;
-            for child in child_indices {
-                validate_type(buffer, child, inner, self_name, types, assigned)?;
-            }
-            Ok(())
         }
         Type::Option(inner) => {
             expect_kind(index, node.kind, NodeKind::Option)?;
