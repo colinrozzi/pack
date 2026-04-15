@@ -80,8 +80,8 @@ impl Parse for ExportArgs {
 /// **State mode** (with `state` attribute): For Theater actors, the macro handles
 /// state extraction and wrapping automatically. The first parameter is the state type,
 /// and the return must be `Result<(StateType, Output), Error>`. The macro extracts
-/// state from `Option<Value>`, passes it to your function, and wraps the new state
-/// back for the runtime.
+/// state from a `Value`, passes it to your function, and returns the new state
+/// back to the runtime.
 ///
 /// # Example
 ///
@@ -239,8 +239,8 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
     // Generate the parameter extraction and function call based on mode
     let call_body = if args.state.is_some() {
         // State mode for Theater actors
-        // Input: Tuple([Option<state_value>, params...])
-        // Output: Result<Tuple([Option<new_state>, output]), error>
+        // Input: Tuple([state_value, params...])
+        // Output: Result<Tuple([new_state, output]), error>
 
         if param_names.is_empty() {
             return syn::Error::new_spanned(
@@ -304,7 +304,7 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
         let call_args = param_names.iter();
 
         quote! {
-            // State mode: Input is Tuple([Option<state>, params])
+            // State mode: Input is Tuple([state, params])
             let (state_opt, params_value) = match value {
                 pack_guest::Value::Tuple(mut items) if items.len() >= 1 => {
                     let state_opt = items.remove(0);
@@ -320,25 +320,10 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
                 _ => return Err("expected tuple with state and params"),
             };
 
-            // Extract state from Option<Value>
-            let #state_name: #state_type = match state_opt {
-                pack_guest::Value::Option { value: Some(inner), .. } => {
-                    match (*inner).try_into() {
-                        Ok(v) => v,
-                        Err(_) => return Err("failed to convert state"),
-                    }
-                },
-                pack_guest::Value::Option { value: None, .. } => {
-                    // No state yet, use Default
-                    Default::default()
-                },
-                other => {
-                    // Try direct conversion (state might not be wrapped in Option)
-                    match other.try_into() {
-                        Ok(v) => v,
-                        Err(_) => return Err("failed to convert state (expected Option<state>)"),
-                    }
-                }
+            // Extract state from Value
+            let #state_name: #state_type = match state_opt.try_into() {
+                Ok(v) => v,
+                Err(_) => return Err("failed to convert state"),
             };
 
             // Extract other parameters
@@ -350,23 +335,18 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
             // Handle Result: convert (NewState, Output) to proper Value format
             match result {
                 Ok((new_state, output)) => {
-                    // Wrap new state in Option
                     let state_value: pack_guest::Value = new_state.into();
-                    let state_opt = pack_guest::Value::Option {
-                        inner_type: state_value.infer_type(),
-                        value: Some(pack_guest::__alloc::boxed::Box::new(state_value)),
-                    };
                     let output_value: pack_guest::Value = output.into();
 
-                    // Return Result<Tuple([Option<state>, output]), _>
+                    // Return Result<Tuple([state, output]), _>
                     Ok(pack_guest::Value::Result {
                         ok_type: pack_guest::ValueType::Tuple(pack_guest::__alloc::vec![
-                            pack_guest::ValueType::Option(pack_guest::__alloc::boxed::Box::new(pack_guest::ValueType::Bool)),
+                            pack_guest::ValueType::Bool,
                             pack_guest::ValueType::Bool,
                         ]),
                         err_type: pack_guest::ValueType::String,
                         value: Ok(pack_guest::__alloc::boxed::Box::new(
-                            pack_guest::Value::Tuple(pack_guest::__alloc::vec![state_opt, output_value])
+                            pack_guest::Value::Tuple(pack_guest::__alloc::vec![state_value, output_value])
                         )),
                     })
                 },
