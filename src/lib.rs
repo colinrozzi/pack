@@ -72,6 +72,7 @@ pub use metadata::{
     MetadataWithHashes, PackageMetadata, ParamSignature, TypeDesc, TypeHash,
     HASH_BOOL, HASH_CHAR, HASH_F32, HASH_F64, HASH_FLAGS, HASH_S16, HASH_S32,
     HASH_S64, HASH_S8, HASH_STRING, HASH_U16, HASH_U32, HASH_U64, HASH_U8,
+    validate_value_in_type_space, TypeValidationError,
 };
 pub use runtime::{
     validate_instance_implements_interface, AsyncCompiledModule, AsyncCtx, AsyncInstance,

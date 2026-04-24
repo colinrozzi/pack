@@ -15,7 +15,7 @@
 //! This enables O(1) compatibility checking: if hashes match, interfaces are compatible.
 
 use crate::abi::{decode, encode, Value};
-use crate::types::{Arena, Case, Field, Function, Param, Type, TypePath};
+use crate::types::{Arena, Case, Field, Function, Param, Type, TypeDef, TypePath};
 
 // ============================================================================
 // Interface Hashes
@@ -533,11 +533,12 @@ pub fn decode_metadata(bytes: &[u8]) -> Result<Arena, MetadataError> {
         Value::Record { fields, .. } => {
             let mut imports = Vec::new();
             let mut exports = Vec::new();
+            let mut type_defs = Vec::new();
 
             for (name, val) in fields {
                 match name.as_str() {
-                    "imports" => imports = decode_func_sig_list(val)?,
-                    "exports" => exports = decode_func_sig_list(val)?,
+                    "imports" => imports = decode_func_sig_list(val, &mut type_defs)?,
+                    "exports" => exports = decode_func_sig_list(val, &mut type_defs)?,
                     _ => {}
                 }
             }
@@ -547,7 +548,6 @@ pub fn decode_metadata(bytes: &[u8]) -> Result<Arena, MetadataError> {
 
             if !imports.is_empty() {
                 let mut import_arena = Arena::new("imports");
-                // Group functions by interface
                 let mut by_interface: std::collections::HashMap<String, Vec<Function>> =
                     std::collections::HashMap::new();
                 for (interface, func) in imports {
@@ -565,7 +565,6 @@ pub fn decode_metadata(bytes: &[u8]) -> Result<Arena, MetadataError> {
 
             if !exports.is_empty() {
                 let mut export_arena = Arena::new("exports");
-                // Group functions by interface
                 let mut by_interface: std::collections::HashMap<String, Vec<Function>> =
                     std::collections::HashMap::new();
                 for (interface, func) in exports {
@@ -602,11 +601,12 @@ pub fn decode_metadata_with_hashes(bytes: &[u8]) -> Result<MetadataWithHashes, M
             let mut exports = Vec::new();
             let mut import_hashes = Vec::new();
             let mut export_hashes = Vec::new();
+            let mut type_defs = Vec::new();
 
             for (name, val) in fields {
                 match name.as_str() {
-                    "imports" => imports = decode_func_sig_list(val)?,
-                    "exports" => exports = decode_func_sig_list(val)?,
+                    "imports" => imports = decode_func_sig_list(val, &mut type_defs)?,
+                    "exports" => exports = decode_func_sig_list(val, &mut type_defs)?,
                     "import-hashes" => import_hashes = decode_interface_hash_list(val)?,
                     "export-hashes" => export_hashes = decode_interface_hash_list(val)?,
                     _ => {}
@@ -731,18 +731,18 @@ fn decode_interface_hash(value: Value) -> Result<InterfaceHash, MetadataError> {
 
 /// Decode a list of function signatures.
 /// Returns (interface_name, Function) pairs.
-fn decode_func_sig_list(value: Value) -> Result<Vec<(String, Function)>, MetadataError> {
+fn decode_func_sig_list(value: Value, type_defs: &mut Vec<TypeDef>) -> Result<Vec<(String, Function)>, MetadataError> {
     match value {
-        Value::List { items, .. } => items.into_iter().map(decode_func_sig).collect(),
+        Value::List { items, .. } => items.into_iter().map(|v| decode_func_sig(v, type_defs)).collect(),
         _ => Err(MetadataError::InvalidStructure(
             "expected list of function signatures".into(),
         )),
     }
 }
 
-/// Decode a function signature.
+/// Decode a function signature, collecting discovered TypeDefs.
 /// Returns (interface_name, Function).
-fn decode_func_sig(value: Value) -> Result<(String, Function), MetadataError> {
+fn decode_func_sig(value: Value, type_defs: &mut Vec<TypeDef>) -> Result<(String, Function), MetadataError> {
     match value {
         Value::Record { fields, .. } => {
             let mut interface = String::new();
@@ -763,16 +763,20 @@ fn decode_func_sig(value: Value) -> Result<(String, Function), MetadataError> {
                         }
                     }
                     "params" => {
-                        params = decode_param_list(val)?;
+                        params = decode_param_list(val, type_defs)?;
                     }
                     "results" => {
-                        results = decode_type_list(val)?;
+                        results = decode_type_list(val, type_defs)?;
                     }
                     _ => {}
                 }
             }
 
-            Ok((interface, Function::with_signature(name, params, results)))
+            let mut func = Function::with_signature(name, params, results);
+            // Attach discovered type definitions to the function
+            func.types = type_defs.clone();
+
+            Ok((interface, func))
         }
         _ => Err(MetadataError::InvalidStructure(
             "expected record for function signature".into(),
@@ -780,16 +784,16 @@ fn decode_func_sig(value: Value) -> Result<(String, Function), MetadataError> {
     }
 }
 
-fn decode_param_list(value: Value) -> Result<Vec<Param>, MetadataError> {
+fn decode_param_list(value: Value, type_defs: &mut Vec<TypeDef>) -> Result<Vec<Param>, MetadataError> {
     match value {
-        Value::List { items, .. } => items.into_iter().map(decode_param).collect(),
+        Value::List { items, .. } => items.into_iter().map(|v| decode_param(v, type_defs)).collect(),
         _ => Err(MetadataError::InvalidStructure(
             "expected list of parameters".into(),
         )),
     }
 }
 
-fn decode_param(value: Value) -> Result<Param, MetadataError> {
+fn decode_param(value: Value, type_defs: &mut Vec<TypeDef>) -> Result<Param, MetadataError> {
     match value {
         Value::Record { fields, .. } => {
             let mut name = String::new();
@@ -803,7 +807,7 @@ fn decode_param(value: Value) -> Result<Param, MetadataError> {
                         }
                     }
                     "type" => {
-                        ty = decode_type(val)?;
+                        ty = decode_type_collecting(val, type_defs)?;
                     }
                     _ => {}
                 }
@@ -817,9 +821,9 @@ fn decode_param(value: Value) -> Result<Param, MetadataError> {
     }
 }
 
-fn decode_type_list(value: Value) -> Result<Vec<Type>, MetadataError> {
+fn decode_type_list(value: Value, type_defs: &mut Vec<TypeDef>) -> Result<Vec<Type>, MetadataError> {
     match value {
-        Value::List { items, .. } => items.into_iter().map(decode_type).collect(),
+        Value::List { items, .. } => items.into_iter().map(|v| decode_type_collecting(v, type_defs)).collect(),
         _ => Err(MetadataError::InvalidStructure(
             "expected list of types".into(),
         )),
@@ -827,6 +831,11 @@ fn decode_type_list(value: Value) -> Result<Vec<Type>, MetadataError> {
 }
 
 fn decode_type(value: Value) -> Result<Type, MetadataError> {
+    let mut type_defs = Vec::new();
+    decode_type_collecting(value, &mut type_defs)
+}
+
+fn decode_type_collecting(value: Value, type_defs: &mut Vec<TypeDef>) -> Result<Type, MetadataError> {
     match value {
         Value::Variant { tag, payload, .. } => {
             let tag = tag as u32;
@@ -849,13 +858,13 @@ fn decode_type(value: Value) -> Result<Type, MetadataError> {
                     let inner = payload.into_iter().next().ok_or_else(|| {
                         MetadataError::InvalidStructure("list missing element type".into())
                     })?;
-                    Ok(Type::list(decode_type(inner)?))
+                    Ok(Type::list(decode_type_collecting(inner, type_defs)?))
                 }
                 TAG_OPTION => {
                     let inner = payload.into_iter().next().ok_or_else(|| {
                         MetadataError::InvalidStructure("option missing inner type".into())
                     })?;
-                    Ok(Type::option(decode_type(inner)?))
+                    Ok(Type::option(decode_type_collecting(inner, type_defs)?))
                 }
                 TAG_RESULT => {
                     let record = payload.into_iter().next().ok_or_else(|| {
@@ -867,8 +876,8 @@ fn decode_type(value: Value) -> Result<Type, MetadataError> {
                             let mut err = Type::Unit;
                             for (name, val) in fields {
                                 match name.as_str() {
-                                    "ok" => ok = decode_type(val)?,
-                                    "err" => err = decode_type(val)?,
+                                    "ok" => ok = decode_type_collecting(val, type_defs)?,
+                                    "err" => err = decode_type_collecting(val, type_defs)?,
                                     _ => {}
                                 }
                             }
@@ -883,13 +892,13 @@ fn decode_type(value: Value) -> Result<Type, MetadataError> {
                     let record = payload.into_iter().next().ok_or_else(|| {
                         MetadataError::InvalidStructure("record missing payload".into())
                     })?;
-                    decode_record_type(record)
+                    decode_record_type(record, type_defs)
                 }
                 TAG_VARIANT => {
                     let record = payload.into_iter().next().ok_or_else(|| {
                         MetadataError::InvalidStructure("variant missing payload".into())
                     })?;
-                    decode_variant_type(record)
+                    decode_variant_type(record, type_defs)
                 }
                 TAG_TUPLE => {
                     let list = payload.into_iter().next().ok_or_else(|| {
@@ -898,7 +907,7 @@ fn decode_type(value: Value) -> Result<Type, MetadataError> {
                     match list {
                         Value::List { items, .. } => {
                             let types: Result<Vec<_>, _> =
-                                items.into_iter().map(decode_type).collect();
+                                items.into_iter().map(|v| decode_type_collecting(v, type_defs)).collect();
                             Ok(Type::tuple(types?))
                         }
                         _ => Err(MetadataError::InvalidStructure(
@@ -920,21 +929,61 @@ fn decode_type(value: Value) -> Result<Type, MetadataError> {
     }
 }
 
-fn decode_record_type(value: Value) -> Result<Type, MetadataError> {
+fn decode_record_type(value: Value, type_defs: &mut Vec<TypeDef>) -> Result<Type, MetadataError> {
     match value {
         Value::Record {
             fields: rec_fields,
             ..
         } => {
             let mut name = String::new();
+            let mut decoded_fields = Vec::new();
+
             for (fname, val) in rec_fields {
-                if fname == "name" {
-                    if let Value::String(s) = val {
-                        name = s;
+                match fname.as_str() {
+                    "name" => {
+                        if let Value::String(s) = val {
+                            name = s;
+                        }
                     }
+                    "fields" => {
+                        if let Value::List { items, .. } = val {
+                            for item in items {
+                                if let Value::Record { fields: field_rec, .. } = item {
+                                    let mut field_name = String::new();
+                                    let mut field_type = Type::Value;
+                                    for (fn_name, fn_val) in field_rec {
+                                        match fn_name.as_str() {
+                                            "name" => {
+                                                if let Value::String(s) = fn_val {
+                                                    field_name = s;
+                                                }
+                                            }
+                                            "type" => {
+                                                field_type = decode_type_collecting(fn_val, type_defs)?;
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                    decoded_fields.push(Field::new(field_name, field_type));
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
-            // Records are represented as named type references
+
+            // Store the TypeDef for later resolution
+            if !name.is_empty() && !decoded_fields.is_empty() {
+                // Only add if we don't already have this type
+                if !type_defs.iter().any(|td| td.name() == name) {
+                    type_defs.push(TypeDef::Record {
+                        name: name.clone(),
+                        fields: decoded_fields,
+                    });
+                }
+            }
+
             Ok(Type::Ref(TypePath::simple(name)))
         }
         _ => Err(MetadataError::InvalidStructure(
@@ -943,21 +992,62 @@ fn decode_record_type(value: Value) -> Result<Type, MetadataError> {
     }
 }
 
-fn decode_variant_type(value: Value) -> Result<Type, MetadataError> {
+fn decode_variant_type(value: Value, type_defs: &mut Vec<TypeDef>) -> Result<Type, MetadataError> {
     match value {
         Value::Record {
             fields: rec_fields,
             ..
         } => {
             let mut name = String::new();
+            let mut decoded_cases = Vec::new();
+
             for (fname, val) in rec_fields {
-                if fname == "name" {
-                    if let Value::String(s) = val {
-                        name = s;
+                match fname.as_str() {
+                    "name" => {
+                        if let Value::String(s) = val {
+                            name = s;
+                        }
                     }
+                    "cases" => {
+                        if let Value::List { items, .. } = val {
+                            for item in items {
+                                if let Value::Record { fields: case_rec, .. } = item {
+                                    let mut case_name = String::new();
+                                    let mut case_payload = Type::Unit;
+                                    for (cn, cv) in case_rec {
+                                        match cn.as_str() {
+                                            "name" => {
+                                                if let Value::String(s) = cv {
+                                                    case_name = s;
+                                                }
+                                            }
+                                            "payload" => {
+                                                if let Value::Option { value: Some(payload_val), .. } = cv {
+                                                    case_payload = decode_type_collecting(*payload_val, type_defs)?;
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                    decoded_cases.push(Case::new(case_name, case_payload));
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
-            // Variants are represented as named type references
+
+            // Store the TypeDef for later resolution
+            if !name.is_empty() && !decoded_cases.is_empty() {
+                if !type_defs.iter().any(|td| td.name() == name) {
+                    type_defs.push(TypeDef::Variant {
+                        name: name.clone(),
+                        cases: decoded_cases,
+                    });
+                }
+            }
+
             Ok(Type::Ref(TypePath::simple(name)))
         }
         _ => Err(MetadataError::InvalidStructure(
@@ -1237,6 +1327,384 @@ fn encode_interface_hash_value(ih: &InterfaceHash) -> Value {
     }
 }
 
+// ============================================================================
+// Type Space Validation
+// ============================================================================
+
+/// Errors from validating a Value against a type space.
+#[derive(Debug, Clone)]
+pub enum TypeValidationError {
+    /// Value's runtime type doesn't match the expected type.
+    TypeMismatch { expected: String, got: String },
+    /// Record is missing a required field.
+    MissingField { record: String, field: String },
+    /// Record has a field not declared in the type.
+    ExtraField { record: String, field: String },
+    /// Variant case name not found in the type definition.
+    UnknownCase { variant: String, case: String },
+    /// Type::Ref could not be resolved to a TypeDef.
+    UnresolvedRef { path: String },
+    /// Tuple or payload length mismatch.
+    WrongArity { expected: usize, got: usize },
+    /// Error in a nested position, with context path.
+    Nested { context: String, inner: Box<TypeValidationError> },
+}
+
+impl std::fmt::Display for TypeValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TypeValidationError::TypeMismatch { expected, got } => {
+                write!(f, "expected {}, got {}", expected, got)
+            }
+            TypeValidationError::MissingField { record, field } => {
+                write!(f, "record '{}' missing field '{}'", record, field)
+            }
+            TypeValidationError::ExtraField { record, field } => {
+                write!(f, "record '{}' has unexpected field '{}'", record, field)
+            }
+            TypeValidationError::UnknownCase { variant, case } => {
+                write!(f, "variant '{}' has no case '{}'", variant, case)
+            }
+            TypeValidationError::UnresolvedRef { path } => {
+                write!(f, "unresolved type reference '{}'", path)
+            }
+            TypeValidationError::WrongArity { expected, got } => {
+                write!(f, "expected {} elements, got {}", expected, got)
+            }
+            TypeValidationError::Nested { context, inner } => {
+                write!(f, "in {}: {}", context, inner)
+            }
+        }
+    }
+}
+
+impl std::error::Error for TypeValidationError {}
+
+/// Validate that a runtime Value is a valid inhabitant of the given type space.
+///
+/// The type space is defined by an expected `Type` and a set of `TypeDef`s
+/// that resolve named references (`Type::Ref`). The Value represents a concrete
+/// instance — this function checks membership.
+///
+/// `Type::Value` is the escape hatch: any Value is valid in that position.
+pub fn validate_value_in_type_space(
+    value: &Value,
+    expected: &Type,
+    type_defs: &[TypeDef],
+) -> Result<(), TypeValidationError> {
+    match expected {
+        // Escape hatch — anything goes
+        Type::Value => Ok(()),
+
+        // Primitives — direct type match
+        Type::Unit => match value {
+            Value::Tuple(items) if items.is_empty() => Ok(()),
+            _ => Err(TypeValidationError::TypeMismatch {
+                expected: "unit".into(),
+                got: value_type_name(value),
+            }),
+        },
+        Type::Bool => match value {
+            Value::Bool(_) => Ok(()),
+            _ => Err(mismatch("bool", value)),
+        },
+        Type::U8 => match value {
+            Value::U8(_) => Ok(()),
+            _ => Err(mismatch("u8", value)),
+        },
+        Type::U16 => match value {
+            Value::U16(_) => Ok(()),
+            _ => Err(mismatch("u16", value)),
+        },
+        Type::U32 => match value {
+            Value::U32(_) => Ok(()),
+            _ => Err(mismatch("u32", value)),
+        },
+        Type::U64 => match value {
+            Value::U64(_) => Ok(()),
+            _ => Err(mismatch("u64", value)),
+        },
+        Type::S8 => match value {
+            Value::S8(_) => Ok(()),
+            _ => Err(mismatch("s8", value)),
+        },
+        Type::S16 => match value {
+            Value::S16(_) => Ok(()),
+            _ => Err(mismatch("s16", value)),
+        },
+        Type::S32 => match value {
+            Value::S32(_) => Ok(()),
+            _ => Err(mismatch("s32", value)),
+        },
+        Type::S64 => match value {
+            Value::S64(_) => Ok(()),
+            _ => Err(mismatch("s64", value)),
+        },
+        Type::F32 => match value {
+            Value::F32(_) => Ok(()),
+            _ => Err(mismatch("f32", value)),
+        },
+        Type::F64 => match value {
+            Value::F64(_) => Ok(()),
+            _ => Err(mismatch("f64", value)),
+        },
+        Type::Char => match value {
+            Value::Char(_) => Ok(()),
+            _ => Err(mismatch("char", value)),
+        },
+        Type::String => match value {
+            Value::String(_) => Ok(()),
+            _ => Err(mismatch("string", value)),
+        },
+
+        // Compound types — recurse
+        Type::List(elem_type) => match value {
+            Value::List { items, .. } => {
+                for (i, item) in items.iter().enumerate() {
+                    validate_value_in_type_space(item, elem_type, type_defs)
+                        .map_err(|e| TypeValidationError::Nested {
+                            context: format!("list[{}]", i),
+                            inner: Box::new(e),
+                        })?;
+                }
+                Ok(())
+            }
+            _ => Err(mismatch("list", value)),
+        },
+
+        Type::Option(inner_type) => match value {
+            Value::Option { value: inner, .. } => {
+                if let Some(v) = inner {
+                    validate_value_in_type_space(v, inner_type, type_defs)
+                        .map_err(|e| TypeValidationError::Nested {
+                            context: "option::some".into(),
+                            inner: Box::new(e),
+                        })?;
+                }
+                Ok(())
+            }
+            _ => Err(mismatch("option", value)),
+        },
+
+        Type::Result { ok, err } => match value {
+            Value::Result { value: result, .. } => {
+                match result {
+                    Ok(v) => validate_value_in_type_space(v, ok, type_defs)
+                        .map_err(|e| TypeValidationError::Nested {
+                            context: "result::ok".into(),
+                            inner: Box::new(e),
+                        })?,
+                    Err(v) => validate_value_in_type_space(v, err, type_defs)
+                        .map_err(|e| TypeValidationError::Nested {
+                            context: "result::err".into(),
+                            inner: Box::new(e),
+                        })?,
+                }
+                Ok(())
+            }
+            _ => Err(mismatch("result", value)),
+        },
+
+        Type::Tuple(types) => match value {
+            Value::Tuple(items) => {
+                if types.len() != items.len() {
+                    return Err(TypeValidationError::WrongArity {
+                        expected: types.len(),
+                        got: items.len(),
+                    });
+                }
+                for (i, (ty, val)) in types.iter().zip(items.iter()).enumerate() {
+                    validate_value_in_type_space(val, ty, type_defs)
+                        .map_err(|e| TypeValidationError::Nested {
+                            context: format!("tuple.{}", i),
+                            inner: Box::new(e),
+                        })?;
+                }
+                Ok(())
+            }
+            _ => Err(mismatch("tuple", value)),
+        },
+
+        // Named reference — resolve and validate against the definition
+        Type::Ref(path) => {
+            let name = path.segments.last().map(|s| s.as_str()).unwrap_or("");
+            let type_def = type_defs.iter().find(|td| td.name() == name);
+
+            match type_def {
+                Some(TypeDef::Record { name, fields }) => validate_record(value, name, fields, type_defs),
+                Some(TypeDef::Variant { name, cases }) => validate_variant(value, name, cases, type_defs),
+                Some(TypeDef::Alias { ty, .. }) => validate_value_in_type_space(value, ty, type_defs),
+                Some(TypeDef::Enum { name, cases }) => validate_enum(value, name, cases),
+                Some(TypeDef::Flags { .. }) => match value {
+                    Value::Flags(_) => Ok(()),
+                    _ => Err(mismatch("flags", value)),
+                },
+                None => Err(TypeValidationError::UnresolvedRef {
+                    path: path.to_string(),
+                }),
+            }
+        }
+    }
+}
+
+fn validate_record(
+    value: &Value,
+    record_name: &str,
+    expected_fields: &[Field],
+    type_defs: &[TypeDef],
+) -> Result<(), TypeValidationError> {
+    match value {
+        Value::Record { fields: val_fields, .. } => {
+            // Check for missing fields
+            for expected in expected_fields {
+                if !val_fields.iter().any(|(name, _)| name == &expected.name) {
+                    return Err(TypeValidationError::MissingField {
+                        record: record_name.into(),
+                        field: expected.name.clone(),
+                    });
+                }
+            }
+            // Check for extra fields
+            for (name, _) in val_fields {
+                if !expected_fields.iter().any(|f| &f.name == name) {
+                    return Err(TypeValidationError::ExtraField {
+                        record: record_name.into(),
+                        field: name.clone(),
+                    });
+                }
+            }
+            // Validate each field's value
+            for (name, val) in val_fields {
+                if let Some(field_def) = expected_fields.iter().find(|f| &f.name == name) {
+                    validate_value_in_type_space(val, &field_def.ty, type_defs)
+                        .map_err(|e| TypeValidationError::Nested {
+                            context: format!("field '{}'", name),
+                            inner: Box::new(e),
+                        })?;
+                }
+            }
+            Ok(())
+        }
+        _ => Err(TypeValidationError::TypeMismatch {
+            expected: format!("record '{}'", record_name),
+            got: value_type_name(value),
+        }),
+    }
+}
+
+fn validate_variant(
+    value: &Value,
+    variant_name: &str,
+    expected_cases: &[Case],
+    type_defs: &[TypeDef],
+) -> Result<(), TypeValidationError> {
+    match value {
+        Value::Variant { case_name, payload, .. } => {
+            let case_def = expected_cases.iter().find(|c| &c.name == case_name);
+            match case_def {
+                Some(case) => {
+                    // Validate payload against the case's declared type
+                    match (&case.payload, payload.len()) {
+                        (Type::Unit, 0) => Ok(()),
+                        (Type::Unit, n) => Err(TypeValidationError::Nested {
+                            context: format!("case '{}'", case_name),
+                            inner: Box::new(TypeValidationError::WrongArity {
+                                expected: 0,
+                                got: n,
+                            }),
+                        }),
+                        (ty, 1) => {
+                            validate_value_in_type_space(&payload[0], ty, type_defs)
+                                .map_err(|e| TypeValidationError::Nested {
+                                    context: format!("case '{}'", case_name),
+                                    inner: Box::new(e),
+                                })
+                        }
+                        (_, n) => Err(TypeValidationError::Nested {
+                            context: format!("case '{}'", case_name),
+                            inner: Box::new(TypeValidationError::WrongArity {
+                                expected: 1,
+                                got: n,
+                            }),
+                        }),
+                    }
+                }
+                None => Err(TypeValidationError::UnknownCase {
+                    variant: variant_name.into(),
+                    case: case_name.clone(),
+                }),
+            }
+        }
+        _ => Err(TypeValidationError::TypeMismatch {
+            expected: format!("variant '{}'", variant_name),
+            got: value_type_name(value),
+        }),
+    }
+}
+
+fn validate_enum(
+    value: &Value,
+    enum_name: &str,
+    expected_cases: &[String],
+) -> Result<(), TypeValidationError> {
+    match value {
+        Value::Variant { case_name, payload, .. } => {
+            if !expected_cases.iter().any(|c| c == case_name) {
+                return Err(TypeValidationError::UnknownCase {
+                    variant: enum_name.into(),
+                    case: case_name.clone(),
+                });
+            }
+            if !payload.is_empty() {
+                return Err(TypeValidationError::Nested {
+                    context: format!("enum case '{}'", case_name),
+                    inner: Box::new(TypeValidationError::WrongArity {
+                        expected: 0,
+                        got: payload.len(),
+                    }),
+                });
+            }
+            Ok(())
+        }
+        _ => Err(TypeValidationError::TypeMismatch {
+            expected: format!("enum '{}'", enum_name),
+            got: value_type_name(value),
+        }),
+    }
+}
+
+fn mismatch(expected: &str, value: &Value) -> TypeValidationError {
+    TypeValidationError::TypeMismatch {
+        expected: expected.into(),
+        got: value_type_name(value),
+    }
+}
+
+fn value_type_name(value: &Value) -> String {
+    match value {
+        Value::Bool(_) => "bool".into(),
+        Value::U8(_) => "u8".into(),
+        Value::U16(_) => "u16".into(),
+        Value::U32(_) => "u32".into(),
+        Value::U64(_) => "u64".into(),
+        Value::S8(_) => "s8".into(),
+        Value::S16(_) => "s16".into(),
+        Value::S32(_) => "s32".into(),
+        Value::S64(_) => "s64".into(),
+        Value::F32(_) => "f32".into(),
+        Value::F64(_) => "f64".into(),
+        Value::Char(_) => "char".into(),
+        Value::String(_) => "string".into(),
+        Value::List { .. } => "list".into(),
+        Value::Option { .. } => "option".into(),
+        Value::Result { .. } => "result".into(),
+        Value::Record { type_name, .. } => format!("record '{}'", type_name),
+        Value::Variant { type_name, case_name, .. } => format!("variant '{}' (case '{}')", type_name, case_name),
+        Value::Tuple(items) => format!("tuple<{}>", items.len()),
+        Value::Flags(_) => "flags".into(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1376,5 +1844,270 @@ mod tests {
         // Verify hashes are non-zero
         assert!(!decoded.import_hashes[0].hash.as_bytes().iter().all(|&b| b == 0));
         assert!(!decoded.export_hashes[0].hash.as_bytes().iter().all(|&b| b == 0));
+    }
+
+    // ========================================================================
+    // Type space validation tests
+    // ========================================================================
+
+    #[test]
+    fn test_validate_primitives() {
+        let defs = vec![];
+        assert!(validate_value_in_type_space(&Value::Bool(true), &Type::Bool, &defs).is_ok());
+        assert!(validate_value_in_type_space(&Value::U32(42), &Type::U32, &defs).is_ok());
+        assert!(validate_value_in_type_space(&Value::String("hi".into()), &Type::String, &defs).is_ok());
+
+        // Mismatch
+        assert!(validate_value_in_type_space(&Value::Bool(true), &Type::U32, &defs).is_err());
+        assert!(validate_value_in_type_space(&Value::U32(42), &Type::String, &defs).is_err());
+    }
+
+    #[test]
+    fn test_validate_unit() {
+        let defs = vec![];
+        assert!(validate_value_in_type_space(&Value::Tuple(vec![]), &Type::Unit, &defs).is_ok());
+        assert!(validate_value_in_type_space(&Value::Bool(true), &Type::Unit, &defs).is_err());
+    }
+
+    #[test]
+    fn test_validate_type_value_escape_hatch() {
+        let defs = vec![];
+        // Type::Value accepts anything
+        assert!(validate_value_in_type_space(&Value::Bool(true), &Type::Value, &defs).is_ok());
+        assert!(validate_value_in_type_space(&Value::String("x".into()), &Type::Value, &defs).is_ok());
+        assert!(validate_value_in_type_space(&Value::Tuple(vec![Value::U8(1)]), &Type::Value, &defs).is_ok());
+    }
+
+    #[test]
+    fn test_validate_tuple() {
+        let defs = vec![];
+        let ty = Type::Tuple(vec![Type::String, Type::U32]);
+        let val = Value::Tuple(vec![Value::String("a".into()), Value::U32(1)]);
+        assert!(validate_value_in_type_space(&val, &ty, &defs).is_ok());
+
+        // Wrong arity
+        let val_short = Value::Tuple(vec![Value::String("a".into())]);
+        assert!(validate_value_in_type_space(&val_short, &ty, &defs).is_err());
+
+        // Wrong inner type
+        let val_bad = Value::Tuple(vec![Value::String("a".into()), Value::Bool(true)]);
+        assert!(validate_value_in_type_space(&val_bad, &ty, &defs).is_err());
+    }
+
+    #[test]
+    fn test_validate_record() {
+        let defs = vec![
+            TypeDef::Record {
+                name: "my-state".into(),
+                fields: vec![
+                    Field::new("count", Type::S32),
+                    Field::new("name", Type::String),
+                ],
+            },
+        ];
+        let ty = Type::Ref(TypePath::simple("my-state"));
+
+        // Valid
+        let val = Value::Record {
+            type_name: "my-state".into(),
+            fields: vec![
+                ("count".into(), Value::S32(5)),
+                ("name".into(), Value::String("test".into())),
+            ],
+        };
+        assert!(validate_value_in_type_space(&val, &ty, &defs).is_ok());
+
+        // Missing field
+        let val_missing = Value::Record {
+            type_name: "my-state".into(),
+            fields: vec![("count".into(), Value::S32(5))],
+        };
+        assert!(validate_value_in_type_space(&val_missing, &ty, &defs).is_err());
+
+        // Extra field
+        let val_extra = Value::Record {
+            type_name: "my-state".into(),
+            fields: vec![
+                ("count".into(), Value::S32(5)),
+                ("name".into(), Value::String("test".into())),
+                ("bonus".into(), Value::Bool(true)),
+            ],
+        };
+        assert!(validate_value_in_type_space(&val_extra, &ty, &defs).is_err());
+
+        // Wrong field type
+        let val_wrong_type = Value::Record {
+            type_name: "my-state".into(),
+            fields: vec![
+                ("count".into(), Value::String("not a number".into())),
+                ("name".into(), Value::String("test".into())),
+            ],
+        };
+        assert!(validate_value_in_type_space(&val_wrong_type, &ty, &defs).is_err());
+    }
+
+    #[test]
+    fn test_validate_variant() {
+        let defs = vec![
+            TypeDef::Variant {
+                name: "result".into(),
+                cases: vec![
+                    Case::new("ok", Type::String),
+                    Case::new("err", Type::String),
+                ],
+            },
+        ];
+        let ty = Type::Ref(TypePath::simple("result"));
+
+        // Valid case
+        let val = Value::Variant {
+            type_name: "result".into(),
+            case_name: "ok".into(),
+            tag: 0,
+            payload: vec![Value::String("success".into())],
+        };
+        assert!(validate_value_in_type_space(&val, &ty, &defs).is_ok());
+
+        // Unknown case
+        let val_bad = Value::Variant {
+            type_name: "result".into(),
+            case_name: "maybe".into(),
+            tag: 2,
+            payload: vec![],
+        };
+        assert!(validate_value_in_type_space(&val_bad, &ty, &defs).is_err());
+
+        // Wrong payload type
+        let val_wrong = Value::Variant {
+            type_name: "result".into(),
+            case_name: "ok".into(),
+            tag: 0,
+            payload: vec![Value::U32(42)],
+        };
+        assert!(validate_value_in_type_space(&val_wrong, &ty, &defs).is_err());
+    }
+
+    #[test]
+    fn test_validate_enum() {
+        let defs = vec![
+            TypeDef::Enum {
+                name: "color".into(),
+                cases: vec!["red".into(), "green".into(), "blue".into()],
+            },
+        ];
+        let ty = Type::Ref(TypePath::simple("color"));
+
+        let val = Value::Variant {
+            type_name: "color".into(),
+            case_name: "red".into(),
+            tag: 0,
+            payload: vec![],
+        };
+        assert!(validate_value_in_type_space(&val, &ty, &defs).is_ok());
+
+        // Unknown case
+        let val_bad = Value::Variant {
+            type_name: "color".into(),
+            case_name: "purple".into(),
+            tag: 3,
+            payload: vec![],
+        };
+        assert!(validate_value_in_type_space(&val_bad, &ty, &defs).is_err());
+    }
+
+    #[test]
+    fn test_validate_nested_record_with_variant() {
+        let defs = vec![
+            TypeDef::Record {
+                name: "state".into(),
+                fields: vec![
+                    Field::new("status", Type::Ref(TypePath::simple("status"))),
+                    Field::new("count", Type::U32),
+                ],
+            },
+            TypeDef::Variant {
+                name: "status".into(),
+                cases: vec![
+                    Case::unit("pending"),
+                    Case::new("active", Type::String),
+                ],
+            },
+        ];
+        let ty = Type::Ref(TypePath::simple("state"));
+
+        // Valid: record with variant field
+        let val = Value::Record {
+            type_name: "state".into(),
+            fields: vec![
+                ("status".into(), Value::Variant {
+                    type_name: "status".into(),
+                    case_name: "active".into(),
+                    tag: 1,
+                    payload: vec![Value::String("running".into())],
+                }),
+                ("count".into(), Value::U32(10)),
+            ],
+        };
+        assert!(validate_value_in_type_space(&val, &ty, &defs).is_ok());
+
+        // Invalid: variant case has wrong payload
+        let val_bad = Value::Record {
+            type_name: "state".into(),
+            fields: vec![
+                ("status".into(), Value::Variant {
+                    type_name: "status".into(),
+                    case_name: "active".into(),
+                    tag: 1,
+                    payload: vec![Value::U32(42)], // should be String
+                }),
+                ("count".into(), Value::U32(10)),
+            ],
+        };
+        assert!(validate_value_in_type_space(&val_bad, &ty, &defs).is_err());
+    }
+
+    #[test]
+    fn test_validate_unresolved_ref() {
+        let defs = vec![];
+        let ty = Type::Ref(TypePath::simple("nonexistent"));
+        let val = Value::Bool(true);
+        let err = validate_value_in_type_space(&val, &ty, &defs).unwrap_err();
+        assert!(matches!(err, TypeValidationError::UnresolvedRef { .. }));
+    }
+
+    #[test]
+    fn test_validate_option_and_list() {
+        use crate::abi::ValueType;
+        let defs = vec![];
+
+        // Option<string> with Some
+        let ty = Type::Option(Box::new(Type::String));
+        let val = Value::Option {
+            inner_type: ValueType::String,
+            value: Some(Box::new(Value::String("hi".into()))),
+        };
+        assert!(validate_value_in_type_space(&val, &ty, &defs).is_ok());
+
+        // Option<string> with None
+        let val_none = Value::Option {
+            inner_type: ValueType::String,
+            value: None,
+        };
+        assert!(validate_value_in_type_space(&val_none, &ty, &defs).is_ok());
+
+        // List<u32>
+        let ty_list = Type::List(Box::new(Type::U32));
+        let val_list = Value::List {
+            elem_type: ValueType::U32,
+            items: vec![Value::U32(1), Value::U32(2)],
+        };
+        assert!(validate_value_in_type_space(&val_list, &ty_list, &defs).is_ok());
+
+        // List<u32> with wrong element
+        let val_bad_list = Value::List {
+            elem_type: ValueType::U32,
+            items: vec![Value::U32(1), Value::String("oops".into())],
+        };
+        assert!(validate_value_in_type_space(&val_bad_list, &ty_list, &defs).is_err());
     }
 }

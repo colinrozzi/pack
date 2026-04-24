@@ -1536,18 +1536,29 @@ fn parse_and_encode_metadata(input: &str) -> Result<Vec<u8>, String> {
 
     let mut imports = Vec::new();
     let mut exports = Vec::new();
+    let mut types = Vec::new();
 
     while !parser.is_eof() {
+        // Try to parse a type definition (record, variant, enum, flags, type alias)
+        if let Some(td) = wit_parser::try_parse_typedef_public(&mut parser)
+            .map_err(|e| format!("type definition error: {}", e))?
+        {
+            types.push(td);
+            parser.accept_symbol(',');
+            parser.accept_symbol(';');
+            continue;
+        }
+
         if parser.accept_ident("imports") {
             parser.expect_symbol('{').map_err(|e| e.to_string())?;
-            parse_import_sigs(&mut parser, &mut imports)?;
+            parse_import_sigs(&mut parser, &mut imports, &types)?;
             parser.expect_symbol('}').map_err(|e| e.to_string())?;
         } else if parser.accept_ident("exports") {
             parser.expect_symbol('{').map_err(|e| e.to_string())?;
-            parse_func_sigs_into(&mut parser, "", &mut exports)?;
+            parse_func_sigs_into(&mut parser, "", &mut exports, &types)?;
             parser.expect_symbol('}').map_err(|e| e.to_string())?;
         } else {
-            return Err("expected 'imports' or 'exports'".into());
+            return Err("expected type definition, 'imports', or 'exports'".into());
         }
     }
 
@@ -1578,11 +1589,12 @@ fn parse_interface_path(parser: &mut wit_parser::Parser) -> Result<String, Strin
 fn parse_import_sigs(
     parser: &mut wit_parser::Parser,
     sigs: &mut Vec<metadata::FuncSig>,
+    types: &[wit_parser::TypeDef],
 ) -> Result<(), String> {
     while !parser.peek_is_symbol('}') && !parser.is_eof() {
         let iface_name = parse_interface_path(parser)?;
         parser.expect_symbol('{').map_err(|e| e.to_string())?;
-        parse_func_sigs_into(parser, &iface_name, sigs)?;
+        parse_func_sigs_into(parser, &iface_name, sigs, types)?;
         parser.expect_symbol('}').map_err(|e| e.to_string())?;
         parser.accept_symbol(',');
     }
@@ -1631,6 +1643,7 @@ fn parse_func_sigs_into(
     parser: &mut wit_parser::Parser,
     interface: &str,
     sigs: &mut Vec<metadata::FuncSig>,
+    types: &[wit_parser::TypeDef],
 ) -> Result<(), String> {
     while !parser.peek_is_symbol('}') && !parser.is_eof() {
         let (iface, name) = parse_function_path(parser, interface)?;
@@ -1643,13 +1656,13 @@ fn parse_func_sigs_into(
         let params: Vec<(String, metadata::TypeDesc)> = func
             .params
             .iter()
-            .map(|(n, t)| (n.clone(), metadata::wit_type_to_type_desc(t, &[])))
+            .map(|(n, t)| (n.clone(), metadata::wit_type_to_type_desc(t, types)))
             .collect();
 
         let results: Vec<metadata::TypeDesc> = func
             .results
             .iter()
-            .map(|t| metadata::wit_type_to_type_desc(t, &[]))
+            .map(|t| metadata::wit_type_to_type_desc(t, types))
             .collect();
 
         sigs.push(metadata::FuncSig {

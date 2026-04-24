@@ -802,6 +802,12 @@ fn parse_world_body(parser: &mut Parser) -> Result<World, ParseError> {
     Ok(World { name, types, imports, exports })
 }
 
+/// Try to parse a type definition from the current parser position.
+/// Returns None if the next token doesn't start a type definition.
+pub fn try_parse_typedef_public(parser: &mut Parser) -> Result<Option<TypeDef>, ParseError> {
+    try_parse_typedef(parser)
+}
+
 fn try_parse_typedef(parser: &mut Parser) -> Result<Option<TypeDef>, ParseError> {
     let keyword = match parser.peek() {
         Token::Ident(s) => s.clone(),
