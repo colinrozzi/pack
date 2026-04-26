@@ -62,6 +62,9 @@
             # Build tools
             cmake
             gnumake
+
+            # GitHub CLI
+            gh
           ];
 
           # Environment variables
@@ -108,6 +111,32 @@
 
         # Alias for the package
         packages.composite = self.packages.${system}.default;
+
+        # Create a PR from the current jj revision
+        packages.pr = pkgs.writeShellScriptBin "pack-pr" ''
+          set -e
+          DESCRIPTION=$(jj log -r @ --no-graph -T 'description' 2>/dev/null)
+          if [ -z "$DESCRIPTION" ] || [ "$DESCRIPTION" = "(no description set)" ]; then
+            echo "Error: Current revision has no description. Run: jj describe -m 'your change'"
+            exit 1
+          fi
+
+          TITLE=$(echo "$DESCRIPTION" | head -1)
+          BRANCH=$(echo "$TITLE" | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | tr -cd 'a-z0-9-' | head -c 50)
+
+          echo "Creating PR: $TITLE"
+          echo "Branch: $BRANCH"
+          echo ""
+
+          jj bookmark create "$BRANCH" -r @ 2>/dev/null || jj bookmark set "$BRANCH" -r @
+          jj git push --bookmark "$BRANCH"
+
+          ${pkgs.gh}/bin/gh pr create \
+            --title "$TITLE" \
+            --body "$DESCRIPTION" \
+            --base main \
+            --head "$BRANCH"
+        '';
       }
     );
 }
