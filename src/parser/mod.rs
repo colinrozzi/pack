@@ -4,28 +4,26 @@
 //! The module focuses on parsing; types are defined in `crate::types`.
 
 mod pact;
-mod wit;
 mod validation;
+mod wit;
 
 pub use pact::{
-    parse_pact, parse_pact_dir, parse_pact_dir_with_registry, parse_pact_file,
-    InterfaceAlias, InterfaceTypes, Metadata, MetadataValue, PactExport, PactFileError,
-    PactImport, PactInterface, PactUse, ResolvedScope, ResolvedUse, TypeParam, TypeRegistry,
+    parse_pact, parse_pact_dir, parse_pact_dir_with_registry, parse_pact_file, InterfaceAlias,
+    InterfaceTypes, Metadata, MetadataValue, PactExport, PactFileError, PactImport, PactInterface,
+    PactUse, ResolvedScope, ResolvedUse, TypeParam, TypeRegistry,
 };
 
 // WIT+ parser is deprecated - use parse_pact() instead.
 // Kept for internal tests only.
-#[doc(hidden)]
-#[allow(deprecated)]
-pub use wit::{parse_interface, parse_world};
 pub use validation::{
     decode_with_schema, encode_with_schema, validate_graph_against_type, ValidationError,
 };
+#[doc(hidden)]
+#[allow(deprecated)]
+pub use wit::{parse_interface, parse_world};
 
 // Re-export types from crate::types for convenience
-pub use crate::types::{
-    Arena, Case, Field, Function, Param, Type, TypeDef, TypePath,
-};
+pub use crate::types::{Arena, Case, Field, Function, Param, Type, TypeDef, TypePath};
 
 use std::collections::HashSet;
 
@@ -124,7 +122,9 @@ impl World {
                 }
                 WorldItem::Function(func) => {
                     // Standalone functions go in a "standalone" interface
-                    let standalone = import_arena.children.iter_mut()
+                    let standalone = import_arena
+                        .children
+                        .iter_mut()
                         .find(|c| c.name == "standalone");
                     if let Some(child) = standalone {
                         child.add_function(func.clone());
@@ -151,7 +151,9 @@ impl World {
                     export_arena.add_child(child);
                 }
                 WorldItem::Function(func) => {
-                    let standalone = export_arena.children.iter_mut()
+                    let standalone = export_arena
+                        .children
+                        .iter_mut()
                         .find(|c| c.name == "standalone");
                     if let Some(child) = standalone {
                         child.add_function(func.clone());
@@ -422,9 +424,7 @@ fn validate_type_ref(
     allow_self_ref: bool,
 ) -> Result<(), ParseError> {
     match ty {
-        Type::List(inner) | Type::Option(inner) => {
-            validate_type_ref(inner, names, allow_self_ref)
-        }
+        Type::List(inner) | Type::Option(inner) => validate_type_ref(inner, names, allow_self_ref),
         Type::Result { ok, err } => {
             validate_type_ref(ok, names, allow_self_ref)?;
             validate_type_ref(err, names, allow_self_ref)?;

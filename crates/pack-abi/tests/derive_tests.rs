@@ -220,10 +220,7 @@ fn recursive_enum_leaf() {
 fn recursive_enum_nested() {
     let original = Tree::Node(vec![
         Tree::Leaf(1),
-        Tree::Node(vec![
-            Tree::Leaf(2),
-            Tree::Leaf(3),
-        ]),
+        Tree::Node(vec![Tree::Leaf(2), Tree::Leaf(3)]),
         Tree::Leaf(4),
     ]);
     let value: Value = original.clone().into();

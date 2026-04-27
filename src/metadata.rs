@@ -64,7 +64,11 @@ impl TypeHash {
 
     /// Format as short hex (first 8 chars).
     pub fn to_short_hex(&self) -> String {
-        self.0.iter().take(4).map(|b| format!("{:02x}", b)).collect()
+        self.0
+            .iter()
+            .take(4)
+            .map(|b| format!("{:02x}", b))
+            .collect()
     }
 
     /// Const function to create from bytes (for compile-time constants).
@@ -81,10 +85,8 @@ impl TypeHash {
 ///
 /// This matches the HASH_SELF_REF constant in pack-abi for consistency.
 pub const HASH_SELF_REF: TypeHash = TypeHash::from_bytes_const([
-    0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ]);
 
 impl std::fmt::Display for TypeHash {
@@ -99,114 +101,86 @@ impl std::fmt::Display for TypeHash {
 
 /// Hash for the `bool` type.
 pub const HASH_BOOL: TypeHash = TypeHash([
-    0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ]);
 
 /// Hash for the `u8` type.
 pub const HASH_U8: TypeHash = TypeHash([
-    0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ]);
 
 /// Hash for the `u16` type.
 pub const HASH_U16: TypeHash = TypeHash([
-    0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ]);
 
 /// Hash for the `u32` type.
 pub const HASH_U32: TypeHash = TypeHash([
-    0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ]);
 
 /// Hash for the `u64` type.
 pub const HASH_U64: TypeHash = TypeHash([
-    0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ]);
 
 /// Hash for the `s8` type.
 pub const HASH_S8: TypeHash = TypeHash([
-    0x00, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ]);
 
 /// Hash for the `s16` type.
 pub const HASH_S16: TypeHash = TypeHash([
-    0x00, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ]);
 
 /// Hash for the `s32` type.
 pub const HASH_S32: TypeHash = TypeHash([
-    0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ]);
 
 /// Hash for the `s64` type.
 pub const HASH_S64: TypeHash = TypeHash([
-    0x00, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ]);
 
 /// Hash for the `f32` type.
 pub const HASH_F32: TypeHash = TypeHash([
-    0x00, 0x0a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x0a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ]);
 
 /// Hash for the `f64` type.
 pub const HASH_F64: TypeHash = TypeHash([
-    0x00, 0x0b, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x0b, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ]);
 
 /// Hash for the `char` type.
 pub const HASH_CHAR: TypeHash = TypeHash([
-    0x00, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ]);
 
 /// Hash for the `string` type.
 pub const HASH_STRING: TypeHash = TypeHash([
-    0x00, 0x0d, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x0d, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ]);
 
 /// Hash for the `flags` type.
 pub const HASH_FLAGS: TypeHash = TypeHash([
-    0x00, 0x0e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x0e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ]);
 
 // ============================================================================
@@ -232,7 +206,9 @@ struct TypeHasher {
 
 impl TypeHasher {
     fn new() -> Self {
-        Self { hasher: Sha256::new() }
+        Self {
+            hasher: Sha256::new(),
+        }
     }
 
     fn tag(mut self, tag: u8) -> Self {
@@ -276,7 +252,11 @@ pub fn hash_option(inner: &TypeHash) -> TypeHash {
 
 /// Hash a result type.
 pub fn hash_result(ok: &TypeHash, err: &TypeHash) -> TypeHash {
-    TypeHasher::new().tag(HASH_TAG_RESULT).child(ok).child(err).finish()
+    TypeHasher::new()
+        .tag(HASH_TAG_RESULT)
+        .child(ok)
+        .child(err)
+        .finish()
 }
 
 /// Hash a tuple type.
@@ -707,10 +687,22 @@ fn decode_interface_hash(value: Value) -> Result<InterfaceHash, MetadataError> {
                             Value::Tuple(parts) => {
                                 // Legacy: tuple of 4 u64s
                                 if parts.len() == 4 {
-                                    let a = match &parts[0] { Value::U64(v) => *v, _ => 0 };
-                                    let b = match &parts[1] { Value::U64(v) => *v, _ => 0 };
-                                    let c = match &parts[2] { Value::U64(v) => *v, _ => 0 };
-                                    let d = match &parts[3] { Value::U64(v) => *v, _ => 0 };
+                                    let a = match &parts[0] {
+                                        Value::U64(v) => *v,
+                                        _ => 0,
+                                    };
+                                    let b = match &parts[1] {
+                                        Value::U64(v) => *v,
+                                        _ => 0,
+                                    };
+                                    let c = match &parts[2] {
+                                        Value::U64(v) => *v,
+                                        _ => 0,
+                                    };
+                                    let d = match &parts[3] {
+                                        Value::U64(v) => *v,
+                                        _ => 0,
+                                    };
                                     hash = TypeHash::from_u64s(a, b, c, d);
                                 }
                             }
@@ -731,9 +723,15 @@ fn decode_interface_hash(value: Value) -> Result<InterfaceHash, MetadataError> {
 
 /// Decode a list of function signatures.
 /// Returns (interface_name, Function) pairs.
-fn decode_func_sig_list(value: Value, type_defs: &mut Vec<TypeDef>) -> Result<Vec<(String, Function)>, MetadataError> {
+fn decode_func_sig_list(
+    value: Value,
+    type_defs: &mut Vec<TypeDef>,
+) -> Result<Vec<(String, Function)>, MetadataError> {
     match value {
-        Value::List { items, .. } => items.into_iter().map(|v| decode_func_sig(v, type_defs)).collect(),
+        Value::List { items, .. } => items
+            .into_iter()
+            .map(|v| decode_func_sig(v, type_defs))
+            .collect(),
         _ => Err(MetadataError::InvalidStructure(
             "expected list of function signatures".into(),
         )),
@@ -742,7 +740,10 @@ fn decode_func_sig_list(value: Value, type_defs: &mut Vec<TypeDef>) -> Result<Ve
 
 /// Decode a function signature, collecting discovered TypeDefs.
 /// Returns (interface_name, Function).
-fn decode_func_sig(value: Value, type_defs: &mut Vec<TypeDef>) -> Result<(String, Function), MetadataError> {
+fn decode_func_sig(
+    value: Value,
+    type_defs: &mut Vec<TypeDef>,
+) -> Result<(String, Function), MetadataError> {
     match value {
         Value::Record { fields, .. } => {
             let mut interface = String::new();
@@ -784,9 +785,15 @@ fn decode_func_sig(value: Value, type_defs: &mut Vec<TypeDef>) -> Result<(String
     }
 }
 
-fn decode_param_list(value: Value, type_defs: &mut Vec<TypeDef>) -> Result<Vec<Param>, MetadataError> {
+fn decode_param_list(
+    value: Value,
+    type_defs: &mut Vec<TypeDef>,
+) -> Result<Vec<Param>, MetadataError> {
     match value {
-        Value::List { items, .. } => items.into_iter().map(|v| decode_param(v, type_defs)).collect(),
+        Value::List { items, .. } => items
+            .into_iter()
+            .map(|v| decode_param(v, type_defs))
+            .collect(),
         _ => Err(MetadataError::InvalidStructure(
             "expected list of parameters".into(),
         )),
@@ -821,21 +828,25 @@ fn decode_param(value: Value, type_defs: &mut Vec<TypeDef>) -> Result<Param, Met
     }
 }
 
-fn decode_type_list(value: Value, type_defs: &mut Vec<TypeDef>) -> Result<Vec<Type>, MetadataError> {
+fn decode_type_list(
+    value: Value,
+    type_defs: &mut Vec<TypeDef>,
+) -> Result<Vec<Type>, MetadataError> {
     match value {
-        Value::List { items, .. } => items.into_iter().map(|v| decode_type_collecting(v, type_defs)).collect(),
+        Value::List { items, .. } => items
+            .into_iter()
+            .map(|v| decode_type_collecting(v, type_defs))
+            .collect(),
         _ => Err(MetadataError::InvalidStructure(
             "expected list of types".into(),
         )),
     }
 }
 
-fn decode_type(value: Value) -> Result<Type, MetadataError> {
-    let mut type_defs = Vec::new();
-    decode_type_collecting(value, &mut type_defs)
-}
-
-fn decode_type_collecting(value: Value, type_defs: &mut Vec<TypeDef>) -> Result<Type, MetadataError> {
+fn decode_type_collecting(
+    value: Value,
+    type_defs: &mut Vec<TypeDef>,
+) -> Result<Type, MetadataError> {
     match value {
         Value::Variant { tag, payload, .. } => {
             let tag = tag as u32;
@@ -906,8 +917,10 @@ fn decode_type_collecting(value: Value, type_defs: &mut Vec<TypeDef>) -> Result<
                     })?;
                     match list {
                         Value::List { items, .. } => {
-                            let types: Result<Vec<_>, _> =
-                                items.into_iter().map(|v| decode_type_collecting(v, type_defs)).collect();
+                            let types: Result<Vec<_>, _> = items
+                                .into_iter()
+                                .map(|v| decode_type_collecting(v, type_defs))
+                                .collect();
                             Ok(Type::tuple(types?))
                         }
                         _ => Err(MetadataError::InvalidStructure(
@@ -932,8 +945,7 @@ fn decode_type_collecting(value: Value, type_defs: &mut Vec<TypeDef>) -> Result<
 fn decode_record_type(value: Value, type_defs: &mut Vec<TypeDef>) -> Result<Type, MetadataError> {
     match value {
         Value::Record {
-            fields: rec_fields,
-            ..
+            fields: rec_fields, ..
         } => {
             let mut name = String::new();
             let mut decoded_fields = Vec::new();
@@ -948,7 +960,10 @@ fn decode_record_type(value: Value, type_defs: &mut Vec<TypeDef>) -> Result<Type
                     "fields" => {
                         if let Value::List { items, .. } = val {
                             for item in items {
-                                if let Value::Record { fields: field_rec, .. } = item {
+                                if let Value::Record {
+                                    fields: field_rec, ..
+                                } = item
+                                {
                                     let mut field_name = String::new();
                                     let mut field_type = Type::Value;
                                     for (fn_name, fn_val) in field_rec {
@@ -959,7 +974,8 @@ fn decode_record_type(value: Value, type_defs: &mut Vec<TypeDef>) -> Result<Type
                                                 }
                                             }
                                             "type" => {
-                                                field_type = decode_type_collecting(fn_val, type_defs)?;
+                                                field_type =
+                                                    decode_type_collecting(fn_val, type_defs)?;
                                             }
                                             _ => {}
                                         }
@@ -995,8 +1011,7 @@ fn decode_record_type(value: Value, type_defs: &mut Vec<TypeDef>) -> Result<Type
 fn decode_variant_type(value: Value, type_defs: &mut Vec<TypeDef>) -> Result<Type, MetadataError> {
     match value {
         Value::Record {
-            fields: rec_fields,
-            ..
+            fields: rec_fields, ..
         } => {
             let mut name = String::new();
             let mut decoded_cases = Vec::new();
@@ -1011,7 +1026,10 @@ fn decode_variant_type(value: Value, type_defs: &mut Vec<TypeDef>) -> Result<Typ
                     "cases" => {
                         if let Value::List { items, .. } = val {
                             for item in items {
-                                if let Value::Record { fields: case_rec, .. } = item {
+                                if let Value::Record {
+                                    fields: case_rec, ..
+                                } = item
+                                {
                                     let mut case_name = String::new();
                                     let mut case_payload = Type::Unit;
                                     for (cn, cv) in case_rec {
@@ -1022,8 +1040,15 @@ fn decode_variant_type(value: Value, type_defs: &mut Vec<TypeDef>) -> Result<Typ
                                                 }
                                             }
                                             "payload" => {
-                                                if let Value::Option { value: Some(payload_val), .. } = cv {
-                                                    case_payload = decode_type_collecting(*payload_val, type_defs)?;
+                                                if let Value::Option {
+                                                    value: Some(payload_val),
+                                                    ..
+                                                } = cv
+                                                {
+                                                    case_payload = decode_type_collecting(
+                                                        *payload_val,
+                                                        type_defs,
+                                                    )?;
                                                 }
                                             }
                                             _ => {}
@@ -1039,13 +1064,14 @@ fn decode_variant_type(value: Value, type_defs: &mut Vec<TypeDef>) -> Result<Typ
             }
 
             // Store the TypeDef for later resolution
-            if !name.is_empty() && !decoded_cases.is_empty() {
-                if !type_defs.iter().any(|td| td.name() == name) {
-                    type_defs.push(TypeDef::Variant {
-                        name: name.clone(),
-                        cases: decoded_cases,
-                    });
-                }
+            if !name.is_empty()
+                && !decoded_cases.is_empty()
+                && !type_defs.iter().any(|td| td.name() == name)
+            {
+                type_defs.push(TypeDef::Variant {
+                    name: name.clone(),
+                    cases: decoded_cases,
+                });
             }
 
             Ok(Type::Ref(TypePath::simple(name)))
@@ -1116,7 +1142,10 @@ fn encode_func_sig_value(interface: &str, func: &Function) -> Value {
     Value::Record {
         type_name: "FunctionSignature".to_string(),
         fields: vec![
-            ("interface".to_string(), Value::String(interface.to_string())),
+            (
+                "interface".to_string(),
+                Value::String(interface.to_string()),
+            ),
             ("name".to_string(), Value::String(func.name.clone())),
             (
                 "params".to_string(),
@@ -1294,14 +1323,20 @@ pub fn encode_metadata_with_hashes(arena: &Arena) -> Result<Vec<u8>, MetadataErr
                 "import-hashes".to_string(),
                 Value::List {
                     elem_type: crate::abi::ValueType::Record("InterfaceHash".to_string()),
-                    items: import_hashes.iter().map(encode_interface_hash_value).collect(),
+                    items: import_hashes
+                        .iter()
+                        .map(encode_interface_hash_value)
+                        .collect(),
                 },
             ),
             (
                 "export-hashes".to_string(),
                 Value::List {
                     elem_type: crate::abi::ValueType::Record("InterfaceHash".to_string()),
-                    items: export_hashes.iter().map(encode_interface_hash_value).collect(),
+                    items: export_hashes
+                        .iter()
+                        .map(encode_interface_hash_value)
+                        .collect(),
                 },
             ),
         ],
@@ -1347,7 +1382,10 @@ pub enum TypeValidationError {
     /// Tuple or payload length mismatch.
     WrongArity { expected: usize, got: usize },
     /// Error in a nested position, with context path.
-    Nested { context: String, inner: Box<TypeValidationError> },
+    Nested {
+        context: String,
+        inner: Box<TypeValidationError>,
+    },
 }
 
 impl std::fmt::Display for TypeValidationError {
@@ -1461,11 +1499,12 @@ pub fn validate_value_in_type_space(
         Type::List(elem_type) => match value {
             Value::List { items, .. } => {
                 for (i, item) in items.iter().enumerate() {
-                    validate_value_in_type_space(item, elem_type, type_defs)
-                        .map_err(|e| TypeValidationError::Nested {
+                    validate_value_in_type_space(item, elem_type, type_defs).map_err(|e| {
+                        TypeValidationError::Nested {
                             context: format!("list[{}]", i),
                             inner: Box::new(e),
-                        })?;
+                        }
+                    })?;
                 }
                 Ok(())
             }
@@ -1475,11 +1514,12 @@ pub fn validate_value_in_type_space(
         Type::Option(inner_type) => match value {
             Value::Option { value: inner, .. } => {
                 if let Some(v) = inner {
-                    validate_value_in_type_space(v, inner_type, type_defs)
-                        .map_err(|e| TypeValidationError::Nested {
+                    validate_value_in_type_space(v, inner_type, type_defs).map_err(|e| {
+                        TypeValidationError::Nested {
                             context: "option::some".into(),
                             inner: Box::new(e),
-                        })?;
+                        }
+                    })?;
                 }
                 Ok(())
             }
@@ -1489,16 +1529,18 @@ pub fn validate_value_in_type_space(
         Type::Result { ok, err } => match value {
             Value::Result { value: result, .. } => {
                 match result {
-                    Ok(v) => validate_value_in_type_space(v, ok, type_defs)
-                        .map_err(|e| TypeValidationError::Nested {
+                    Ok(v) => validate_value_in_type_space(v, ok, type_defs).map_err(|e| {
+                        TypeValidationError::Nested {
                             context: "result::ok".into(),
                             inner: Box::new(e),
-                        })?,
-                    Err(v) => validate_value_in_type_space(v, err, type_defs)
-                        .map_err(|e| TypeValidationError::Nested {
+                        }
+                    })?,
+                    Err(v) => validate_value_in_type_space(v, err, type_defs).map_err(|e| {
+                        TypeValidationError::Nested {
                             context: "result::err".into(),
                             inner: Box::new(e),
-                        })?,
+                        }
+                    })?,
                 }
                 Ok(())
             }
@@ -1514,11 +1556,12 @@ pub fn validate_value_in_type_space(
                     });
                 }
                 for (i, (ty, val)) in types.iter().zip(items.iter()).enumerate() {
-                    validate_value_in_type_space(val, ty, type_defs)
-                        .map_err(|e| TypeValidationError::Nested {
+                    validate_value_in_type_space(val, ty, type_defs).map_err(|e| {
+                        TypeValidationError::Nested {
                             context: format!("tuple.{}", i),
                             inner: Box::new(e),
-                        })?;
+                        }
+                    })?;
                 }
                 Ok(())
             }
@@ -1531,9 +1574,15 @@ pub fn validate_value_in_type_space(
             let type_def = type_defs.iter().find(|td| td.name() == name);
 
             match type_def {
-                Some(TypeDef::Record { name, fields }) => validate_record(value, name, fields, type_defs),
-                Some(TypeDef::Variant { name, cases }) => validate_variant(value, name, cases, type_defs),
-                Some(TypeDef::Alias { ty, .. }) => validate_value_in_type_space(value, ty, type_defs),
+                Some(TypeDef::Record { name, fields }) => {
+                    validate_record(value, name, fields, type_defs)
+                }
+                Some(TypeDef::Variant { name, cases }) => {
+                    validate_variant(value, name, cases, type_defs)
+                }
+                Some(TypeDef::Alias { ty, .. }) => {
+                    validate_value_in_type_space(value, ty, type_defs)
+                }
                 Some(TypeDef::Enum { name, cases }) => validate_enum(value, name, cases),
                 Some(TypeDef::Flags { .. }) => match value {
                     Value::Flags(_) => Ok(()),
@@ -1554,7 +1603,9 @@ fn validate_record(
     type_defs: &[TypeDef],
 ) -> Result<(), TypeValidationError> {
     match value {
-        Value::Record { fields: val_fields, .. } => {
+        Value::Record {
+            fields: val_fields, ..
+        } => {
             // Check for missing fields
             for expected in expected_fields {
                 if !val_fields.iter().any(|(name, _)| name == &expected.name) {
@@ -1576,11 +1627,12 @@ fn validate_record(
             // Validate each field's value
             for (name, val) in val_fields {
                 if let Some(field_def) = expected_fields.iter().find(|f| &f.name == name) {
-                    validate_value_in_type_space(val, &field_def.ty, type_defs)
-                        .map_err(|e| TypeValidationError::Nested {
+                    validate_value_in_type_space(val, &field_def.ty, type_defs).map_err(|e| {
+                        TypeValidationError::Nested {
                             context: format!("field '{}'", name),
                             inner: Box::new(e),
-                        })?;
+                        }
+                    })?;
                 }
             }
             Ok(())
@@ -1599,7 +1651,9 @@ fn validate_variant(
     type_defs: &[TypeDef],
 ) -> Result<(), TypeValidationError> {
     match value {
-        Value::Variant { case_name, payload, .. } => {
+        Value::Variant {
+            case_name, payload, ..
+        } => {
             let case_def = expected_cases.iter().find(|c| &c.name == case_name);
             match case_def {
                 Some(case) => {
@@ -1613,13 +1667,11 @@ fn validate_variant(
                                 got: n,
                             }),
                         }),
-                        (ty, 1) => {
-                            validate_value_in_type_space(&payload[0], ty, type_defs)
-                                .map_err(|e| TypeValidationError::Nested {
-                                    context: format!("case '{}'", case_name),
-                                    inner: Box::new(e),
-                                })
-                        }
+                        (ty, 1) => validate_value_in_type_space(&payload[0], ty, type_defs)
+                            .map_err(|e| TypeValidationError::Nested {
+                                context: format!("case '{}'", case_name),
+                                inner: Box::new(e),
+                            }),
                         (_, n) => Err(TypeValidationError::Nested {
                             context: format!("case '{}'", case_name),
                             inner: Box::new(TypeValidationError::WrongArity {
@@ -1648,7 +1700,9 @@ fn validate_enum(
     expected_cases: &[String],
 ) -> Result<(), TypeValidationError> {
     match value {
-        Value::Variant { case_name, payload, .. } => {
+        Value::Variant {
+            case_name, payload, ..
+        } => {
             if !expected_cases.iter().any(|c| c == case_name) {
                 return Err(TypeValidationError::UnknownCase {
                     variant: enum_name.into(),
@@ -1699,7 +1753,11 @@ fn value_type_name(value: &Value) -> String {
         Value::Option { .. } => "option".into(),
         Value::Result { .. } => "result".into(),
         Value::Record { type_name, .. } => format!("record '{}'", type_name),
-        Value::Variant { type_name, case_name, .. } => format!("variant '{}' (case '{}')", type_name, case_name),
+        Value::Variant {
+            type_name,
+            case_name,
+            ..
+        } => format!("variant '{}' (case '{}')", type_name, case_name),
         Value::Tuple(items) => format!("tuple<{}>", items.len()),
         Value::Flags(_) => "flags".into(),
     }
@@ -1842,8 +1900,16 @@ mod tests {
         assert_eq!(decoded.export_hashes[0].name, "theater:simple/actor");
 
         // Verify hashes are non-zero
-        assert!(!decoded.import_hashes[0].hash.as_bytes().iter().all(|&b| b == 0));
-        assert!(!decoded.export_hashes[0].hash.as_bytes().iter().all(|&b| b == 0));
+        assert!(!decoded.import_hashes[0]
+            .hash
+            .as_bytes()
+            .iter()
+            .all(|&b| b == 0));
+        assert!(!decoded.export_hashes[0]
+            .hash
+            .as_bytes()
+            .iter()
+            .all(|&b| b == 0));
     }
 
     // ========================================================================
@@ -1855,7 +1921,9 @@ mod tests {
         let defs = vec![];
         assert!(validate_value_in_type_space(&Value::Bool(true), &Type::Bool, &defs).is_ok());
         assert!(validate_value_in_type_space(&Value::U32(42), &Type::U32, &defs).is_ok());
-        assert!(validate_value_in_type_space(&Value::String("hi".into()), &Type::String, &defs).is_ok());
+        assert!(
+            validate_value_in_type_space(&Value::String("hi".into()), &Type::String, &defs).is_ok()
+        );
 
         // Mismatch
         assert!(validate_value_in_type_space(&Value::Bool(true), &Type::U32, &defs).is_err());
@@ -1874,8 +1942,15 @@ mod tests {
         let defs = vec![];
         // Type::Value accepts anything
         assert!(validate_value_in_type_space(&Value::Bool(true), &Type::Value, &defs).is_ok());
-        assert!(validate_value_in_type_space(&Value::String("x".into()), &Type::Value, &defs).is_ok());
-        assert!(validate_value_in_type_space(&Value::Tuple(vec![Value::U8(1)]), &Type::Value, &defs).is_ok());
+        assert!(
+            validate_value_in_type_space(&Value::String("x".into()), &Type::Value, &defs).is_ok()
+        );
+        assert!(validate_value_in_type_space(
+            &Value::Tuple(vec![Value::U8(1)]),
+            &Type::Value,
+            &defs
+        )
+        .is_ok());
     }
 
     #[test]
@@ -1896,15 +1971,13 @@ mod tests {
 
     #[test]
     fn test_validate_record() {
-        let defs = vec![
-            TypeDef::Record {
-                name: "my-state".into(),
-                fields: vec![
-                    Field::new("count", Type::S32),
-                    Field::new("name", Type::String),
-                ],
-            },
-        ];
+        let defs = vec![TypeDef::Record {
+            name: "my-state".into(),
+            fields: vec![
+                Field::new("count", Type::S32),
+                Field::new("name", Type::String),
+            ],
+        }];
         let ty = Type::Ref(TypePath::simple("my-state"));
 
         // Valid
@@ -1948,15 +2021,13 @@ mod tests {
 
     #[test]
     fn test_validate_variant() {
-        let defs = vec![
-            TypeDef::Variant {
-                name: "result".into(),
-                cases: vec![
-                    Case::new("ok", Type::String),
-                    Case::new("err", Type::String),
-                ],
-            },
-        ];
+        let defs = vec![TypeDef::Variant {
+            name: "result".into(),
+            cases: vec![
+                Case::new("ok", Type::String),
+                Case::new("err", Type::String),
+            ],
+        }];
         let ty = Type::Ref(TypePath::simple("result"));
 
         // Valid case
@@ -1989,12 +2060,10 @@ mod tests {
 
     #[test]
     fn test_validate_enum() {
-        let defs = vec![
-            TypeDef::Enum {
-                name: "color".into(),
-                cases: vec!["red".into(), "green".into(), "blue".into()],
-            },
-        ];
+        let defs = vec![TypeDef::Enum {
+            name: "color".into(),
+            cases: vec!["red".into(), "green".into(), "blue".into()],
+        }];
         let ty = Type::Ref(TypePath::simple("color"));
 
         let val = Value::Variant {
@@ -2027,10 +2096,7 @@ mod tests {
             },
             TypeDef::Variant {
                 name: "status".into(),
-                cases: vec![
-                    Case::unit("pending"),
-                    Case::new("active", Type::String),
-                ],
+                cases: vec![Case::unit("pending"), Case::new("active", Type::String)],
             },
         ];
         let ty = Type::Ref(TypePath::simple("state"));
@@ -2039,12 +2105,15 @@ mod tests {
         let val = Value::Record {
             type_name: "state".into(),
             fields: vec![
-                ("status".into(), Value::Variant {
-                    type_name: "status".into(),
-                    case_name: "active".into(),
-                    tag: 1,
-                    payload: vec![Value::String("running".into())],
-                }),
+                (
+                    "status".into(),
+                    Value::Variant {
+                        type_name: "status".into(),
+                        case_name: "active".into(),
+                        tag: 1,
+                        payload: vec![Value::String("running".into())],
+                    },
+                ),
                 ("count".into(), Value::U32(10)),
             ],
         };
@@ -2054,12 +2123,15 @@ mod tests {
         let val_bad = Value::Record {
             type_name: "state".into(),
             fields: vec![
-                ("status".into(), Value::Variant {
-                    type_name: "status".into(),
-                    case_name: "active".into(),
-                    tag: 1,
-                    payload: vec![Value::U32(42)], // should be String
-                }),
+                (
+                    "status".into(),
+                    Value::Variant {
+                        type_name: "status".into(),
+                        case_name: "active".into(),
+                        tag: 1,
+                        payload: vec![Value::U32(42)], // should be String
+                    },
+                ),
                 ("count".into(), Value::U32(10)),
             ],
         };

@@ -8,8 +8,8 @@
 //! Use `parse_pact()` instead of `parse_interface()` for new code.
 
 use super::{
-    Case, Field, Function, Interface, InterfaceExport, InterfaceImport, InterfacePath,
-    Param, ParseError, Type, TypeDef, World, WorldItem,
+    Case, Field, Function, Interface, InterfaceExport, InterfaceImport, InterfacePath, Param,
+    ParseError, Type, TypeDef, World, WorldItem,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -211,11 +211,10 @@ impl Parser {
     }
 
     fn accept_ident(&mut self, expected: &str) -> bool {
-        matches!(self.peek(), Token::Ident(name) if name == expected)
-            && {
-                self.pos += 1;
-                true
-            }
+        matches!(self.peek(), Token::Ident(name) if name == expected) && {
+            self.pos += 1;
+            true
+        }
     }
 
     fn expect_ident_value(&mut self, expected: &str) -> Result<(), ParseError> {
@@ -348,9 +347,11 @@ fn parse_flags(parser: &mut Parser) -> Result<TypeDef, ParseError> {
 }
 
 fn try_parse_named_func(parser: &mut Parser) -> Result<Option<Function>, ParseError> {
-    let (Token::Ident(name), Token::Symbol(':'), Token::Ident(func_kw)) =
-        (parser.peek().clone(), parser.peek_n(1).clone(), parser.peek_n(2).clone())
-    else {
+    let (Token::Ident(name), Token::Symbol(':'), Token::Ident(func_kw)) = (
+        parser.peek().clone(),
+        parser.peek_n(1).clone(),
+        parser.peek_n(2).clone(),
+    ) else {
         return Ok(None);
     };
 
@@ -366,10 +367,7 @@ fn try_parse_named_func(parser: &mut Parser) -> Result<Option<Function>, ParseEr
     Ok(Some(func))
 }
 
-fn parse_func(
-    parser: &mut Parser,
-    name_override: Option<String>,
-) -> Result<Function, ParseError> {
+fn parse_func(parser: &mut Parser, name_override: Option<String>) -> Result<Function, ParseError> {
     let name = match name_override {
         Some(name) => name,
         None => parser.expect_ident()?,
@@ -554,7 +552,7 @@ fn tokenize(src: &str) -> Result<Vec<Token>, ParseError> {
             chars.next();
             // Check for // line comment
             if matches!(chars.peek(), Some('/')) {
-                while let Some(next) = chars.next() {
+                for next in chars.by_ref() {
                     if next == '\n' {
                         break;
                     }

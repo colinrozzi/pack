@@ -21,14 +21,14 @@ pub fn generate_rust(interface: &PactInterface) -> String {
     // Generate type definitions
     for typedef in &interface.types {
         output.push_str(&generate_typedef(typedef));
-        output.push_str("\n");
+        output.push('\n');
     }
 
     // Generate import traits (what the actor can call)
     for import in &interface.imports {
         if let PactImport::Interface(name) = import {
             output.push_str(&generate_import_trait(name));
-            output.push_str("\n");
+            output.push('\n');
         }
     }
 
@@ -44,7 +44,7 @@ pub fn generate_rust(interface: &PactInterface) -> String {
         for line in child_code.lines() {
             output.push_str("    ");
             output.push_str(line);
-            output.push_str("\n");
+            output.push('\n');
         }
         output.push_str("}\n\n");
     }
@@ -70,7 +70,8 @@ fn generate_record(name: &str, fields: &[Field]) -> String {
     out.push_str(&format!("pub struct {} {{\n", rust_name));
 
     for field in fields {
-        out.push_str(&format!("    pub {}: {},\n",
+        out.push_str(&format!(
+            "    pub {}: {},\n",
             to_snake_case(&field.name),
             type_to_rust(&field.ty)
         ));
@@ -92,7 +93,11 @@ fn generate_variant(name: &str, cases: &[Case]) -> String {
         if case.payload == Type::Unit {
             out.push_str(&format!("    {},\n", case_name));
         } else {
-            out.push_str(&format!("    {}({}),\n", case_name, type_to_rust(&case.payload)));
+            out.push_str(&format!(
+                "    {}({}),\n",
+                case_name,
+                type_to_rust(&case.payload)
+            ));
         }
     }
 
@@ -125,14 +130,17 @@ fn generate_flags(name: &str, flags: &[String]) -> String {
 
     out.push_str(&format!("impl {} {{\n", rust_name));
     for (i, flag) in flags.iter().enumerate() {
-        out.push_str(&format!("    pub const {}: Self = Self(1 << {});\n",
-            to_screaming_snake_case(flag), i));
+        out.push_str(&format!(
+            "    pub const {}: Self = Self(1 << {});\n",
+            to_screaming_snake_case(flag),
+            i
+        ));
     }
-    out.push_str("\n");
+    out.push('\n');
     out.push_str("    pub fn contains(self, other: Self) -> bool {\n");
     out.push_str("        (self.0 & other.0) == other.0\n");
     out.push_str("    }\n");
-    out.push_str("\n");
+    out.push('\n');
     out.push_str("    pub fn insert(&mut self, other: Self) {\n");
     out.push_str("        self.0 |= other.0;\n");
     out.push_str("    }\n");
@@ -142,7 +150,11 @@ fn generate_flags(name: &str, flags: &[String]) -> String {
 }
 
 fn generate_alias(name: &str, target: &Type) -> String {
-    format!("pub type {} = {};\n", to_pascal_case(name), type_to_rust(target))
+    format!(
+        "pub type {} = {};\n",
+        to_pascal_case(name),
+        type_to_rust(target)
+    )
 }
 
 fn generate_import_trait(name: &str) -> String {
@@ -163,7 +175,9 @@ fn generate_export_trait(interface: &PactInterface) -> String {
     let generics = if interface.type_params.is_empty() {
         String::new()
     } else {
-        let params: Vec<String> = interface.type_params.iter()
+        let params: Vec<String> = interface
+            .type_params
+            .iter()
             .map(|tp| tp.name.clone())
             .collect();
         format!("<{}>", params.join(", "))
@@ -176,7 +190,9 @@ fn generate_export_trait(interface: &PactInterface) -> String {
         if let PactExport::Function(func) = export {
             // Build function signature
             let fn_name = to_snake_case(&func.name);
-            let params: Vec<String> = func.params.iter()
+            let params: Vec<String> = func
+                .params
+                .iter()
                 .map(|p| format!("{}: {}", to_snake_case(&p.name), type_to_rust(&p.ty)))
                 .collect();
 
@@ -191,13 +207,14 @@ fn generate_export_trait(interface: &PactInterface) -> String {
             } else if func.results.len() == 1 {
                 format!(" -> {}", type_to_rust(&func.results[0]))
             } else {
-                let types: Vec<String> = func.results.iter()
-                    .map(|t| type_to_rust(t))
-                    .collect();
+                let types: Vec<String> = func.results.iter().map(type_to_rust).collect();
                 format!(" -> ({})", types.join(", "))
             };
 
-            out.push_str(&format!("    fn {}({}){};\n", fn_name, params_str, return_type));
+            out.push_str(&format!(
+                "    fn {}({}){};\n",
+                fn_name, params_str, return_type
+            ));
         }
     }
 
@@ -227,7 +244,7 @@ fn type_to_rust(ty: &Type) -> String {
             format!("Result<{}, {}>", type_to_rust(ok), type_to_rust(err))
         }
         Type::Tuple(items) => {
-            let types: Vec<String> = items.iter().map(|t| type_to_rust(t)).collect();
+            let types: Vec<String> = items.iter().map(type_to_rust).collect();
             format!("({})", types.join(", "))
         }
         Type::Ref(path) => {
@@ -243,7 +260,7 @@ fn type_to_rust(ty: &Type) -> String {
 // ============================================================================
 
 fn to_pascal_case(s: &str) -> String {
-    s.split(|c| c == '-' || c == '_' || c == '(' || c == ')' || c == '<' || c == '>' || c == ',')
+    s.split(['-', '_', '(', ')', '<', '>', ','])
         .filter(|part| !part.is_empty())
         .map(|part| {
             let mut chars = part.chars();
@@ -385,7 +402,10 @@ mod tests {
         assert_eq!(to_snake_case("rpc(calculator)"), "rpc_calculator");
 
         // Nested transforms: traced(rpc(calculator))
-        assert_eq!(to_pascal_case("traced(rpc(calculator))"), "TracedRpcCalculator");
+        assert_eq!(
+            to_pascal_case("traced(rpc(calculator))"),
+            "TracedRpcCalculator"
+        );
 
         // Generic-style: list<string>
         assert_eq!(to_pascal_case("list<string>"), "ListString");

@@ -90,13 +90,14 @@ pub struct GraphBuffer {
     pub root: u32,
 }
 
+#[derive(Default)]
 pub struct Encoder {
     nodes: Vec<Node>,
 }
 
 impl Encoder {
     pub fn new() -> Self {
-        Self { nodes: Vec::new() }
+        Self::default()
     }
 
     pub fn push_node(&mut self, node: Node) -> u32 {
@@ -196,7 +197,9 @@ impl GraphBuffer {
         let _flags = cursor.read_u16()?;
         let node_count = cursor.read_u32()? as usize;
         if node_count > limits.max_node_count {
-            return Err(AbiError::InvalidEncoding("Node count exceeds limit".to_string()));
+            return Err(AbiError::InvalidEncoding(
+                "Node count exceeds limit".to_string(),
+            ));
         }
         let root = cursor.read_u32()?;
 
@@ -214,7 +217,9 @@ impl GraphBuffer {
         }
 
         if (root as usize) >= nodes.len() {
-            return Err(AbiError::InvalidEncoding("Root index out of range".to_string()));
+            return Err(AbiError::InvalidEncoding(
+                "Root index out of range".to_string(),
+            ));
         }
 
         if !cursor.is_eof() {
@@ -232,10 +237,14 @@ impl GraphBuffer {
     pub fn validate_basic_with_limits(&self, limits: &Limits) -> Result<(), AbiError> {
         let node_count = self.nodes.len();
         if (self.root as usize) >= node_count {
-            return Err(AbiError::InvalidEncoding("Root index out of range".to_string()));
+            return Err(AbiError::InvalidEncoding(
+                "Root index out of range".to_string(),
+            ));
         }
         if node_count > limits.max_node_count {
-            return Err(AbiError::InvalidEncoding("Node count exceeds limit".to_string()));
+            return Err(AbiError::InvalidEncoding(
+                "Node count exceeds limit".to_string(),
+            ));
         }
 
         for (index, node) in self.nodes.iter().enumerate() {
@@ -269,9 +278,7 @@ impl GraphBuffer {
                 NodeKind::Char => {
                     let value = cursor.read_u32()?;
                     let ch = char::from_u32(value).ok_or_else(|| {
-                        AbiError::InvalidEncoding(format!(
-                            "Invalid char scalar at node {index}"
-                        ))
+                        AbiError::InvalidEncoding(format!("Invalid char scalar at node {index}"))
                     })?;
                     let _ = ch;
                 }
@@ -282,9 +289,7 @@ impl GraphBuffer {
                     let len = cursor.read_u32()? as usize;
                     let bytes = cursor.read_bytes(len)?;
                     std::str::from_utf8(bytes).map_err(|_| {
-                        AbiError::InvalidEncoding(format!(
-                            "Invalid UTF-8 string at node {index}"
-                        ))
+                        AbiError::InvalidEncoding(format!("Invalid UTF-8 string at node {index}"))
                     })?;
                 }
                 NodeKind::Tuple => {
@@ -322,15 +327,25 @@ impl GraphBuffer {
                     }
                     cursor.read_bytes(count * width)?;
                 }
-                NodeKind::List | NodeKind::Option | NodeKind::Record | NodeKind::Variant | NodeKind::Result => {
+                NodeKind::List
+                | NodeKind::Option
+                | NodeKind::Record
+                | NodeKind::Variant
+                | NodeKind::Result => {
                     // These have variable-length type tags or string headers
                     // Skip detailed validation, just ensure payload is not too large (already checked)
                 }
             }
 
             // Don't check for trailing bytes on v2 nodes with variable headers
-            if !matches!(node.kind, NodeKind::List | NodeKind::Option | NodeKind::Record | NodeKind::Variant | NodeKind::Result)
-                && !cursor.is_eof()
+            if !matches!(
+                node.kind,
+                NodeKind::List
+                    | NodeKind::Option
+                    | NodeKind::Record
+                    | NodeKind::Variant
+                    | NodeKind::Result
+            ) && !cursor.is_eof()
             {
                 return Err(AbiError::InvalidEncoding(format!(
                     "Trailing payload bytes at node {index}"
@@ -452,7 +467,11 @@ fn fixed_width(ty: &ValueType) -> Option<usize> {
 }
 
 /// Encode a single primitive value into a contiguous byte buffer (for Array nodes).
-fn encode_array_element(value: &Value, expected: &ValueType, out: &mut Vec<u8>) -> Result<(), AbiError> {
+fn encode_array_element(
+    value: &Value,
+    expected: &ValueType,
+    out: &mut Vec<u8>,
+) -> Result<(), AbiError> {
     match (value, expected) {
         (Value::Bool(v), ValueType::Bool) => out.push(if *v { 1 } else { 0 }),
         (Value::U8(v), ValueType::U8) => out.push(*v),
@@ -467,9 +486,11 @@ fn encode_array_element(value: &Value, expected: &ValueType, out: &mut Vec<u8>) 
         (Value::F64(v), ValueType::F64) => out.extend_from_slice(&v.to_le_bytes()),
         (Value::Char(v), ValueType::Char) => out.extend_from_slice(&(*v as u32).to_le_bytes()),
         (Value::Flags(v), ValueType::Flags) => out.extend_from_slice(&v.to_le_bytes()),
-        _ => return Err(AbiError::InvalidEncoding(
-            "Array element type mismatch".to_string(),
-        )),
+        _ => {
+            return Err(AbiError::InvalidEncoding(
+                "Array element type mismatch".to_string(),
+            ))
+        }
     }
     Ok(())
 }
@@ -496,14 +517,18 @@ fn decode_array_element(cursor: &mut Cursor<'_>, elem_type: &ValueType) -> Resul
         }
         ValueType::Char => {
             let raw = cursor.read_u32()?;
-            Value::Char(char::from_u32(raw).ok_or_else(|| {
-                AbiError::InvalidEncoding("Invalid char in array".to_string())
-            })?)
+            Value::Char(
+                char::from_u32(raw).ok_or_else(|| {
+                    AbiError::InvalidEncoding("Invalid char in array".to_string())
+                })?,
+            )
         }
         ValueType::Flags => Value::Flags(cursor.read_u64()?),
-        _ => return Err(AbiError::InvalidEncoding(
-            "Non-primitive type in array".to_string(),
-        )),
+        _ => {
+            return Err(AbiError::InvalidEncoding(
+                "Non-primitive type in array".to_string(),
+            ))
+        }
     })
 }
 
@@ -586,7 +611,10 @@ fn decode_value_type(cursor: &mut Cursor<'_>) -> Result<ValueType, AbiError> {
         TYPE_RESULT => {
             let ok = decode_value_type(cursor)?;
             let err = decode_value_type(cursor)?;
-            Ok(ValueType::Result { ok: Box::new(ok), err: Box::new(err) })
+            Ok(ValueType::Result {
+                ok: Box::new(ok),
+                err: Box::new(err),
+            })
         }
         TYPE_RECORD => {
             let len = cursor.read_u32()? as usize;
@@ -600,7 +628,9 @@ fn decode_value_type(cursor: &mut Cursor<'_>) -> Result<ValueType, AbiError> {
             let len = cursor.read_u32()? as usize;
             let bytes = cursor.read_bytes(len)?;
             let name = std::str::from_utf8(bytes)
-                .map_err(|_| AbiError::InvalidEncoding("Invalid UTF-8 in variant name".to_string()))?
+                .map_err(|_| {
+                    AbiError::InvalidEncoding("Invalid UTF-8 in variant name".to_string())
+                })?
                 .to_string();
             Ok(ValueType::Variant(name))
         }
@@ -704,7 +734,8 @@ impl GraphCodec for Value {
                 if fixed_width(elem_type).is_some() {
                     return Err(AbiError::InvalidEncoding(
                         "List with primitive elem_type contains non-matching items; \
-                         fix the elem_type or the items".to_string(),
+                         fix the elem_type or the items"
+                            .to_string(),
                     ));
                 }
                 // Encode children first
@@ -755,7 +786,11 @@ impl GraphCodec for Value {
                     payload,
                 }))
             }
-            Value::Result { ok_type, err_type, value } => {
+            Value::Result {
+                ok_type,
+                err_type,
+                value,
+            } => {
                 // v2 format: [ok_type:type_tag*, err_type:type_tag*, tag:u32, has_payload:u8, child_index?:u32]
                 let mut payload = Vec::new();
                 encode_value_type(ok_type, &mut payload);
@@ -804,7 +839,12 @@ impl GraphCodec for Value {
                     payload,
                 }))
             }
-            Value::Variant { type_name, case_name, tag, payload: var_payload } => {
+            Value::Variant {
+                type_name,
+                case_name,
+                tag,
+                payload: var_payload,
+            } => {
                 // Encode children first
                 let mut child_indices = Vec::with_capacity(var_payload.len());
                 for item in var_payload {
@@ -854,9 +894,9 @@ fn decode_value(
         ));
     }
 
-    let node = decoder.node(index).ok_or_else(|| {
-        AbiError::InvalidEncoding(format!("Node index {index} out of range"))
-    })?;
+    let node = decoder
+        .node(index)
+        .ok_or_else(|| AbiError::InvalidEncoding(format!("Node index {index} out of range")))?;
     let mut cursor = Cursor::new(&node.payload);
     let value = match node.kind {
         NodeKind::Bool => Value::Bool(cursor.read_u8()? == 1),
@@ -947,7 +987,9 @@ fn decode_value(
                 let name_len = cursor.read_u32()? as usize;
                 let name_bytes = cursor.read_bytes(name_len)?;
                 let name = std::str::from_utf8(name_bytes)
-                    .map_err(|_| AbiError::InvalidEncoding("Invalid UTF-8 in field name".to_string()))?
+                    .map_err(|_| {
+                        AbiError::InvalidEncoding("Invalid UTF-8 in field name".to_string())
+                    })?
                     .to_string();
                 field_names.push(name);
             }
@@ -995,9 +1037,15 @@ fn decode_value(
                     Err(Box::new(inner))
                 }
             } else {
-                return Err(AbiError::InvalidEncoding("Result must have payload".to_string()));
+                return Err(AbiError::InvalidEncoding(
+                    "Result must have payload".to_string(),
+                ));
             };
-            Value::Result { ok_type, err_type, value }
+            Value::Result {
+                ok_type,
+                err_type,
+                value,
+            }
         }
         NodeKind::Variant => {
             // v2 format: [type_name_len:u32, type_name:utf8, case_name_len:u32, case_name:utf8, tag:u32, payload_count:u32, child_indices:u32*]
@@ -1018,7 +1066,12 @@ fn decode_value(
                 let child = cursor.read_u32()?;
                 payload.push(decode_value(decoder, child, cache, visiting)?);
             }
-            Value::Variant { type_name, case_name, tag, payload }
+            Value::Variant {
+                type_name,
+                case_name,
+                tag,
+                payload,
+            }
         }
     };
 

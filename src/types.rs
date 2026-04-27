@@ -175,11 +175,7 @@ impl Function {
     }
 
     /// Create a function with parameters and results.
-    pub fn with_signature(
-        name: impl Into<String>,
-        params: Vec<Param>,
-        results: Vec<Type>,
-    ) -> Self {
+    pub fn with_signature(name: impl Into<String>, params: Vec<Param>, results: Vec<Type>) -> Self {
         Self {
             name: name.into(),
             interface: String::new(),

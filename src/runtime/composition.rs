@@ -29,9 +29,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use crate::abi::{decode, encode, Value};
-use crate::runtime::{
-    RuntimeError, INPUT_BUFFER_OFFSET, RESULT_PTR_OFFSET, RESULT_LEN_OFFSET,
-};
+use crate::runtime::{RuntimeError, INPUT_BUFFER_OFFSET, RESULT_LEN_OFFSET, RESULT_PTR_OFFSET};
 use wasmtime::{Caller, Engine, Linker, Module, Store};
 
 /// A host function that can be wired into compositions.
@@ -346,6 +344,7 @@ impl CompositionBuilder {
 /// ```
 ///
 /// Returns 0 on success (output ptr/len written to slots), -1 on error.
+#[allow(clippy::too_many_arguments)]
 fn cross_package_call(
     caller: &mut Caller<'_, ComposedState>,
     registry: &Arc<Mutex<PackageRegistry>>,
@@ -363,7 +362,10 @@ fn cross_package_call(
     };
 
     let mut input_bytes = vec![0u8; in_len as usize];
-    if memory.read(&caller, in_ptr as usize, &mut input_bytes).is_err() {
+    if memory
+        .read(&caller, in_ptr as usize, &mut input_bytes)
+        .is_err()
+    {
         return -1;
     }
 
@@ -375,7 +377,7 @@ fn cross_package_call(
             Some(p) => p,
             None => return -1,
         };
-        (Arc::clone(&source.store), source.instance.clone())
+        (Arc::clone(&source.store), source.instance)
     };
     // Registry lock released here
 
@@ -441,10 +443,16 @@ fn cross_package_call(
         // Read output pointer and length from the slots
         let mut ptr_bytes = [0u8; 4];
         let mut len_bytes = [0u8; 4];
-        if store_guard.read_memory(&src_memory, RESULT_PTR_OFFSET, &mut ptr_bytes).is_err() {
+        if store_guard
+            .read_memory(&src_memory, RESULT_PTR_OFFSET, &mut ptr_bytes)
+            .is_err()
+        {
             return -1;
         }
-        if store_guard.read_memory(&src_memory, RESULT_LEN_OFFSET, &mut len_bytes).is_err() {
+        if store_guard
+            .read_memory(&src_memory, RESULT_LEN_OFFSET, &mut len_bytes)
+            .is_err()
+        {
             return -1;
         }
 
@@ -480,7 +488,10 @@ fn cross_package_call(
     // Let's use the same RESULT region as a data buffer for now (after the ptr/len slots).
     const CROSS_CALL_BUFFER_OFFSET: usize = RESULT_LEN_OFFSET + 4;
 
-    if memory.write(&mut *caller, CROSS_CALL_BUFFER_OFFSET, &result).is_err() {
+    if memory
+        .write(&mut *caller, CROSS_CALL_BUFFER_OFFSET, &result)
+        .is_err()
+    {
         return -1;
     }
 
@@ -488,10 +499,24 @@ fn cross_package_call(
     let result_ptr = CROSS_CALL_BUFFER_OFFSET as i32;
     let result_len = result.len() as i32;
 
-    if memory.write(&mut *caller, out_ptr_ptr as usize, &result_ptr.to_le_bytes()).is_err() {
+    if memory
+        .write(
+            &mut *caller,
+            out_ptr_ptr as usize,
+            &result_ptr.to_le_bytes(),
+        )
+        .is_err()
+    {
         return -1;
     }
-    if memory.write(&mut *caller, out_len_ptr as usize, &result_len.to_le_bytes()).is_err() {
+    if memory
+        .write(
+            &mut *caller,
+            out_len_ptr as usize,
+            &result_len.to_le_bytes(),
+        )
+        .is_err()
+    {
         return -1;
     }
 
@@ -517,7 +542,10 @@ fn host_function_call(
     };
 
     let mut input_bytes = vec![0u8; in_len as usize];
-    if memory.read(&caller, in_ptr as usize, &mut input_bytes).is_err() {
+    if memory
+        .read(&caller, in_ptr as usize, &mut input_bytes)
+        .is_err()
+    {
         return -1;
     }
 
@@ -531,7 +559,10 @@ fn host_function_call(
     // (same approach as cross_package_call)
     const HOST_CALL_BUFFER_OFFSET: usize = RESULT_LEN_OFFSET + 4;
 
-    if memory.write(&mut *caller, HOST_CALL_BUFFER_OFFSET, &result).is_err() {
+    if memory
+        .write(&mut *caller, HOST_CALL_BUFFER_OFFSET, &result)
+        .is_err()
+    {
         return -1;
     }
 
@@ -539,10 +570,24 @@ fn host_function_call(
     let result_ptr = HOST_CALL_BUFFER_OFFSET as i32;
     let result_len = result.len() as i32;
 
-    if memory.write(&mut *caller, out_ptr_ptr as usize, &result_ptr.to_le_bytes()).is_err() {
+    if memory
+        .write(
+            &mut *caller,
+            out_ptr_ptr as usize,
+            &result_ptr.to_le_bytes(),
+        )
+        .is_err()
+    {
         return -1;
     }
-    if memory.write(&mut *caller, out_len_ptr as usize, &result_len.to_le_bytes()).is_err() {
+    if memory
+        .write(
+            &mut *caller,
+            out_len_ptr as usize,
+            &result_len.to_le_bytes(),
+        )
+        .is_err()
+    {
         return -1;
     }
 
@@ -625,7 +670,9 @@ impl UntypedStore {
     ) -> Option<wasmtime::TypedFunc<(i32, i32), ()>> {
         match self {
             UntypedStore::Unit(store) => instance.get_typed_func(&mut *store, "__pack_free").ok(),
-            UntypedStore::Composed(store) => instance.get_typed_func(&mut *store, "__pack_free").ok(),
+            UntypedStore::Composed(store) => {
+                instance.get_typed_func(&mut *store, "__pack_free").ok()
+            }
         }
     }
 
@@ -635,15 +682,13 @@ impl UntypedStore {
     ) -> Option<wasmtime::TypedFunc<i32, i32>> {
         match self {
             UntypedStore::Unit(store) => instance.get_typed_func(&mut *store, "__pack_alloc").ok(),
-            UntypedStore::Composed(store) => instance.get_typed_func(&mut *store, "__pack_alloc").ok(),
+            UntypedStore::Composed(store) => {
+                instance.get_typed_func(&mut *store, "__pack_alloc").ok()
+            }
         }
     }
 
-    fn call_alloc(
-        &mut self,
-        func: &wasmtime::TypedFunc<i32, i32>,
-        size: i32,
-    ) -> Result<i32, ()> {
+    fn call_alloc(&mut self, func: &wasmtime::TypedFunc<i32, i32>, size: i32) -> Result<i32, ()> {
         match self {
             UntypedStore::Unit(store) => func.call(&mut *store, size).map_err(|_| ()),
             UntypedStore::Composed(store) => func.call(&mut *store, size).map_err(|_| ()),
@@ -661,11 +706,9 @@ impl UntypedStore {
         match self {
             UntypedStore::Unit(store) => func.call(&mut *store, (a, b, c, d)).map_err(|e| {
                 eprintln!("[PACK DEBUG] call_func error: {:?}", e);
-                ()
             }),
             UntypedStore::Composed(store) => func.call(&mut *store, (a, b, c, d)).map_err(|e| {
                 eprintln!("[PACK DEBUG] call_func error: {:?}", e);
-                ()
             }),
         }
     }
@@ -687,9 +730,7 @@ impl UntypedStore {
         instance: &wasmtime::Instance,
     ) -> Option<wasmtime::TypedFunc<(i32, i32), i32>> {
         match self {
-            UntypedStore::Unit(store) => {
-                instance.get_typed_func(&mut *store, "__pack_types").ok()
-            }
+            UntypedStore::Unit(store) => instance.get_typed_func(&mut *store, "__pack_types").ok(),
             UntypedStore::Composed(store) => {
                 instance.get_typed_func(&mut *store, "__pack_types").ok()
             }
@@ -730,7 +771,7 @@ impl BuiltComposition {
             let pkg = reg.packages.get(package).ok_or_else(|| {
                 RuntimeError::ModuleNotFound(format!("Package '{}' not found", package))
             })?;
-            (Arc::clone(&pkg.store), pkg.instance.clone())
+            (Arc::clone(&pkg.store), pkg.instance)
         };
         // Registry lock released here
 
@@ -740,18 +781,16 @@ impl BuiltComposition {
         let input_bytes = encode(input).map_err(|e| RuntimeError::AbiError(e.to_string()))?;
 
         // Get memory
-        let memory = store.get_memory(&instance).ok_or_else(|| {
-            RuntimeError::MemoryError("No memory export".into())
-        })?;
+        let memory = store
+            .get_memory(&instance)
+            .ok_or_else(|| RuntimeError::MemoryError("No memory export".into()))?;
 
         // Try to allocate input buffer dynamically, fall back to fixed buffer
         let (in_ptr, dynamic_input) = match store.get_alloc_func(&instance) {
-            Some(alloc_func) => {
-                match store.call_alloc(&alloc_func, input_bytes.len() as i32) {
-                    Ok(ptr) if ptr != 0 => (ptr, true),
-                    _ => (INPUT_BUFFER_OFFSET as i32, false),
-                }
-            }
+            Some(alloc_func) => match store.call_alloc(&alloc_func, input_bytes.len() as i32) {
+                Ok(ptr) if ptr != 0 => (ptr, true),
+                _ => (INPUT_BUFFER_OFFSET as i32, false),
+            },
             None => (INPUT_BUFFER_OFFSET as i32, false),
         };
 
@@ -761,12 +800,13 @@ impl BuiltComposition {
             .map_err(|_| RuntimeError::MemoryError("Failed to write input".into()))?;
 
         // Get and call the function
-        let func = store.get_typed_func(&instance, function).ok_or_else(|| {
-            RuntimeError::FunctionNotFound(function.to_string())
-        })?;
+        let func = store
+            .get_typed_func(&instance, function)
+            .ok_or_else(|| RuntimeError::FunctionNotFound(function.to_string()))?;
 
         let status = store
-            .call_func(&func,
+            .call_func(
+                &func,
                 in_ptr,
                 input_bytes.len() as i32,
                 RESULT_PTR_OFFSET as i32,
@@ -832,7 +872,13 @@ impl BuiltComposition {
 
     /// List all packages in the composition.
     pub fn packages(&self) -> Vec<String> {
-        self.registry.lock().unwrap().packages.keys().cloned().collect()
+        self.registry
+            .lock()
+            .unwrap()
+            .packages
+            .keys()
+            .cloned()
+            .collect()
     }
 
     /// Read embedded type metadata from a package in the composition.
@@ -849,7 +895,7 @@ impl BuiltComposition {
                 .packages
                 .get(package)
                 .ok_or(crate::metadata::MetadataError::NotFound)?;
-            (Arc::clone(&pkg.store), pkg.instance.clone())
+            (Arc::clone(&pkg.store), pkg.instance)
         };
 
         let mut store = store_arc.lock().unwrap();
@@ -864,9 +910,7 @@ impl BuiltComposition {
                 RESULT_PTR_OFFSET as i32,
                 RESULT_LEN_OFFSET as i32,
             )
-            .map_err(|_| {
-                crate::metadata::MetadataError::CallFailed("call failed".into())
-            })?;
+            .map_err(|_| crate::metadata::MetadataError::CallFailed("call failed".into()))?;
 
         if status != 0 {
             return Err(crate::metadata::MetadataError::CallFailed(
@@ -874,21 +918,17 @@ impl BuiltComposition {
             ));
         }
 
-        let memory = store.get_memory(&instance).ok_or_else(|| {
-            crate::metadata::MetadataError::CallFailed("no memory".into())
-        })?;
+        let memory = store
+            .get_memory(&instance)
+            .ok_or_else(|| crate::metadata::MetadataError::CallFailed("no memory".into()))?;
         let mut ptr_bytes = [0u8; 4];
         let mut len_bytes = [0u8; 4];
         store
             .read_memory(&memory, RESULT_PTR_OFFSET, &mut ptr_bytes)
-            .map_err(|_| {
-                crate::metadata::MetadataError::CallFailed("read ptr failed".into())
-            })?;
+            .map_err(|_| crate::metadata::MetadataError::CallFailed("read ptr failed".into()))?;
         store
             .read_memory(&memory, RESULT_LEN_OFFSET, &mut len_bytes)
-            .map_err(|_| {
-                crate::metadata::MetadataError::CallFailed("read len failed".into())
-            })?;
+            .map_err(|_| crate::metadata::MetadataError::CallFailed("read len failed".into()))?;
 
         let out_ptr = i32::from_le_bytes(ptr_bytes) as usize;
         let out_len = i32::from_le_bytes(len_bytes) as usize;
