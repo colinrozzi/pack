@@ -59,16 +59,22 @@ impl TypeHash {
 
     /// Format as hex string (for display).
     pub fn to_hex(&self) -> String {
-        self.0.iter().map(|b| format!("{:02x}", b)).collect()
+        use core::fmt::Write;
+        let mut s = String::with_capacity(self.0.len() * 2);
+        for b in &self.0 {
+            let _ = write!(s, "{:02x}", b);
+        }
+        s
     }
 
     /// Format as short hex (first 8 chars).
     pub fn to_short_hex(&self) -> String {
-        self.0
-            .iter()
-            .take(4)
-            .map(|b| format!("{:02x}", b))
-            .collect()
+        use core::fmt::Write;
+        let mut s = String::with_capacity(8);
+        for b in self.0.iter().take(4) {
+            let _ = write!(s, "{:02x}", b);
+        }
+        s
     }
 
     /// Const function to create from bytes (for compile-time constants).

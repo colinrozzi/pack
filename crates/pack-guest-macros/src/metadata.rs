@@ -4,13 +4,10 @@
 //! Also computes Merkle-tree hashes for type compatibility checking.
 
 use pack_abi::{
-    encode, Value, ValueType, TypeHash, Binding,
-    HASH_BOOL, HASH_U8, HASH_U16, HASH_U32, HASH_U64,
-    HASH_S8, HASH_S16, HASH_S32, HASH_S64,
-    HASH_F32, HASH_F64, HASH_CHAR, HASH_STRING, HASH_FLAGS,
-    HASH_SELF_REF,
-    hash_list, hash_option, hash_result, hash_tuple,
-    hash_record, hash_variant, hash_function, hash_interface,
+    encode, hash_function, hash_interface, hash_list, hash_option, hash_record, hash_result,
+    hash_tuple, hash_variant, Binding, TypeHash, Value, ValueType, HASH_BOOL, HASH_CHAR, HASH_F32,
+    HASH_F64, HASH_FLAGS, HASH_S16, HASH_S32, HASH_S64, HASH_S8, HASH_SELF_REF, HASH_STRING,
+    HASH_U16, HASH_U32, HASH_U64, HASH_U8,
 };
 use std::collections::HashMap;
 
@@ -92,10 +89,7 @@ impl TypeDesc {
                 tag: 16,
                 payload: vec![Value::Record {
                     type_name: "result-desc".into(),
-                    fields: vec![
-                        ("ok".into(), ok.to_value()),
-                        ("err".into(), err.to_value()),
-                    ],
+                    fields: vec![("ok".into(), ok.to_value()), ("err".into(), err.to_value())],
                 }],
             },
             TypeDesc::Record { name, fields } => Value::Variant {
@@ -206,7 +200,8 @@ impl TypeDesc {
             }
             TypeDesc::Record { fields, .. } => {
                 // Sort fields by name for canonical ordering
-                let mut sorted: Vec<_> = fields.iter()
+                let mut sorted: Vec<_> = fields
+                    .iter()
                     .map(|(n, t)| (n.as_str(), t.to_hash()))
                     .collect();
                 sorted.sort_by(|a, b| a.0.cmp(b.0));
@@ -214,7 +209,8 @@ impl TypeDesc {
             }
             TypeDesc::Variant { cases, .. } => {
                 // Sort cases by name for canonical ordering
-                let mut sorted: Vec<_> = cases.iter()
+                let mut sorted: Vec<_> = cases
+                    .iter()
                     .map(|(n, t)| (n.as_str(), t.as_ref().map(|td| td.to_hash())))
                     .collect();
                 sorted.sort_by(|a, b| a.0.cmp(b.0));
@@ -249,10 +245,12 @@ pub fn compute_interface_hashes(funcs: &[FuncSig]) -> Vec<InterfaceHash> {
     }
 
     // Compute hash for each interface
-    let mut result: Vec<InterfaceHash> = by_interface.into_iter()
+    let mut result: Vec<InterfaceHash> = by_interface
+        .into_iter()
         .map(|(iface_name, funcs)| {
             // Create bindings for each function (sorted by name)
-            let mut bindings: Vec<_> = funcs.iter()
+            let mut bindings: Vec<_> = funcs
+                .iter()
                 .map(|f| Binding {
                     name: f.name.as_str(),
                     hash: hash_func_sig(f),
@@ -328,12 +326,15 @@ fn interface_hash_to_value(ih: &InterfaceHash) -> Value {
         type_name: "interface-hash".into(),
         fields: vec![
             ("name".into(), Value::String(ih.name.clone())),
-            ("hash".into(), Value::Tuple(vec![
-                Value::U64(a),
-                Value::U64(b),
-                Value::U64(c),
-                Value::U64(d),
-            ])),
+            (
+                "hash".into(),
+                Value::Tuple(vec![
+                    Value::U64(a),
+                    Value::U64(b),
+                    Value::U64(c),
+                    Value::U64(d),
+                ]),
+            ),
         ],
     }
 }
@@ -416,9 +417,12 @@ pub fn wit_type_to_type_desc(
                     .map_or(TypeDesc::String, |t| wit_type_to_type_desc(t, types)),
             ),
         },
-        crate::wit_parser::Type::Tuple(items) => {
-            TypeDesc::Tuple(items.iter().map(|t| wit_type_to_type_desc(t, types)).collect())
-        }
+        crate::wit_parser::Type::Tuple(items) => TypeDesc::Tuple(
+            items
+                .iter()
+                .map(|t| wit_type_to_type_desc(t, types))
+                .collect(),
+        ),
         crate::wit_parser::Type::Named(name) => {
             if name == "value" {
                 return TypeDesc::Value;

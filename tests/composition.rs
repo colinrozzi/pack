@@ -100,7 +100,7 @@ fn composition_multiple_calls() {
     for (input, expected) in test_cases {
         let result = composition
             .call("adder", "process", &Value::S64(input))
-            .expect(&format!("failed to call process with {}", input));
+            .unwrap_or_else(|_| panic!("failed to call process with {}", input));
         assert_eq!(
             result,
             Value::S64(expected),

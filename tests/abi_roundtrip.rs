@@ -102,7 +102,7 @@ fn roundtrip_array_s32() {
     // List<S32> should also use compact Array encoding
     let value = Value::List {
         elem_type: ValueType::S32,
-        items: vec![Value::S32(-1), Value::S32(0), Value::S32(i32::MAX as i32)],
+        items: vec![Value::S32(-1), Value::S32(0), Value::S32(i32::MAX)],
     };
 
     let bytes = encode(&value).expect("encode");

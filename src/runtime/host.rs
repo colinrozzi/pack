@@ -406,7 +406,7 @@ pub struct InterfaceBuilder<'a, 'b, T> {
     interceptor: Option<Arc<dyn CallInterceptor>>,
 }
 
-impl<'a, 'b, T: 'static> InterfaceBuilder<'a, 'b, T> {
+impl<T: 'static> InterfaceBuilder<'_, '_, T> {
     /// Register a raw host function with direct WASM-level parameters.
     ///
     /// Use this for functions that need direct memory access or don't
@@ -821,7 +821,7 @@ impl<'a, 'b, T: 'static> InterfaceBuilder<'a, 'b, T> {
 // Async Host Functions (require T: Send)
 // ============================================================================
 
-impl<'a, 'b, T: Send + Clone + 'static> InterfaceBuilder<'a, 'b, T> {
+impl<T: Send + Clone + 'static> InterfaceBuilder<'_, '_, T> {
     /// Register an async host function with automatic Graph ABI encode/decode.
     ///
     /// The closure receives an `AsyncCtx` containing a cloned copy of the store

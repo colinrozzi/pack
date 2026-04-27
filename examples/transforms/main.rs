@@ -67,7 +67,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let scope = type_registry.resolve_scope_with_transforms(caller, &transform_registry)?;
 
     println!("Types in scope:");
-    for (name, _) in &scope.types {
+    for name in scope.types.keys() {
         println!("  - {}", name);
     }
     println!("\nTransformed interfaces:");

@@ -6,7 +6,9 @@
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
-use crate::wit_parser::{Type, TypeDef, VariantCase, World, Function, WorldItem, WitRegistry, Interface};
+use crate::wit_parser::{
+    Function, Interface, Type, TypeDef, VariantCase, WitRegistry, World, WorldItem,
+};
 
 /// Convert a WIT identifier (kebab-case) to Rust identifier (PascalCase for types, snake_case for functions)
 fn to_rust_type_name(wit_name: &str) -> syn::Ident {
@@ -58,10 +60,12 @@ fn generate_type_ref(ty: &Type, self_type_name: Option<&str>) -> TokenStream {
             quote! { ::core::option::Option<#inner_ty> }
         }
         Type::Result { ok, err } => {
-            let ok_ty = ok.as_ref()
+            let ok_ty = ok
+                .as_ref()
                 .map(|t| generate_type_ref(t, self_type_name))
                 .unwrap_or_else(|| quote! { () });
-            let err_ty = err.as_ref()
+            let err_ty = err
+                .as_ref()
                 .map(|t| generate_type_ref(t, self_type_name))
                 .unwrap_or_else(|| quote! { () });
             quote! { ::core::result::Result<#ok_ty, #err_ty> }
@@ -70,7 +74,8 @@ fn generate_type_ref(ty: &Type, self_type_name: Option<&str>) -> TokenStream {
             if items.is_empty() {
                 quote! { () }
             } else {
-                let item_tys: Vec<_> = items.iter()
+                let item_tys: Vec<_> = items
+                    .iter()
                     .map(|t| generate_type_ref(t, self_type_name))
                     .collect();
                 quote! { (#(#item_tys),*) }
@@ -93,6 +98,7 @@ fn generate_type_ref(ty: &Type, self_type_name: Option<&str>) -> TokenStream {
 }
 
 /// Generate Value conversion expression for a type (Rust value -> Value)
+#[allow(clippy::only_used_in_recursion)]
 fn generate_to_value(ty: &Type, expr: TokenStream, self_type_name: Option<&str>) -> TokenStream {
     match ty {
         Type::Bool => quote! { pack_guest::Value::Bool(#expr) },
@@ -125,10 +131,12 @@ fn generate_to_value(ty: &Type, expr: TokenStream, self_type_name: Option<&str>)
             }
         }
         Type::Result { ok, err } => {
-            let ok_conversion = ok.as_ref()
+            let ok_conversion = ok
+                .as_ref()
                 .map(|t| generate_to_value(t, quote! { v }, self_type_name))
                 .unwrap_or_else(|| quote! { pack_guest::Value::Tuple(::alloc::vec![]) });
-            let err_conversion = err.as_ref()
+            let err_conversion = err
+                .as_ref()
                 .map(|t| generate_to_value(t, quote! { e }, self_type_name))
                 .unwrap_or_else(|| quote! { pack_guest::Value::Tuple(::alloc::vec![]) });
             quote! {
@@ -148,7 +156,9 @@ fn generate_to_value(ty: &Type, expr: TokenStream, self_type_name: Option<&str>)
             if items.is_empty() {
                 quote! { pack_guest::Value::Tuple(::alloc::vec![]) }
             } else {
-                let conversions: Vec<_> = items.iter().enumerate()
+                let conversions: Vec<_> = items
+                    .iter()
+                    .enumerate()
                     .map(|(i, t)| {
                         let idx = syn::Index::from(i);
                         let item_expr = quote! { #expr.#idx };
@@ -344,7 +354,11 @@ fn generate_from_value(ty: &Type, expr: TokenStream, self_type_name: Option<&str
         }
         Type::Result { ok, err } => {
             // Handle SelfRef specially for ok/err types
-            let ok_conversion = if ok.as_ref().map(|t| matches!(t.as_ref(), Type::SelfRef)).unwrap_or(false) {
+            let ok_conversion = if ok
+                .as_ref()
+                .map(|t| matches!(t.as_ref(), Type::SelfRef))
+                .unwrap_or(false)
+            {
                 if let Some(name) = self_type_name {
                     let rust_name = to_rust_type_name(name);
                     quote! { Ok(::alloc::boxed::Box::new(<#rust_name>::try_from(*p)?)) }
@@ -352,12 +366,17 @@ fn generate_from_value(ty: &Type, expr: TokenStream, self_type_name: Option<&str
                     quote! { Ok(::alloc::boxed::Box::new(Self::try_from(*p)?)) }
                 }
             } else {
-                let ok_ty = ok.as_ref()
+                let ok_ty = ok
+                    .as_ref()
                     .map(|t| generate_type_ref(t, self_type_name))
                     .unwrap_or_else(|| quote! { () });
                 quote! { Ok(<#ok_ty>::try_from(*p)?) }
             };
-            let err_conversion = if err.as_ref().map(|t| matches!(t.as_ref(), Type::SelfRef)).unwrap_or(false) {
+            let err_conversion = if err
+                .as_ref()
+                .map(|t| matches!(t.as_ref(), Type::SelfRef))
+                .unwrap_or(false)
+            {
                 if let Some(name) = self_type_name {
                     let rust_name = to_rust_type_name(name);
                     quote! { Err(::alloc::boxed::Box::new(<#rust_name>::try_from(*p)?)) }
@@ -365,7 +384,8 @@ fn generate_from_value(ty: &Type, expr: TokenStream, self_type_name: Option<&str
                     quote! { Err(::alloc::boxed::Box::new(Self::try_from(*p)?)) }
                 }
             } else {
-                let err_ty = err.as_ref()
+                let err_ty = err
+                    .as_ref()
                     .map(|t| generate_type_ref(t, self_type_name))
                     .unwrap_or_else(|| quote! { () });
                 quote! { Err(<#err_ty>::try_from(*p)?) }
@@ -390,8 +410,8 @@ fn generate_from_value(ty: &Type, expr: TokenStream, self_type_name: Option<&str
             if items.is_empty() {
                 quote! { () }
             } else {
-                let extractions: Vec<_> = items.iter().enumerate()
-                    .map(|(_i, t)| {
+                let extractions: Vec<_> = items.iter()
+                    .map(|t| {
                         // Handle SelfRef specially to avoid Box<Self>::try_from issue
                         if matches!(t, Type::SelfRef) {
                             if let Some(name) = self_type_name {
@@ -458,7 +478,8 @@ fn generate_alias(name: &str, ty: &Type) -> TokenStream {
 fn generate_record(name: &str, fields: &[(String, Type)]) -> TokenStream {
     let rust_name = to_rust_type_name(name);
 
-    let field_defs: Vec<_> = fields.iter()
+    let field_defs: Vec<_> = fields
+        .iter()
         .map(|(fname, ftype)| {
             let rust_fname = to_rust_field_name(fname);
             let rust_ftype = generate_type_ref(ftype, Some(name));
@@ -466,7 +487,8 @@ fn generate_record(name: &str, fields: &[(String, Type)]) -> TokenStream {
         })
         .collect();
 
-    let field_to_value: Vec<_> = fields.iter()
+    let field_to_value: Vec<_> = fields
+        .iter()
         .map(|(fname, ftype)| {
             let rust_fname = to_rust_field_name(fname);
             let wit_fname = fname.clone();
@@ -475,7 +497,8 @@ fn generate_record(name: &str, fields: &[(String, Type)]) -> TokenStream {
         })
         .collect();
 
-    let field_from_value: Vec<_> = fields.iter()
+    let field_from_value: Vec<_> = fields
+        .iter()
         .map(|(fname, ftype)| {
             let rust_fname = to_rust_field_name(fname);
             let wit_fname = fname.clone();
@@ -526,7 +549,8 @@ fn generate_record(name: &str, fields: &[(String, Type)]) -> TokenStream {
 fn generate_variant(name: &str, cases: &[VariantCase]) -> TokenStream {
     let rust_name = to_rust_type_name(name);
 
-    let case_defs: Vec<_> = cases.iter()
+    let case_defs: Vec<_> = cases
+        .iter()
         .map(|case| {
             let case_name = to_rust_variant_name(&case.name);
             match &case.payload {
@@ -539,7 +563,9 @@ fn generate_variant(name: &str, cases: &[VariantCase]) -> TokenStream {
         })
         .collect();
 
-    let to_value_arms: Vec<_> = cases.iter().enumerate()
+    let to_value_arms: Vec<_> = cases
+        .iter()
+        .enumerate()
         .map(|(tag, case)| {
             let case_name = to_rust_variant_name(&case.name);
             match &case.payload {
@@ -562,7 +588,9 @@ fn generate_variant(name: &str, cases: &[VariantCase]) -> TokenStream {
         })
         .collect();
 
-    let from_value_arms: Vec<_> = cases.iter().enumerate()
+    let from_value_arms: Vec<_> = cases
+        .iter()
+        .enumerate()
         .map(|(tag, case)| {
             let case_name = to_rust_variant_name(&case.name);
             match &case.payload {
@@ -624,11 +652,14 @@ fn generate_variant(name: &str, cases: &[VariantCase]) -> TokenStream {
 fn generate_enum(name: &str, cases: &[String]) -> TokenStream {
     let rust_name = to_rust_type_name(name);
 
-    let case_defs: Vec<_> = cases.iter()
+    let case_defs: Vec<_> = cases
+        .iter()
         .map(|case| to_rust_variant_name(case))
         .collect();
 
-    let to_value_arms: Vec<_> = cases.iter().enumerate()
+    let to_value_arms: Vec<_> = cases
+        .iter()
+        .enumerate()
         .map(|(tag, case)| {
             let case_name = to_rust_variant_name(case);
             quote! {
@@ -640,7 +671,9 @@ fn generate_enum(name: &str, cases: &[String]) -> TokenStream {
         })
         .collect();
 
-    let from_value_arms: Vec<_> = cases.iter().enumerate()
+    let from_value_arms: Vec<_> = cases
+        .iter()
+        .enumerate()
         .map(|(tag, case)| {
             let case_name = to_rust_variant_name(case);
             quote! { #tag => Ok(#rust_name::#case_name) }
@@ -689,7 +722,9 @@ fn generate_enum(name: &str, cases: &[String]) -> TokenStream {
 fn generate_flags(name: &str, flags: &[String]) -> TokenStream {
     let rust_name = to_rust_type_name(name);
 
-    let flag_consts: Vec<_> = flags.iter().enumerate()
+    let flag_consts: Vec<_> = flags
+        .iter()
+        .enumerate()
         .map(|(i, flag)| {
             let const_name = format_ident!("{}", flag.to_uppercase().replace('-', "_"));
             let bit: u64 = 1 << i;
@@ -748,9 +783,7 @@ fn generate_flags(name: &str, flags: &[String]) -> TokenStream {
 
 /// Generate all types from a world definition
 pub fn generate_world_types(world: &World) -> TokenStream {
-    let type_defs: Vec<_> = world.types.iter()
-        .map(generate_type_def)
-        .collect();
+    let type_defs: Vec<_> = world.types.iter().map(generate_type_def).collect();
 
     quote! {
         #(#type_defs)*
@@ -798,7 +831,11 @@ pub fn get_world_imports(world: &World) -> Vec<(&str, &Function)> {
 // ============================================================================
 
 /// Format an interface path from its components
-fn format_interface_path(namespace: &Option<String>, package: &Option<String>, interface: &str) -> String {
+fn format_interface_path(
+    namespace: &Option<String>,
+    package: &Option<String>,
+    interface: &str,
+) -> String {
     match (namespace, package) {
         (Some(ns), Some(pkg)) => format!("{}:{}/{}", ns, pkg, interface),
         (None, Some(pkg)) => format!("{}/{}", pkg, interface),
@@ -812,7 +849,11 @@ pub fn generate_imports(registry: &WitRegistry, world: &World) -> TokenStream {
 
     for import in &world.imports {
         match import {
-            WorldItem::InterfacePath { namespace, package, interface } => {
+            WorldItem::InterfacePath {
+                namespace,
+                package,
+                interface,
+            } => {
                 // Look up the interface definition
                 let path = format_interface_path(namespace, package, interface);
                 if let Some(iface) = registry.interfaces.get(&path) {
@@ -841,14 +882,14 @@ fn generate_import_module(module_path: &str, iface: &Interface) -> TokenStream {
     let module_name = iface.name.replace('-', "_");
     let module_ident = format_ident!("{}", module_name);
 
-    let functions: Vec<_> = iface.functions.iter()
+    let functions: Vec<_> = iface
+        .functions
+        .iter()
         .map(|f| generate_import_function(module_path, f))
         .collect();
 
     // Also generate types from the interface
-    let types: Vec<_> = iface.types.iter()
-        .map(generate_type_def)
-        .collect();
+    let types: Vec<_> = iface.types.iter().map(generate_type_def).collect();
 
     quote! {
         pub mod #module_ident {
@@ -866,7 +907,8 @@ fn generate_inline_import_module(name: &str, functions: &[Function]) -> TokenStr
     let module_name = name.replace('-', "_");
     let module_ident = format_ident!("{}", module_name);
 
-    let funcs: Vec<_> = functions.iter()
+    let funcs: Vec<_> = functions
+        .iter()
         .map(|f| generate_import_function(name, f))
         .collect();
 
@@ -887,15 +929,19 @@ fn generate_import_function(module_path: &str, func: &Function) -> TokenStream {
     let link_name = &func.name;
 
     // Generate parameter list - use &str for string params in imports
-    let params: Vec<_> = func.params.iter().map(|(name, ty)| {
-        let param_name = format_ident!("{}", name.replace('-', "_"));
-        let param_type = if matches!(ty, Type::String) {
-            quote! { &str }
-        } else {
-            generate_type_ref(ty, None)
-        };
-        quote! { #param_name: #param_type }
-    }).collect();
+    let params: Vec<_> = func
+        .params
+        .iter()
+        .map(|(name, ty)| {
+            let param_name = format_ident!("{}", name.replace('-', "_"));
+            let param_type = if matches!(ty, Type::String) {
+                quote! { &str }
+            } else {
+                generate_type_ref(ty, None)
+            };
+            quote! { #param_name: #param_type }
+        })
+        .collect();
 
     // Generate return type
     let return_type = if func.results.is_empty() {
@@ -903,7 +949,9 @@ fn generate_import_function(module_path: &str, func: &Function) -> TokenStream {
     } else if func.results.len() == 1 {
         generate_type_ref(&func.results[0], None)
     } else {
-        let tys: Vec<_> = func.results.iter()
+        let tys: Vec<_> = func
+            .results
+            .iter()
             .map(|t| generate_type_ref(t, None))
             .collect();
         quote! { (#(#tys),*) }
@@ -917,10 +965,14 @@ fn generate_import_function(module_path: &str, func: &Function) -> TokenStream {
         let param_name = format_ident!("{}", name.replace('-', "_"));
         generate_to_value_for_import(ty, quote! { #param_name })
     } else {
-        let conversions: Vec<_> = func.params.iter().map(|(name, ty)| {
-            let param_name = format_ident!("{}", name.replace('-', "_"));
-            generate_to_value_for_import(ty, quote! { #param_name })
-        }).collect();
+        let conversions: Vec<_> = func
+            .params
+            .iter()
+            .map(|(name, ty)| {
+                let param_name = format_ident!("{}", name.replace('-', "_"));
+                generate_to_value_for_import(ty, quote! { #param_name })
+            })
+            .collect();
         quote! { pack_guest::Value::Tuple(::alloc::vec![#(#conversions),*]) }
     };
 
@@ -993,7 +1045,9 @@ fn generate_to_value_for_import(ty: &Type, expr: TokenStream) -> TokenStream {
 
 /// Format a WIT function signature as a string
 fn format_function_signature(func: &Function) -> String {
-    let params: Vec<String> = func.params.iter()
+    let params: Vec<String> = func
+        .params
+        .iter()
         .map(|(name, ty)| format!("{}: {}", name, format_wit_type(ty)))
         .collect();
 
@@ -1002,9 +1056,7 @@ fn format_function_signature(func: &Function) -> String {
     } else if func.results.len() == 1 {
         format!(" -> {}", format_wit_type(&func.results[0]))
     } else {
-        let result_strs: Vec<String> = func.results.iter()
-            .map(format_wit_type)
-            .collect();
+        let result_strs: Vec<String> = func.results.iter().map(format_wit_type).collect();
         format!(" -> ({})", result_strs.join(", "))
     };
 
@@ -1030,8 +1082,14 @@ fn format_wit_type(ty: &Type) -> String {
         Type::List(inner) => format!("list<{}>", format_wit_type(inner)),
         Type::Option(inner) => format!("option<{}>", format_wit_type(inner)),
         Type::Result { ok, err } => {
-            let ok_str = ok.as_ref().map(|t| format_wit_type(t)).unwrap_or_else(|| "_".to_string());
-            let err_str = err.as_ref().map(|t| format_wit_type(t)).unwrap_or_else(|| "_".to_string());
+            let ok_str = ok
+                .as_ref()
+                .map(|t| format_wit_type(t))
+                .unwrap_or_else(|| "_".to_string());
+            let err_str = err
+                .as_ref()
+                .map(|t| format_wit_type(t))
+                .unwrap_or_else(|| "_".to_string());
             format!("result<{}, {}>", ok_str, err_str)
         }
         Type::Tuple(items) => {
@@ -1068,7 +1126,11 @@ pub fn generate_export_metadata(registry: &WitRegistry, world: &World) -> TokenS
                     results: f.results.clone(),
                 });
             }
-            WorldItem::InterfacePath { namespace, package, interface } => {
+            WorldItem::InterfacePath {
+                namespace,
+                package,
+                interface,
+            } => {
                 let path = format_interface_path(namespace, package, interface);
                 if let Some(iface) = registry.interfaces.get(&path) {
                     for f in &iface.functions {
@@ -1098,14 +1160,17 @@ pub fn generate_export_metadata(registry: &WitRegistry, world: &World) -> TokenS
         }
     }
 
-    let entries: Vec<_> = exports.iter().map(|e| {
-        let name = &e.name;
-        let export_name = &e.export_name;
-        let sig = &e.signature;
-        quote! {
-            (#name, #export_name, #sig)
-        }
-    }).collect();
+    let entries: Vec<_> = exports
+        .iter()
+        .map(|e| {
+            let name = &e.name;
+            let export_name = &e.export_name;
+            let sig = &e.signature;
+            quote! {
+                (#name, #export_name, #sig)
+            }
+        })
+        .collect();
 
     quote! {
         #[doc(hidden)]
@@ -1141,7 +1206,11 @@ pub fn collect_exports(registry: &WitRegistry, world: &World) -> Vec<ExportInfo>
                     results: f.results.clone(),
                 });
             }
-            WorldItem::InterfacePath { namespace, package, interface } => {
+            WorldItem::InterfacePath {
+                namespace,
+                package,
+                interface,
+            } => {
                 let path = format_interface_path(namespace, package, interface);
                 if let Some(iface) = registry.interfaces.get(&path) {
                     for f in &iface.functions {
