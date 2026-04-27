@@ -6,8 +6,8 @@
 //! # Example
 //!
 //! ```ignore
-//! use pack::runtime::CompositionBuilder;
-//! use pack::abi::Value;
+//! use packr::runtime::CompositionBuilder;
+//! use packr::abi::Value;
 //!
 //! // Load package bytes
 //! let doubler_wasm = std::fs::read("doubler.wasm")?;
@@ -97,7 +97,7 @@ impl CompositionBuilder {
     /// # Example
     ///
     /// ```ignore
-    /// use pack::abi::{decode, encode, Value};
+    /// use packr::abi::{decode, encode, Value};
     ///
     /// builder.add_host_function("my:interface", "my-func", |input_bytes| {
     ///     let input: Value = decode(input_bytes)?;

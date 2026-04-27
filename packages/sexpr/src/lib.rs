@@ -10,13 +10,13 @@ extern crate alloc;
 use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use pack_abi::ConversionError;
-use pack_guest::{export, Value};
+use packr_abi::ConversionError;
+use packr_guest::{export, Value};
 
 // Set up allocator and panic handler
-pack_guest::setup_guest!();
+packr_guest::setup_guest!();
 
-pack_guest::pack_types! {
+packr_guest::pack_types! {
     exports {
         evaluate: func(expr: value) -> value,
     }

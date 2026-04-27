@@ -1,4 +1,4 @@
-use pack::abi::{encode, Value};
+use packr::abi::{encode, Value};
 
 fn main() {
     // Empty tuple

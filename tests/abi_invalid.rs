@@ -1,4 +1,4 @@
-use pack::abi::{decode, GraphBuffer, Limits, Node, NodeKind};
+use packr::abi::{decode, GraphBuffer, Limits, Node, NodeKind};
 
 fn base_header() -> Vec<u8> {
     let mut bytes = Vec::new();

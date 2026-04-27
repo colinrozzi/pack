@@ -1,8 +1,8 @@
 //! Integration tests for the new host function registration API
 
-use pack::abi::Value;
-use pack::runtime::{HostLinkerBuilder, LinkerError};
-use pack::Runtime;
+use packr::abi::Value;
+use packr::runtime::{HostLinkerBuilder, LinkerError};
+use packr::Runtime;
 use wasmtime::Caller;
 
 /// Simple state for testing
@@ -118,7 +118,7 @@ fn test_func_typed_with_value() {
         .instantiate_with_host((), |builder| {
             builder.interface("test")?.func_typed(
                 "double",
-                |_ctx: &mut pack::Ctx<'_, ()>, input: Value| -> Value {
+                |_ctx: &mut packr::Ctx<'_, ()>, input: Value| -> Value {
                     // Double any S64 value
                     match input {
                         Value::S64(n) => Value::S64(n * 2),
@@ -184,7 +184,7 @@ fn test_multiple_interfaces() {
 
 #[test]
 fn test_provider_pattern() {
-    use pack::runtime::HostFunctionProvider;
+    use packr::runtime::HostFunctionProvider;
 
     struct MathProvider;
 
@@ -229,7 +229,7 @@ fn test_provider_pattern() {
 #[test]
 fn test_backward_compatibility() {
     // Ensure the old API still works
-    use pack::runtime::HostImports;
+    use packr::runtime::HostImports;
 
     let module_wat = r#"
     (module
@@ -278,7 +278,7 @@ fn test_backward_compatibility() {
 
 #[tokio::test]
 async fn test_async_runtime_basic() {
-    use pack::AsyncRuntime;
+    use packr::AsyncRuntime;
 
     // Simple module that echoes input - guest-allocates ABI
     // (in_ptr, in_len, out_ptr_ptr, out_len_ptr) -> status
@@ -321,7 +321,7 @@ async fn test_async_runtime_basic() {
 
 #[tokio::test]
 async fn test_func_async_registration() {
-    use pack::AsyncRuntime;
+    use packr::AsyncRuntime;
 
     // Module that calls an async host function - guest-allocates ABI
     let module_wat = r#"
@@ -377,7 +377,7 @@ async fn test_func_async_registration() {
         .instantiate_with_host_async((), |builder| {
             builder.interface("test")?.func_async(
                 "async_double",
-                |_ctx: pack::AsyncCtx<()>, input: Value| async move {
+                |_ctx: packr::AsyncCtx<()>, input: Value| async move {
                     // Simulate async operation
                     match input {
                         Value::S64(n) => Value::S64(n * 2),
@@ -402,7 +402,7 @@ async fn test_func_async_registration() {
 
 #[tokio::test]
 async fn test_async_ctx_state_access() {
-    use pack::AsyncRuntime;
+    use packr::AsyncRuntime;
 
     /// State that holds a multiplier
     #[derive(Clone)]
@@ -466,7 +466,7 @@ async fn test_async_ctx_state_access() {
         .instantiate_with_host_async(state, |builder| {
             builder.interface("math")?.func_async(
                 "multiply",
-                |ctx: pack::AsyncCtx<MultiplierState>, input: Value| async move {
+                |ctx: packr::AsyncCtx<MultiplierState>, input: Value| async move {
                     // Access state through ctx.data()
                     let multiplier = ctx.data().multiplier;
                     match input {
@@ -492,7 +492,7 @@ async fn test_async_ctx_state_access() {
 
 #[test]
 fn test_error_handler_callback() {
-    use pack::{HostFunctionError, HostFunctionErrorKind};
+    use packr::{HostFunctionError, HostFunctionErrorKind};
     use std::sync::{Arc, Mutex};
 
     // Track errors via a shared vec
@@ -534,7 +534,7 @@ fn test_error_handler_callback() {
 
             builder.interface("test")?.func_typed(
                 "process",
-                |_ctx: &mut pack::Ctx<'_, ()>, input: Value| -> Value {
+                |_ctx: &mut packr::Ctx<'_, ()>, input: Value| -> Value {
                     // This will never be reached due to decode error
                     input
                 },
@@ -617,7 +617,7 @@ fn test_func_typed_result_encodes_as_value_result_ok() {
         .instantiate_with_host((), |builder| {
             builder.interface("test")?.func_typed_result(
                 "maybe_double",
-                |_ctx: &mut pack::Ctx<'_, ()>, input: Value| -> Result<Value, Value> {
+                |_ctx: &mut packr::Ctx<'_, ()>, input: Value| -> Result<Value, Value> {
                     // Return Ok with doubled value
                     match input {
                         Value::S64(n) => Ok(Value::S64(n * 2)),
@@ -707,7 +707,7 @@ fn test_func_typed_result_encodes_as_value_result_err() {
         .instantiate_with_host((), |builder| {
             builder.interface("test")?.func_typed_result(
                 "maybe_double",
-                |_ctx: &mut pack::Ctx<'_, ()>, input: Value| -> Result<Value, Value> {
+                |_ctx: &mut packr::Ctx<'_, ()>, input: Value| -> Result<Value, Value> {
                     // Return Err for negative numbers
                     match input {
                         Value::S64(n) if n < 0 => {
@@ -754,7 +754,7 @@ fn test_func_typed_result_encodes_as_value_result_err() {
 /// Test that func_async_result encodes Ok results as Value::Result, not Value::Variant
 #[tokio::test]
 async fn test_func_async_result_encodes_as_value_result_ok() {
-    use pack::AsyncRuntime;
+    use packr::AsyncRuntime;
 
     let module_wat = r#"
     (module
@@ -803,7 +803,7 @@ async fn test_func_async_result_encodes_as_value_result_ok() {
         .instantiate_with_host_async((), |builder| {
             builder.interface("test")?.func_async_result(
                 "async_maybe_double",
-                |_ctx: pack::AsyncCtx<()>, input: Value| async move {
+                |_ctx: packr::AsyncCtx<()>, input: Value| async move {
                     // Return Ok with doubled value
                     let result: Result<Value, Value> = match input {
                         Value::S64(n) => Ok(Value::S64(n * 2)),
@@ -849,7 +849,7 @@ async fn test_func_async_result_encodes_as_value_result_ok() {
 /// Test that func_async_result encodes Err results as Value::Result, not Value::Variant
 #[tokio::test]
 async fn test_func_async_result_encodes_as_value_result_err() {
-    use pack::AsyncRuntime;
+    use packr::AsyncRuntime;
 
     let module_wat = r#"
     (module
@@ -898,7 +898,7 @@ async fn test_func_async_result_encodes_as_value_result_err() {
         .instantiate_with_host_async((), |builder| {
             builder.interface("test")?.func_async_result(
                 "async_maybe_double",
-                |_ctx: pack::AsyncCtx<()>, input: Value| async move {
+                |_ctx: packr::AsyncCtx<()>, input: Value| async move {
                     // Return Err for negative numbers
                     let result: Result<Value, Value> = match input {
                         Value::S64(n) if n < 0 => {
@@ -956,7 +956,7 @@ async fn test_func_async_result_encodes_as_value_result_err() {
 /// we only have an Err value, the ok_type should still be List<U8>, not String.
 #[test]
 fn test_func_typed_result_preserves_ok_type_on_err() {
-    use pack::abi::ValueType;
+    use packr::abi::ValueType;
 
     let module_wat = r#"
     (module
@@ -1006,7 +1006,7 @@ fn test_func_typed_result_preserves_ok_type_on_err() {
             // Register function returning Result<Vec<u8>, String>
             builder.interface("test")?.func_typed_result(
                 "fetch_bytes",
-                |_ctx: &mut pack::Ctx<'_, ()>, _input: Value| -> Result<Vec<u8>, String> {
+                |_ctx: &mut packr::Ctx<'_, ()>, _input: Value| -> Result<Vec<u8>, String> {
                     // Return error - we don't have an Ok value to infer from
                     Err("Resource not found".to_string())
                 },
@@ -1047,7 +1047,7 @@ fn test_func_typed_result_preserves_ok_type_on_err() {
 /// when returning Ok (so we don't have an Err value to infer from).
 #[test]
 fn test_func_typed_result_preserves_err_type_on_ok() {
-    use pack::abi::ValueType;
+    use packr::abi::ValueType;
 
     let module_wat = r#"
     (module
@@ -1097,7 +1097,7 @@ fn test_func_typed_result_preserves_err_type_on_ok() {
             // Register function returning Result<String, Vec<u8>>
             builder.interface("test")?.func_typed_result(
                 "process",
-                |_ctx: &mut pack::Ctx<'_, ()>, _input: Value| -> Result<String, Vec<u8>> {
+                |_ctx: &mut packr::Ctx<'_, ()>, _input: Value| -> Result<String, Vec<u8>> {
                     // Return success - we don't have an Err value to infer from
                     Ok("Success!".to_string())
                 },

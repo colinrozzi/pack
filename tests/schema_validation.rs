@@ -1,9 +1,9 @@
-use pack::abi::{encode, GraphBuffer, Node, NodeKind, Value, ValueType};
-use pack::parser::{
+use packr::abi::{encode, GraphBuffer, Node, NodeKind, Value, ValueType};
+use packr::parser::{
     decode_with_schema, encode_with_schema, parse_interface, validate_graph_against_type,
     ValidationError,
 };
-use pack::types::Type;
+use packr::types::Type;
 
 #[test]
 fn validate_graph_against_schema() {

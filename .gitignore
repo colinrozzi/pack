@@ -1,4 +1,6 @@
 /target
+packages/*/target
+packages/*/Cargo.lock
 
 # Nix
 result

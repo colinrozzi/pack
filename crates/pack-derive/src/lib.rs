@@ -6,7 +6,7 @@
 //! # Example
 //!
 //! ```ignore
-//! use pack_abi::{GraphValue, Value};
+//! use packr_abi::{GraphValue, Value};
 //!
 //! #[derive(GraphValue)]
 //! struct Point {
@@ -21,14 +21,14 @@
 //!
 //! # Crate Path
 //!
-//! By default, the macro expects `pack_abi` to be in scope. For `no_std` guests
-//! using `pack_guest`, specify the crate path:
+//! By default, the macro expects `packr_abi` to be in scope. For `no_std` guests
+//! using `packr_guest`, specify the crate path:
 //!
 //! ```ignore
-//! use pack_guest::GraphValue;
+//! use packr_guest::GraphValue;
 //!
 //! #[derive(GraphValue)]
-//! #[graph(crate = "pack_guest::composite_abi")]
+//! #[graph(crate = "packr_guest::composite_abi")]
 //! struct MyState {
 //!     count: i32,
 //! }
@@ -39,7 +39,7 @@ use quote::{format_ident, quote};
 use syn::{parse_macro_input, Attribute, Data, DeriveInput, Fields, Meta};
 
 /// Extract the crate path from `#[graph(crate = "...")]` attribute.
-/// Defaults to `pack_abi` if not specified.
+/// Defaults to `packr_abi` if not specified.
 fn get_crate_path(attrs: &[Attribute]) -> proc_macro2::TokenStream {
     for attr in attrs {
         if attr.path().is_ident("graph") {
@@ -62,8 +62,8 @@ fn get_crate_path(attrs: &[Attribute]) -> proc_macro2::TokenStream {
             }
         }
     }
-    // Default to pack_abi
-    quote! { pack_abi }
+    // Default to packr_abi
+    quote! { packr_abi }
 }
 
 /// Derive macro for converting between Rust types and `Value`.
@@ -95,7 +95,7 @@ fn get_crate_path(attrs: &[Attribute]) -> proc_macro2::TokenStream {
 ///
 /// # Attributes
 ///
-/// - `#[graph(crate = "path")]` - Specify the crate path (default: `pack_abi`)
+/// - `#[graph(crate = "path")]` - Specify the crate path (default: `packr_abi`)
 /// - `#[graph(rename = "name")]` - Use a different name for field/variant
 /// - `#[graph(tag = N)]` - Use explicit tag number for variant
 #[proc_macro_derive(GraphValue, attributes(graph))]

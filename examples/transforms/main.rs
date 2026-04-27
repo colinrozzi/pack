@@ -1,4 +1,4 @@
-use pack::{generate_rust, parse_pact_dir_with_registry, PactExport, TransformRegistry};
+use packr::{generate_rust, parse_pact_dir_with_registry, PactExport, TransformRegistry};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (root, type_registry) = parse_pact_dir_with_registry("examples/transforms")?;

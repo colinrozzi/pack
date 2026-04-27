@@ -9,11 +9,11 @@
 //! #![no_std]
 //! extern crate alloc;
 //!
-//! use pack_guest::export;
-//! use pack_guest::Value;
+//! use packr_guest::export;
+//! use packr_guest::Value;
 //!
 //! // Set up panic handler and allocator (uses dlmalloc for proper memory management)
-//! pack_guest::setup_guest!();
+//! packr_guest::setup_guest!();
 //!
 //! #[export]
 //! fn echo(input: Value) -> Value {
@@ -31,18 +31,18 @@
 pub extern crate alloc;
 
 // Re-export the macros
-pub use pack_guest_macros::{export, import, import_from, pack_types, wit, world};
+pub use packr_guest_macros::{export, import, import_from, pack_types, wit, world};
 
 // Re-export useful types from pack-abi
-pub use pack_abi::{decode, encode, ConversionError, FromValue, Value, ValueType};
+pub use packr_abi::{decode, encode, ConversionError, FromValue, Value, ValueType};
 
 // Re-export derive macro
 #[cfg(feature = "derive")]
-pub use pack_derive::GraphValue;
+pub use packr_derive::GraphValue;
 
 // Re-export pack-abi as composite_abi for derive macro compatibility
 // The derive macro generates code that references composite_abi
-pub use pack_abi as composite_abi;
+pub use packr_abi as composite_abi;
 
 // Re-export dlmalloc for the setup_guest macro
 #[doc(hidden)]
@@ -240,7 +240,7 @@ where
 /// # Example
 ///
 /// ```ignore
-/// pack_guest::bump_allocator!(64 * 1024); // 64KB heap
+/// packr_guest::bump_allocator!(64 * 1024); // 64KB heap
 /// ```
 #[macro_export]
 macro_rules! bump_allocator {
@@ -300,7 +300,7 @@ macro_rules! bump_allocator {
 /// # Example
 ///
 /// ```ignore
-/// pack_guest::panic_handler!();
+/// packr_guest::panic_handler!();
 /// ```
 #[macro_export]
 macro_rules! panic_handler {
@@ -320,7 +320,7 @@ macro_rules! panic_handler {
 /// # Example
 ///
 /// ```ignore
-/// pack_guest::setup_guest!();
+/// packr_guest::setup_guest!();
 /// ```
 #[macro_export]
 macro_rules! setup_guest {

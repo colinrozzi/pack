@@ -1,13 +1,18 @@
 [package]
-name = "pack-abi"
+name = "packr-abi"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
 description = "Graph-encoded ABI for Pack runtime - supports recursive types"
+
+[lib]
+name = "packr_abi"
 
 [features]
 default = ["std"]
 std = []
-derive = ["pack-derive"]
+derive = ["packr-derive"]
 serde = ["dep:serde"]
 
 [dependencies]
@@ -16,6 +21,6 @@ hashbrown = "0.14"
 # SHA-256 for type hashing (no_std compatible)
 sha2 = { version = "0.10", default-features = false }
 # Optional derive macro
-pack-derive = { workspace = true, optional = true }
+packr-derive = { workspace = true, optional = true }
 # Optional serde support for host-side usage
 serde = { version = "1.0", default-features = false, features = ["derive", "alloc"], optional = true }

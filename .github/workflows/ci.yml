@@ -44,4 +44,4 @@ jobs:
         run: nix develop --command cargo test --workspace
 
       - name: Derive tests
-        run: nix develop --command cargo test -p pack-abi --features derive
+        run: nix develop --command cargo test -p packr-abi --features derive

@@ -9,11 +9,11 @@ extern crate alloc;
 
 use alloc::format;
 use alloc::string::String;
-use pack_guest::export;
+use packr_guest::export;
 
-pack_guest::setup_guest!();
+packr_guest::setup_guest!();
 
-pack_guest::pack_types! {
+packr_guest::pack_types! {
     exports {
         add: func(a: s32, b: s32) -> s32,
         add64: func(a: s64, b: s64) -> s64,

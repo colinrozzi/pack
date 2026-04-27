@@ -1,8 +1,8 @@
 //! Integration tests for embedded type metadata.
 
-use pack::abi::{encode, Value, ValueType};
-use pack::metadata::{decode_metadata, MetadataError, TypeDesc};
-use pack::runtime::{CompositionBuilder, Runtime};
+use packr::abi::{encode, Value, ValueType};
+use packr::metadata::{decode_metadata, MetadataError, TypeDesc};
+use packr::runtime::{CompositionBuilder, Runtime};
 
 fn load_wasm(name: &str) -> Vec<u8> {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");

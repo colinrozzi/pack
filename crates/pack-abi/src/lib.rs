@@ -9,7 +9,7 @@
 //! Enable the `derive` feature to use `#[derive(GraphValue)]`:
 //!
 //! ```ignore
-//! use pack_abi::{GraphValue, Value};
+//! use packr_abi::{GraphValue, Value};
 //!
 //! #[derive(GraphValue)]
 //! struct Point {
@@ -63,7 +63,7 @@ pub use value::{FromValue, Value, ValueType};
 
 // Re-export derive macro when feature is enabled
 #[cfg(feature = "derive")]
-pub use pack_derive::GraphValue;
+pub use packr_derive::GraphValue;
 
 // ============================================================================
 // Conversion Error
