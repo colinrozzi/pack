@@ -1,4 +1,8 @@
 //! Tests for the GraphValue derive macro
+//!
+//! Run with: cargo test -p pack-abi --features derive
+
+#![cfg(feature = "derive")]
 
 use pack_abi::{GraphValue, Value};
 
@@ -18,7 +22,7 @@ fn struct_to_value() {
     let value: Value = point.into();
 
     match value {
-        Value::Record(fields) => {
+        Value::Record { fields, .. } => {
             assert_eq!(fields.len(), 2);
             assert_eq!(fields[0].0, "x");
             assert_eq!(fields[0].1, Value::S64(10));
@@ -31,10 +35,13 @@ fn struct_to_value() {
 
 #[test]
 fn value_to_struct() {
-    let value = Value::Record(vec![
-        ("x".to_string(), Value::S64(10)),
-        ("y".to_string(), Value::S64(20)),
-    ]);
+    let value = Value::Record {
+        type_name: String::new(),
+        fields: vec![
+            ("x".to_string(), Value::S64(10)),
+            ("y".to_string(), Value::S64(20)),
+        ],
+    };
 
     let point: Point = value.try_into().unwrap();
     assert_eq!(point.x, 10);
@@ -117,9 +124,9 @@ fn enum_unit_variant() {
     let value: Value = original.clone().into();
 
     match &value {
-        Value::Variant { tag, payload } => {
+        Value::Variant { tag, payload, .. } => {
             assert_eq!(*tag, 2);
-            assert!(payload.is_none());
+            assert!(payload.is_empty());
         }
         _ => panic!("Expected Variant"),
     }
@@ -134,10 +141,10 @@ fn enum_single_payload() {
     let value: Value = original.clone().into();
 
     match &value {
-        Value::Variant { tag, payload } => {
+        Value::Variant { tag, payload, .. } => {
             assert_eq!(*tag, 0);
-            assert!(payload.is_some());
-            assert_eq!(**payload.as_ref().unwrap(), Value::F64(5.0));
+            assert_eq!(payload.len(), 1);
+            assert_eq!(payload[0], Value::F64(5.0));
         }
         _ => panic!("Expected Variant"),
     }
@@ -152,17 +159,11 @@ fn enum_tuple_payload() {
     let value: Value = original.clone().into();
 
     match &value {
-        Value::Variant { tag, payload } => {
+        Value::Variant { tag, payload, .. } => {
             assert_eq!(*tag, 1);
-            assert!(payload.is_some());
-            match payload.as_ref().unwrap().as_ref() {
-                Value::Tuple(items) => {
-                    assert_eq!(items.len(), 2);
-                    assert_eq!(items[0], Value::F64(10.0));
-                    assert_eq!(items[1], Value::F64(20.0));
-                }
-                _ => panic!("Expected Tuple payload"),
-            }
+            assert_eq!(payload.len(), 2);
+            assert_eq!(payload[0], Value::F64(10.0));
+            assert_eq!(payload[1], Value::F64(20.0));
         }
         _ => panic!("Expected Variant"),
     }
@@ -248,7 +249,7 @@ fn rename_attribute() {
     let value: Value = person.into();
 
     match value {
-        Value::Record(fields) => {
+        Value::Record { fields, .. } => {
             assert!(fields.iter().any(|(name, _)| name == "full_name"));
             assert!(fields.iter().any(|(name, _)| name == "age"));
         }

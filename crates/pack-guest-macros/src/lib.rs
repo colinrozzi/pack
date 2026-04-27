@@ -7,13 +7,13 @@
 
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_macro_input, ItemFn, ReturnType, FnArg, Pat, LitStr, Token, Ident};
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
+use syn::{parse_macro_input, FnArg, Ident, ItemFn, LitStr, Pat, ReturnType, Token};
 
-mod wit_parser;
 mod codegen;
 mod metadata;
+mod wit_parser;
 
 /// Arguments for the #[export] attribute.
 struct ExportArgs {
@@ -30,7 +30,11 @@ struct ExportArgs {
 
 impl Parse for ExportArgs {
     fn parse(input: ParseStream) -> syn::Result<Self> {
-        let mut args = ExportArgs { name: None, wit: None, state: None };
+        let mut args = ExportArgs {
+            name: None,
+            wit: None,
+            state: None,
+        };
 
         if input.is_empty() {
             return Ok(args);
@@ -48,7 +52,10 @@ impl Parse for ExportArgs {
                 other => {
                     return Err(syn::Error::new(
                         ident.span(),
-                        format!("unexpected attribute `{}`, expected `name`, `wit`, or `state`", other),
+                        format!(
+                            "unexpected attribute `{}`, expected `name`, `wit`, or `state`",
+                            other
+                        ),
                     ));
                 }
             }
@@ -145,10 +152,9 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
         match validate_export_against_wit(wit_path) {
             Ok(result) => result.derived_name,
             Err(e) => {
-                return syn::Error::new(
-                    proc_macro2::Span::call_site(),
-                    e,
-                ).to_compile_error().into();
+                return syn::Error::new(proc_macro2::Span::call_site(), e)
+                    .to_compile_error()
+                    .into();
             }
         }
     } else {
@@ -157,8 +163,7 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     // Determine the export name: explicit name > derived from wit > function name
-    let export_name = args.name.clone()
-        .or(derived_export_name);
+    let export_name = args.name.clone().or(derived_export_name);
 
     let fn_name = &input_fn.sig.ident;
     let fn_body = &input_fn.block;
@@ -179,8 +184,10 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
                     _ => {
                         return syn::Error::new_spanned(
                             &pat_type.pat,
-                            "parameter must be a simple identifier"
-                        ).to_compile_error().into();
+                            "parameter must be a simple identifier",
+                        )
+                        .to_compile_error()
+                        .into();
                     }
                 };
                 param_names.push(name);
@@ -189,8 +196,10 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
             FnArg::Receiver(_) => {
                 return syn::Error::new_spanned(
                     param,
-                    "exported functions cannot have self parameter"
-                ).to_compile_error().into();
+                    "exported functions cannot have self parameter",
+                )
+                .to_compile_error()
+                .into();
             }
         }
     }
@@ -200,7 +209,10 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
         // Check if the type is `Value` (simple path check)
         let ty = &param_types[0];
         if let syn::Type::Path(type_path) = ty {
-            type_path.path.segments.last()
+            type_path
+                .path
+                .segments
+                .last()
                 .map(|seg| seg.ident == "Value")
                 .unwrap_or(false)
         } else {
@@ -213,28 +225,27 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
         ReturnType::Default => {
             return syn::Error::new_spanned(
                 &input_fn.sig,
-                "exported functions must have a return type"
-            ).to_compile_error().into();
+                "exported functions must have a return type",
+            )
+            .to_compile_error()
+            .into();
         }
         ReturnType::Type(_, ty) => ty,
     };
 
     // Generate the inner function name (prefixed with underscore)
-    let inner_fn_name = syn::Ident::new(
-        &format!("__{}_inner", fn_name),
-        fn_name.span()
-    );
+    let inner_fn_name = syn::Ident::new(&format!("__{}_inner", fn_name), fn_name.span());
 
     // Generate the wrapper function name (always a valid Rust identifier)
-    let wrapper_fn_name = syn::Ident::new(
-        &format!("__{}_export", fn_name),
-        fn_name.span()
-    );
+    let wrapper_fn_name = syn::Ident::new(&format!("__{}_export", fn_name), fn_name.span());
 
     // Generate the function parameters for the inner function declaration
-    let inner_fn_params = param_names.iter().zip(param_types.iter()).map(|(name, ty)| {
-        quote! { #name: #ty }
-    });
+    let inner_fn_params = param_names
+        .iter()
+        .zip(param_types.iter())
+        .map(|(name, ty)| {
+            quote! { #name: #ty }
+        });
 
     // Generate the parameter extraction and function call based on mode
     let call_body = if args.state.is_some() {
@@ -245,8 +256,10 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
         if param_names.is_empty() {
             return syn::Error::new_spanned(
                 &input_fn.sig,
-                "state mode requires at least one parameter (the state)"
-            ).to_compile_error().into();
+                "state mode requires at least one parameter (the state)",
+            )
+            .to_compile_error()
+            .into();
         }
 
         let state_name = &param_names[0];
@@ -281,17 +294,21 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
         } else {
             let indices: Vec<_> = (0..other_param_names.len()).collect();
-            let extractions = other_param_names.iter().zip(other_param_types.iter()).zip(indices.iter()).map(|((name, ty), idx)| {
-                quote! {
-                    let #name: #ty = match param_items.get(#idx).cloned() {
-                        Some(v) => match v.try_into() {
-                            Ok(converted) => converted,
-                            Err(_) => return Err("failed to convert parameter"),
-                        },
-                        None => return Err("missing parameter in tuple"),
-                    };
-                }
-            });
+            let extractions = other_param_names
+                .iter()
+                .zip(other_param_types.iter())
+                .zip(indices.iter())
+                .map(|((name, ty), idx)| {
+                    quote! {
+                        let #name: #ty = match param_items.get(#idx).cloned() {
+                            Some(v) => match v.try_into() {
+                                Ok(converted) => converted,
+                                Err(_) => return Err("failed to convert parameter"),
+                            },
+                            None => return Err("missing parameter in tuple"),
+                        };
+                    }
+                });
             quote! {
                 let param_items = match params_value {
                     pack_guest::Value::Tuple(items) => items,
@@ -410,17 +427,21 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
         let num_params = param_names.len();
         let indices: Vec<_> = (0..num_params).collect();
 
-        let extractions = param_names.iter().zip(param_types.iter()).zip(indices.iter()).map(|((name, ty), idx)| {
-            quote! {
-                let #name: #ty = match items.get(#idx).cloned() {
-                    Some(v) => match v.try_into() {
-                        Ok(converted) => converted,
-                        Err(_) => return Err("failed to convert parameter"),
-                    },
-                    None => return Err("missing parameter in tuple"),
-                };
-            }
-        });
+        let extractions = param_names
+            .iter()
+            .zip(param_types.iter())
+            .zip(indices.iter())
+            .map(|((name, ty), idx)| {
+                quote! {
+                    let #name: #ty = match items.get(#idx).cloned() {
+                        Some(v) => match v.try_into() {
+                            Ok(converted) => converted,
+                            Err(_) => return Err("failed to convert parameter"),
+                        },
+                        None => return Err("missing parameter in tuple"),
+                    };
+                }
+            });
 
         let call_args = param_names.iter();
 
@@ -519,8 +540,8 @@ struct WitValidationResult {
 fn validate_export_against_wit(wit_path: &str) -> Result<WitValidationResult, String> {
     // Read and parse WIT files
     let wit_content = read_wit_files()?;
-    let registry = wit_parser::parse_wit(&wit_content)
-        .map_err(|e| format!("Failed to parse WIT: {}", e))?;
+    let registry =
+        wit_parser::parse_wit(&wit_content).map_err(|e| format!("Failed to parse WIT: {}", e))?;
 
     // Check if this is a full path (contains '.' or '#')
     if let Some(func_path) = wit_parser::FunctionPath::parse(wit_path) {
@@ -554,7 +575,10 @@ fn validate_export_against_wit(wit_path: &str) -> Result<WitValidationResult, St
                         function: Some(f.clone()),
                     });
                 }
-                wit_parser::WorldItem::InlineInterface { name: iface_name, functions } => {
+                wit_parser::WorldItem::InlineInterface {
+                    name: iface_name,
+                    functions,
+                } => {
                     if let Some(f) = functions.iter().find(|f| f.name == func_name) {
                         // Found in inline interface
                         return Ok(WitValidationResult {
@@ -563,7 +587,11 @@ fn validate_export_against_wit(wit_path: &str) -> Result<WitValidationResult, St
                         });
                     }
                 }
-                wit_parser::WorldItem::InterfacePath { namespace, package, interface } => {
+                wit_parser::WorldItem::InterfacePath {
+                    namespace,
+                    package,
+                    interface,
+                } => {
                     // Check if this interface path is in our registry
                     let iface_path = match (namespace, package) {
                         (Some(ns), Some(pkg)) => format!("{}:{}/{}", ns, pkg, interface),
@@ -633,13 +661,20 @@ fn try_auto_discover_export(fn_name: &str) -> Option<String> {
                     // Found as a bare export - use just the function name
                     return Some(fn_name.to_string());
                 }
-                wit_parser::WorldItem::InlineInterface { name: iface_name, functions } => {
+                wit_parser::WorldItem::InlineInterface {
+                    name: iface_name,
+                    functions,
+                } => {
                     if functions.iter().any(|f| f.name == fn_name) {
                         // Found in inline interface - use interface.function format
                         return Some(format!("{}.{}", iface_name, fn_name));
                     }
                 }
-                wit_parser::WorldItem::InterfacePath { namespace, package, interface } => {
+                wit_parser::WorldItem::InterfacePath {
+                    namespace,
+                    package,
+                    interface,
+                } => {
                     // Check if this interface has the function
                     let iface_path = match (namespace, package) {
                         (Some(ns), Some(pkg)) => format!("{}:{}/{}", ns, pkg, interface),
@@ -677,15 +712,16 @@ struct WitImportValidationResult {
 fn validate_import_against_wit(wit_path: &str) -> Result<WitImportValidationResult, String> {
     // Read and parse WIT files
     let wit_content = read_wit_files()?;
-    let registry = wit_parser::parse_wit(&wit_content)
-        .map_err(|e| format!("Failed to parse WIT: {}", e))?;
+    let registry =
+        wit_parser::parse_wit(&wit_content).map_err(|e| format!("Failed to parse WIT: {}", e))?;
 
     // Parse the function path
-    let func_path = wit_parser::FunctionPath::parse(wit_path)
-        .ok_or_else(|| format!(
+    let func_path = wit_parser::FunctionPath::parse(wit_path).ok_or_else(|| {
+        format!(
             "Invalid WIT path '{}'. Expected format: 'namespace:package/interface.function'",
             wit_path
-        ))?;
+        )
+    })?;
 
     // Look up the function in the registry
     if registry.find_import_function(&func_path).is_some() {
@@ -739,7 +775,10 @@ impl Parse for ImportArgs {
                 other => {
                     return Err(syn::Error::new(
                         ident.span(),
-                        format!("unexpected attribute `{}`, expected `module`, `name`, or `wit`", other),
+                        format!(
+                            "unexpected attribute `{}`, expected `module`, `name`, or `wit`",
+                            other
+                        ),
                     ));
                 }
             }
@@ -840,10 +879,9 @@ pub fn import(attr: TokenStream, item: TokenStream) -> TokenStream {
         match validate_import_against_wit(wit_path) {
             Ok(result) => (result.module, result.import_name),
             Err(e) => {
-                return syn::Error::new(
-                    proc_macro2::Span::call_site(),
-                    e,
-                ).to_compile_error().into();
+                return syn::Error::new(proc_macro2::Span::call_site(), e)
+                    .to_compile_error()
+                    .into();
             }
         }
     } else {
@@ -851,12 +889,16 @@ pub fn import(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     // Determine module: explicit > derived from wit
-    let module = args.module.clone()
+    let module = args
+        .module
+        .clone()
         .or(derived_module)
         .expect("module should be set by either `module` or `wit` attribute");
 
     // Determine import name: explicit > derived from wit > function name
-    let import_name = args.name.clone()
+    let import_name = args
+        .name
+        .clone()
         .or(derived_name)
         .unwrap_or_else(|| sig.fn_name.to_string());
 
@@ -865,10 +907,7 @@ pub fn import(attr: TokenStream, item: TokenStream) -> TokenStream {
     let output = &sig.output;
 
     // Generate a unique name for the raw import
-    let raw_fn_name = Ident::new(
-        &format!("__raw_import_{}", fn_name),
-        fn_name.span()
-    );
+    let raw_fn_name = Ident::new(&format!("__raw_import_{}", fn_name), fn_name.span());
 
     // Extract parameter names and types
     let params: Vec<_> = sig.inputs.iter().collect();
@@ -883,8 +922,10 @@ pub fn import(attr: TokenStream, item: TokenStream) -> TokenStream {
                     _ => {
                         return syn::Error::new_spanned(
                             &pat_type.pat,
-                            "parameter must be a simple identifier"
-                        ).to_compile_error().into();
+                            "parameter must be a simple identifier",
+                        )
+                        .to_compile_error()
+                        .into();
                     }
                 };
                 param_names.push(name.clone());
@@ -893,8 +934,10 @@ pub fn import(attr: TokenStream, item: TokenStream) -> TokenStream {
             FnArg::Receiver(_) => {
                 return syn::Error::new_spanned(
                     param,
-                    "imported functions cannot have self parameter"
-                ).to_compile_error().into();
+                    "imported functions cannot have self parameter",
+                )
+                .to_compile_error()
+                .into();
             }
         }
     }
@@ -934,9 +977,12 @@ pub fn import(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     // Generate the function signature parameters
-    let fn_params = param_names.iter().zip(param_types.iter()).map(|(name, ty)| {
-        quote! { #name: #ty }
-    });
+    let fn_params = param_names
+        .iter()
+        .zip(param_types.iter())
+        .map(|(name, ty)| {
+            quote! { #name: #ty }
+        });
 
     let expanded = quote! {
         #[link(wasm_import_module = #module)]
@@ -1029,8 +1075,10 @@ pub fn wit(input: TokenStream) -> TokenStream {
             Err(e) => {
                 return syn::Error::new(
                     proc_macro2::Span::call_site(),
-                    format!("Failed to read WIT files: {}", e)
-                ).to_compile_error().into();
+                    format!("Failed to read WIT files: {}", e),
+                )
+                .to_compile_error()
+                .into();
             }
         }
     } else {
@@ -1045,8 +1093,10 @@ pub fn wit(input: TokenStream) -> TokenStream {
         Err(e) => {
             return syn::Error::new(
                 proc_macro2::Span::call_site(),
-                format!("Failed to parse WIT: {}", e)
-            ).to_compile_error().into();
+                format!("Failed to parse WIT: {}", e),
+            )
+            .to_compile_error()
+            .into();
         }
     };
 
@@ -1115,8 +1165,10 @@ pub fn world(input: TokenStream) -> TokenStream {
             Err(e) => {
                 return syn::Error::new(
                     proc_macro2::Span::call_site(),
-                    format!("Failed to read WIT files: {}", e)
-                ).to_compile_error().into();
+                    format!("Failed to read WIT files: {}", e),
+                )
+                .to_compile_error()
+                .into();
             }
         }
     } else {
@@ -1130,8 +1182,10 @@ pub fn world(input: TokenStream) -> TokenStream {
         Err(e) => {
             return syn::Error::new(
                 proc_macro2::Span::call_site(),
-                format!("Failed to parse WIT: {}", e)
-            ).to_compile_error().into();
+                format!("Failed to parse WIT: {}", e),
+            )
+            .to_compile_error()
+            .into();
         }
     };
 
@@ -1141,8 +1195,10 @@ pub fn world(input: TokenStream) -> TokenStream {
         None => {
             return syn::Error::new(
                 proc_macro2::Span::call_site(),
-                "No world definition found in WIT files"
-            ).to_compile_error().into();
+                "No world definition found in WIT files",
+            )
+            .to_compile_error()
+            .into();
         }
     };
 
@@ -1150,8 +1206,10 @@ pub fn world(input: TokenStream) -> TokenStream {
     let types = codegen::generate_world_types(world);
 
     // Generate types from top-level definitions in the registry
-    let registry_types: Vec<_> = registry.types.iter()
-        .map(|t| codegen::generate_type_def(t))
+    let registry_types: Vec<_> = registry
+        .types
+        .iter()
+        .map(codegen::generate_type_def)
         .collect();
 
     // Generate import modules
@@ -1165,14 +1223,15 @@ pub fn world(input: TokenStream) -> TokenStream {
         #types
         #imports
         #export_metadata
-    }.into()
+    }
+    .into()
 }
 
 /// Read all WIT files from the wit/ directory and wit/deps/ subdirectories
 fn read_wit_files() -> Result<String, String> {
     // Get the manifest directory (crate root)
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
-        .map_err(|_| "CARGO_MANIFEST_DIR not set")?;
+    let manifest_dir =
+        std::env::var("CARGO_MANIFEST_DIR").map_err(|_| "CARGO_MANIFEST_DIR not set")?;
 
     let wit_dir = std::path::Path::new(&manifest_dir).join("wit");
 
@@ -1194,8 +1253,8 @@ fn read_wit_files() -> Result<String, String> {
 
 /// Recursively read WIT files from a directory
 fn read_wit_files_recursive(dir: &std::path::Path, content: &mut String) -> Result<(), String> {
-    let entries = std::fs::read_dir(dir)
-        .map_err(|e| format!("Failed to read directory {:?}: {}", dir, e))?;
+    let entries =
+        std::fs::read_dir(dir).map_err(|e| format!("Failed to read directory {:?}: {}", dir, e))?;
 
     for entry in entries {
         let entry = entry.map_err(|e| format!("Failed to read directory entry: {}", e))?;
@@ -1314,10 +1373,7 @@ pub fn import_from(attr: TokenStream, item: TokenStream) -> TokenStream {
     let output = &sig.output;
 
     // Generate a unique name for the raw import
-    let raw_fn_name = Ident::new(
-        &format!("__raw_pkg_import_{}", fn_name),
-        fn_name.span()
-    );
+    let raw_fn_name = Ident::new(&format!("__raw_pkg_import_{}", fn_name), fn_name.span());
 
     // Extract parameter names and types
     let params: Vec<_> = sig.inputs.iter().collect();
@@ -1332,8 +1388,10 @@ pub fn import_from(attr: TokenStream, item: TokenStream) -> TokenStream {
                     _ => {
                         return syn::Error::new_spanned(
                             &pat_type.pat,
-                            "parameter must be a simple identifier"
-                        ).to_compile_error().into();
+                            "parameter must be a simple identifier",
+                        )
+                        .to_compile_error()
+                        .into();
                     }
                 };
                 param_names.push(name.clone());
@@ -1342,8 +1400,10 @@ pub fn import_from(attr: TokenStream, item: TokenStream) -> TokenStream {
             FnArg::Receiver(_) => {
                 return syn::Error::new_spanned(
                     param,
-                    "imported functions cannot have self parameter"
-                ).to_compile_error().into();
+                    "imported functions cannot have self parameter",
+                )
+                .to_compile_error()
+                .into();
             }
         }
     }
@@ -1382,9 +1442,12 @@ pub fn import_from(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     // Generate the function signature parameters
-    let fn_params = param_names.iter().zip(param_types.iter()).map(|(name, ty)| {
-        quote! { #name: #ty }
-    });
+    let fn_params = param_names
+        .iter()
+        .zip(param_types.iter())
+        .map(|(name, ty)| {
+            quote! { #name: #ty }
+        });
 
     let expanded = quote! {
         #[link(wasm_import_module = #package)]
@@ -1505,12 +1568,14 @@ fn parse_file_reference(input: &str) -> Result<String, String> {
     let input = input.trim();
 
     // Strip "file" prefix
-    let rest = input.strip_prefix("file")
+    let rest = input
+        .strip_prefix("file")
         .ok_or("expected 'file = \"path\"'")?
         .trim();
 
     // Strip "="
-    let rest = rest.strip_prefix('=')
+    let rest = rest
+        .strip_prefix('=')
         .ok_or("expected '=' after 'file'")?
         .trim();
 
@@ -1521,8 +1586,8 @@ fn parse_file_reference(input: &str) -> Result<String, String> {
     }
 
     // Get the manifest directory (crate root)
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
-        .map_err(|_| "CARGO_MANIFEST_DIR not set")?;
+    let manifest_dir =
+        std::env::var("CARGO_MANIFEST_DIR").map_err(|_| "CARGO_MANIFEST_DIR not set")?;
 
     let full_path = std::path::Path::new(&manifest_dir).join(path);
 
@@ -1606,7 +1671,10 @@ fn parse_import_sigs(
 ///
 /// Handles the tricky case where "name: func" needs to NOT consume the colon,
 /// but "namespace:package/interface.name" SHOULD consume the colon as part of the path.
-fn parse_function_path(parser: &mut wit_parser::Parser, default_interface: &str) -> Result<(String, String), String> {
+fn parse_function_path(
+    parser: &mut wit_parser::Parser,
+    default_interface: &str,
+) -> Result<(String, String), String> {
     let mut path = parser.expect_ident().map_err(|e| e.to_string())?;
 
     // Continue collecting path components: namespace:package/interface.funcname
@@ -1650,8 +1718,7 @@ fn parse_func_sigs_into(
         parser.expect_symbol(':').map_err(|e| e.to_string())?;
         parser.accept_ident("func");
 
-        let func =
-            wit_parser::parse_func_signature(parser, name).map_err(|e| e.to_string())?;
+        let func = wit_parser::parse_func_signature(parser, name).map_err(|e| e.to_string())?;
 
         let params: Vec<(String, metadata::TypeDesc)> = func
             .params

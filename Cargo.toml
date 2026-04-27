@@ -1,7 +1,25 @@
-[package]
-name = "pack"
+[workspace]
+members = [
+    "crates/pack-abi",
+    "crates/pack-derive",
+    "crates/pack-guest",
+    "crates/pack-guest-macros",
+]
+
+[workspace.package]
 version = "0.2.0"
 edition = "2021"
+
+[workspace.dependencies]
+pack-abi = { version = "0.2.0", path = "crates/pack-abi", default-features = false }
+pack-derive = { version = "0.2.0", path = "crates/pack-derive" }
+pack-guest = { version = "0.2.0", path = "crates/pack-guest" }
+pack-guest-macros = { version = "0.2.0", path = "crates/pack-guest-macros" }
+
+[package]
+name = "pack"
+version.workspace = true
+edition.workspace = true
 description = "A package runtime with extended WIT support for recursive types"
 
 [[bin]]
@@ -35,7 +53,7 @@ wasm-encoder = "0.219"
 sha2 = "0.10"
 
 # Re-export pack-abi types for unified Value/FromValue/ConversionError
-pack-abi = { path = "crates/pack-abi", features = ["std", "serde"] }
+pack-abi = { workspace = true, features = ["std", "serde"] }
 
 [dev-dependencies]
 wat = "1.0"  # For writing test modules in WAT

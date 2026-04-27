@@ -60,8 +60,12 @@ impl TypeHash {
     /// Format as hex string (for debugging).
     #[cfg(feature = "std")]
     pub fn to_hex(&self) -> String {
-        use alloc::format;
-        self.0.iter().map(|b| format!("{:02x}", b)).collect()
+        use core::fmt::Write;
+        let mut s = String::with_capacity(self.0.len() * 2);
+        for b in &self.0 {
+            let _ = write!(s, "{:02x}", b);
+        }
+        s
     }
 }
 

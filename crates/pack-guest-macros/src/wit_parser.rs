@@ -42,6 +42,7 @@ impl InterfacePath {
     }
 
     /// Convert to a string representation
+    #[allow(clippy::inherent_to_string)]
     pub fn to_string(&self) -> String {
         match (&self.namespace, &self.package) {
             (Some(ns), Some(pkg)) => format!("{}:{}/{}", ns, pkg, self.interface),
@@ -110,7 +111,8 @@ impl WitRegistry {
                     WorldItem::Function(f) if f.name == path.function => return Some(f),
                     WorldItem::InlineInterface { name, functions } => {
                         // Check if this matches the interface name
-                        if *name == path.interface.interface || path.interface.to_string() == *name {
+                        if *name == path.interface.interface || path.interface.to_string() == *name
+                        {
                             if let Some(f) = functions.iter().find(|f| f.name == path.function) {
                                 return Some(f);
                             }
@@ -164,7 +166,11 @@ impl WitRegistry {
                             names.push(format!("{}.{}", name, f.name));
                         }
                     }
-                    WorldItem::InterfacePath { namespace, package, interface } => {
+                    WorldItem::InterfacePath {
+                        namespace,
+                        package,
+                        interface,
+                    } => {
                         let path = match (namespace, package) {
                             (Some(ns), Some(pkg)) => format!("{}:{}/{}", ns, pkg, interface),
                             (None, Some(pkg)) => format!("{}/{}", pkg, interface),
@@ -199,7 +205,11 @@ impl WitRegistry {
                             names.push(format!("{}.{}", name, f.name));
                         }
                     }
-                    WorldItem::InterfacePath { namespace, package, interface } => {
+                    WorldItem::InterfacePath {
+                        namespace,
+                        package,
+                        interface,
+                    } => {
                         let path = match (namespace, package) {
                             (Some(ns), Some(pkg)) => format!("{}:{}/{}", ns, pkg, interface),
                             (None, Some(pkg)) => format!("{}/{}", pkg, interface),
@@ -243,13 +253,18 @@ impl WitRegistry {
                 match import {
                     WorldItem::Function(f) if f.name == path.function => return Some(f),
                     WorldItem::InlineInterface { name, functions } => {
-                        if *name == path.interface.interface || path.interface.to_string() == *name {
+                        if *name == path.interface.interface || path.interface.to_string() == *name
+                        {
                             if let Some(f) = functions.iter().find(|f| f.name == path.function) {
                                 return Some(f);
                             }
                         }
                     }
-                    WorldItem::InterfacePath { namespace, package, interface } => {
+                    WorldItem::InterfacePath {
+                        namespace,
+                        package,
+                        interface,
+                    } => {
                         let import_path = match (namespace, package) {
                             (Some(ns), Some(pkg)) => format!("{}:{}/{}", ns, pkg, interface),
                             (None, Some(pkg)) => format!("{}/{}", pkg, interface),
@@ -276,16 +291,26 @@ impl WitRegistry {
 pub enum Type {
     // Primitives
     Bool,
-    U8, U16, U32, U64,
-    S8, S16, S32, S64,
-    F32, F64,
+    U8,
+    U16,
+    U32,
+    U64,
+    S8,
+    S16,
+    S32,
+    S64,
+    F32,
+    F64,
     Char,
     String,
 
     // Compound
     List(Box<Type>),
     Option(Box<Type>),
-    Result { ok: Option<Box<Type>>, err: Option<Box<Type>> },
+    Result {
+        ok: Option<Box<Type>>,
+        err: Option<Box<Type>>,
+    },
     Tuple(Vec<Type>),
 
     // Named reference (to another type)
@@ -302,10 +327,16 @@ pub enum TypeDef {
     Alias { name: String, ty: Type },
 
     /// record foo { field: type, ... }
-    Record { name: String, fields: Vec<(String, Type)> },
+    Record {
+        name: String,
+        fields: Vec<(String, Type)>,
+    },
 
     /// variant foo { case(payload), ... }
-    Variant { name: String, cases: Vec<VariantCase> },
+    Variant {
+        name: String,
+        cases: Vec<VariantCase>,
+    },
 
     /// enum foo { a, b, c }
     Enum { name: String, cases: Vec<String> },
@@ -355,10 +386,17 @@ pub enum WorldItem {
     Function(Function),
 
     /// An interface path: `wasi:cli/stdin`
-    InterfacePath { namespace: Option<String>, package: Option<String>, interface: String },
+    InterfacePath {
+        namespace: Option<String>,
+        package: Option<String>,
+        interface: String,
+    },
 
     /// Inline interface: `name { func... }`
-    InlineInterface { name: String, functions: Vec<Function> },
+    InlineInterface {
+        name: String,
+        functions: Vec<Function>,
+    },
 }
 
 /// A parsed WIT+ world
@@ -430,8 +468,10 @@ impl<'a> Lexer<'a> {
                 self.chars.next();
                 if matches!(self.chars.peek(), Some('/')) {
                     // Line comment
-                    while let Some(c) = self.chars.next() {
-                        if c == '\n' { break; }
+                    for c in self.chars.by_ref() {
+                        if c == '\n' {
+                            break;
+                        }
                     }
                     continue;
                 }
@@ -466,7 +506,10 @@ impl<'a> Lexer<'a> {
             }
 
             // Symbols
-            if matches!(ch, '{' | '}' | '(' | ')' | '<' | '>' | ':' | ',' | '=' | ';' | '-' | '.' | '@' | '*') {
+            if matches!(
+                ch,
+                '{' | '}' | '(' | ')' | '<' | '>' | ':' | ',' | '=' | ';' | '-' | '.' | '@' | '*'
+            ) {
                 tokens.push(Token::Symbol(ch));
                 self.chars.next();
                 continue;
@@ -522,7 +565,10 @@ impl Parser {
     pub(crate) fn expect_symbol(&mut self, expected: char) -> Result<(), ParseError> {
         match self.next() {
             Token::Symbol(c) if c == expected => Ok(()),
-            other => Err(ParseError::new(format!("expected '{}', got {:?}", expected, other))),
+            other => Err(ParseError::new(format!(
+                "expected '{}', got {:?}",
+                expected, other
+            ))),
         }
     }
 
@@ -538,7 +584,10 @@ impl Parser {
     pub(crate) fn expect_ident(&mut self) -> Result<String, ParseError> {
         match self.next() {
             Token::Ident(s) => Ok(s),
-            other => Err(ParseError::new(format!("expected identifier, got {:?}", other))),
+            other => Err(ParseError::new(format!(
+                "expected identifier, got {:?}",
+                other
+            ))),
         }
     }
 
@@ -618,13 +667,23 @@ pub fn parse_world(src: &str) -> Result<World, ParseError> {
         match keyword.as_str() {
             "import" => imports.push(parse_world_item(&mut parser)?),
             "export" => exports.push(parse_world_item(&mut parser)?),
-            _ => return Err(ParseError::new(format!("expected 'import' or 'export', got '{}'", keyword))),
+            _ => {
+                return Err(ParseError::new(format!(
+                    "expected 'import' or 'export', got '{}'",
+                    keyword
+                )))
+            }
         }
     }
 
     parser.expect_symbol('}')?;
 
-    Ok(World { name, types, imports, exports })
+    Ok(World {
+        name,
+        types,
+        imports,
+        exports,
+    })
 }
 
 /// Parse WIT content and return a complete registry
@@ -757,7 +816,11 @@ fn parse_interface(parser: &mut Parser) -> Result<Interface, ParseError> {
 
     parser.expect_symbol('}')?;
 
-    Ok(Interface { name, types, functions })
+    Ok(Interface {
+        name,
+        types,
+        functions,
+    })
 }
 
 /// Parse just the body of a world (after 'world' keyword has been consumed)
@@ -793,13 +856,23 @@ fn parse_world_body(parser: &mut Parser) -> Result<World, ParseError> {
         match keyword.as_str() {
             "import" => imports.push(parse_world_item(parser)?),
             "export" => exports.push(parse_world_item(parser)?),
-            _ => return Err(ParseError::new(format!("expected 'import' or 'export', got '{}'", keyword))),
+            _ => {
+                return Err(ParseError::new(format!(
+                    "expected 'import' or 'export', got '{}'",
+                    keyword
+                )))
+            }
         }
     }
 
     parser.expect_symbol('}')?;
 
-    Ok(World { name, types, imports, exports })
+    Ok(World {
+        name,
+        types,
+        imports,
+        exports,
+    })
 }
 
 /// Try to parse a type definition from the current parser position.
@@ -850,7 +923,10 @@ fn try_parse_typedef(parser: &mut Parser) -> Result<Option<TypeDef>, ParseError>
                 } else {
                     None
                 };
-                cases.push(VariantCase { name: case_name, payload });
+                cases.push(VariantCase {
+                    name: case_name,
+                    payload,
+                });
                 parser.accept_symbol(',');
             }
             Ok(Some(TypeDef::Variant { name, cases }))
@@ -908,7 +984,10 @@ fn parse_world_item(parser: &mut Parser) -> Result<WorldItem, ParseError> {
     if parser.accept_symbol('{') {
         let functions = parse_function_block(parser)?;
         parser.expect_symbol('}')?;
-        return Ok(WorldItem::InlineInterface { name: first, functions });
+        return Ok(WorldItem::InlineInterface {
+            name: first,
+            functions,
+        });
     }
 
     // Check for package/interface (no namespace)
@@ -938,9 +1017,11 @@ fn parse_function_block(parser: &mut Parser) -> Result<Vec<Function>, ParseError
         }
 
         // Try name: func(...) pattern
-        if let (Token::Ident(name), Token::Symbol(':'), Token::Ident(func_kw)) =
-            (parser.peek().clone(), parser.peek_n(1).clone(), parser.peek_n(2).clone())
-        {
+        if let (Token::Ident(name), Token::Symbol(':'), Token::Ident(func_kw)) = (
+            parser.peek().clone(),
+            parser.peek_n(1).clone(),
+            parser.peek_n(2).clone(),
+        ) {
             if func_kw == "func" {
                 parser.next(); // name
                 parser.next(); // :
@@ -963,7 +1044,10 @@ fn parse_function_block(parser: &mut Parser) -> Result<Vec<Function>, ParseError
     Ok(functions)
 }
 
-pub(crate) fn parse_func_signature(parser: &mut Parser, name: String) -> Result<Function, ParseError> {
+pub(crate) fn parse_func_signature(
+    parser: &mut Parser,
+    name: String,
+) -> Result<Function, ParseError> {
     parser.expect_symbol('(')?;
     let params = parse_params(parser)?;
     parser.expect_symbol(')')?;
@@ -975,7 +1059,11 @@ pub(crate) fn parse_func_signature(parser: &mut Parser, name: String) -> Result<
         Vec::new()
     };
 
-    Ok(Function { name, params, results })
+    Ok(Function {
+        name,
+        params,
+        results,
+    })
 }
 
 fn parse_params(parser: &mut Parser) -> Result<Vec<(String, Type)>, ParseError> {

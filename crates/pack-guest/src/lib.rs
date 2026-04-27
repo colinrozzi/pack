@@ -75,13 +75,7 @@ pub use alloc as __alloc;
 ///
 /// **Do not call this directly** - use the `#[export]` macro instead.
 #[doc(hidden)]
-pub fn __export_impl<F>(
-    in_ptr: i32,
-    in_len: i32,
-    out_ptr_ptr: i32,
-    out_len_ptr: i32,
-    f: F,
-) -> i32
+pub fn __export_impl<F>(in_ptr: i32, in_len: i32, out_ptr_ptr: i32, out_len_ptr: i32, f: F) -> i32
 where
     F: FnOnce(Value) -> Result<Value, &'static str>,
 {
@@ -227,17 +221,14 @@ where
     }
 
     // Read the result from the location the callee specified
-    let output_bytes = unsafe {
-        core::slice::from_raw_parts(out_ptr as *const u8, out_len as usize)
-    };
+    let output_bytes =
+        unsafe { core::slice::from_raw_parts(out_ptr as *const u8, out_len as usize) };
 
     // Decode the result
-    let result = match decode(output_bytes) {
+    match decode(output_bytes) {
         Ok(v) => v,
         Err(_) => panic!("failed to decode import result"),
-    };
-
-    result
+    }
 }
 
 /// A simple bump allocator for guest packages.

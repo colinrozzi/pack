@@ -238,7 +238,7 @@ pub struct AsyncCompiledModule<'a> {
     engine: &'a Engine,
 }
 
-impl<'a> AsyncCompiledModule<'a> {
+impl AsyncCompiledModule<'_> {
     /// Instantiate the module with no imports (async).
     pub async fn instantiate_async(&self) -> Result<AsyncInstance<()>, RuntimeError> {
         let mut store = Store::new(self.engine, ());
@@ -660,7 +660,7 @@ pub struct CompiledModule<'a> {
     engine: &'a Engine,
 }
 
-impl<'a> CompiledModule<'a> {
+impl CompiledModule<'_> {
     /// Instantiate the module with no imports
     pub fn instantiate(&self) -> Result<Instance<()>, RuntimeError> {
         let mut store = Store::new(self.engine, ());
