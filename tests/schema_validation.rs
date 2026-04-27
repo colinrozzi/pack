@@ -143,8 +143,7 @@ fn decode_with_schema_roundtrip() {
     };
     let bytes = encode(&value).expect("encode");
     let decoded =
-        decode_with_schema(&interface.types, &bytes, &Type::named("node"), None)
-            .expect("decode");
+        decode_with_schema(&interface.types, &bytes, &Type::named("node"), None).expect("decode");
 
     assert_eq!(decoded, value);
 }
@@ -161,13 +160,8 @@ fn decode_with_schema_rejects_mismatch() {
     let value = Value::String("bad".to_string());
     let bytes = encode(&value).expect("encode");
 
-    let err = decode_with_schema(
-        &interface.types,
-        &bytes,
-        &Type::named("node"),
-        None,
-    )
-    .expect_err("expected validation error");
+    let err = decode_with_schema(&interface.types, &bytes, &Type::named("node"), None)
+        .expect_err("expected validation error");
 
     match err {
         ValidationError::TypeMismatch { .. } => {}
@@ -188,12 +182,8 @@ fn validate_flags_mask() {
     let bytes = encode(&value).expect("encode");
     let buffer = GraphBuffer::from_bytes(&bytes).expect("from_bytes");
 
-    validate_graph_against_type(
-        &interface.types,
-        &buffer,
-        &Type::named("mode"),
-    )
-    .expect("schema validate");
+    validate_graph_against_type(&interface.types, &buffer, &Type::named("mode"))
+        .expect("schema validate");
 }
 
 #[test]

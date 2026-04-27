@@ -122,14 +122,14 @@
           fi
 
           TITLE=$(echo "$DESCRIPTION" | head -1)
-          BRANCH=$(echo "$TITLE" | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | tr -cd 'a-z0-9-' | head -c 50)
+          BRANCH=$(echo "$TITLE" | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | tr -cd 'a-z0-9-' | ${pkgs.gnused}/bin/sed 's/--*/-/g; s/^-//; s/-$//' | head -c 50)
 
           echo "Creating PR: $TITLE"
           echo "Branch: $BRANCH"
           echo ""
 
           jj bookmark create "$BRANCH" -r @ 2>/dev/null || jj bookmark set "$BRANCH" -r @
-          jj git push --bookmark "$BRANCH"
+          jj git push --bookmark "$BRANCH" --allow-new
 
           ${pkgs.gh}/bin/gh pr create \
             --title "$TITLE" \

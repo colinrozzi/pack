@@ -7,8 +7,8 @@
 
 use clap::{Parser, Subcommand};
 use pack::{
-    parse_pact_file, parse_pact_dir_with_registry, PactInterface, TypeRegistry,
-    codegen, TypeDef, Type,
+    codegen, parse_pact_dir_with_registry, parse_pact_file, PactInterface, Type, TypeDef,
+    TypeRegistry,
 };
 use std::path::PathBuf;
 
@@ -56,8 +56,7 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn check_command(file: &PathBuf) -> anyhow::Result<()> {
-    let interface = parse_pact_file(file)
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let interface = parse_pact_file(file).map_err(|e| anyhow::anyhow!("{}", e))?;
 
     print_interface_summary(&interface, 0);
     println!("\n✓ {} parsed successfully", file.display());
@@ -65,8 +64,8 @@ fn check_command(file: &PathBuf) -> anyhow::Result<()> {
 }
 
 fn check_dir_command(dir: &PathBuf) -> anyhow::Result<()> {
-    let (root, registry) = parse_pact_dir_with_registry(dir)
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
+    let (root, registry) =
+        parse_pact_dir_with_registry(dir).map_err(|e| anyhow::anyhow!("{}", e))?;
 
     println!("Parsed {} interfaces:", root.children.len());
     for child in &root.children {
@@ -99,12 +98,19 @@ fn validate_uses(interface: &PactInterface, registry: &TypeRegistry, errors: &mu
         match registry.resolve_use(use_decl) {
             Ok(types) => {
                 if use_decl.items.is_empty() {
-                    println!("  ✓ {}: use {} (all {} types)",
-                        interface.name, use_decl.interface, types.len());
+                    println!(
+                        "  ✓ {}: use {} (all {} types)",
+                        interface.name,
+                        use_decl.interface,
+                        types.len()
+                    );
                 } else {
-                    println!("  ✓ {}: use {}.{{{}}}",
-                        interface.name, use_decl.interface,
-                        use_decl.items.join(", "));
+                    println!(
+                        "  ✓ {}: use {}.{{{}}}",
+                        interface.name,
+                        use_decl.interface,
+                        use_decl.items.join(", ")
+                    );
                 }
             }
             Err(e) => {
@@ -121,12 +127,11 @@ fn validate_uses(interface: &PactInterface, registry: &TypeRegistry, errors: &mu
 
 fn codegen_command(path: &PathBuf, output: Option<&std::path::Path>) -> anyhow::Result<()> {
     let interface = if path.is_dir() {
-        let (root, _registry) = parse_pact_dir_with_registry(path)
-            .map_err(|e| anyhow::anyhow!("{}", e))?;
+        let (root, _registry) =
+            parse_pact_dir_with_registry(path).map_err(|e| anyhow::anyhow!("{}", e))?;
         root
     } else {
-        parse_pact_file(path)
-            .map_err(|e| anyhow::anyhow!("{}", e))?
+        parse_pact_file(path).map_err(|e| anyhow::anyhow!("{}", e))?
     };
 
     let code = codegen::generate_rust(&interface);
@@ -159,7 +164,12 @@ fn print_interface_summary(interface: &PactInterface, indent: usize) {
         if use_decl.items.is_empty() {
             println!("{}  use {}", prefix, use_decl.interface);
         } else {
-            println!("{}  use {}.{{{}}}", prefix, use_decl.interface, use_decl.items.join(", "));
+            println!(
+                "{}  use {}.{{{}}}",
+                prefix,
+                use_decl.interface,
+                use_decl.items.join(", ")
+            );
         }
     }
 
@@ -233,7 +243,10 @@ fn format_type(ty: &Type) -> String {
         Type::Option(inner) => format!("option<{}>", format_type(inner)),
         Type::Result { ok, err } => format!("result<{}, {}>", format_type(ok), format_type(err)),
         Type::Tuple(types) => {
-            format!("tuple<{}>", types.iter().map(|t| format_type(t)).collect::<Vec<_>>().join(", "))
+            format!(
+                "tuple<{}>",
+                types.iter().map(format_type).collect::<Vec<_>>().join(", ")
+            )
         }
         Type::Ref(path) => path.to_string(),
         Type::Value => "value".to_string(),

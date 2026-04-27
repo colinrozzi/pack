@@ -1,7 +1,7 @@
 [package]
 name = "pack-abi"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 description = "Graph-encoded ABI for Pack runtime - supports recursive types"
 
 [features]
@@ -16,6 +16,6 @@ hashbrown = "0.14"
 # SHA-256 for type hashing (no_std compatible)
 sha2 = { version = "0.10", default-features = false }
 # Optional derive macro
-pack-derive = { path = "../pack-derive", optional = true }
+pack-derive = { workspace = true, optional = true }
 # Optional serde support for host-side usage
 serde = { version = "1.0", default-features = false, features = ["derive", "alloc"], optional = true }

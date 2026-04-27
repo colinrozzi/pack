@@ -1,7 +1,7 @@
 [package]
 name = "pack-guest"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 description = "Guest-side helpers for Pack WASM packages"
 license = "MIT OR Apache-2.0"
 
@@ -10,7 +10,7 @@ default = []
 derive = ["dep:pack-derive"]
 
 [dependencies]
-pack-abi = { path = "../pack-abi", default-features = false }
-pack-guest-macros = { path = "../pack-guest-macros" }
-pack-derive = { path = "../pack-derive", optional = true }
+pack-abi = { workspace = true, default-features = false }
+pack-guest-macros.workspace = true
+pack-derive = { workspace = true, optional = true }
 dlmalloc = { version = "0.2", features = ["global"] }

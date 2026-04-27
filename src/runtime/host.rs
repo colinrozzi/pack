@@ -406,7 +406,6 @@ pub struct InterfaceBuilder<'a, 'b, T> {
     interceptor: Option<Arc<dyn CallInterceptor>>,
 }
 
-
 impl<'a, 'b, T: 'static> InterfaceBuilder<'a, 'b, T> {
     /// Register a raw host function with direct WASM-level parameters.
     ///
@@ -513,10 +512,16 @@ impl<'a, 'b, T: 'static> InterfaceBuilder<'a, 'b, T> {
                             }
                         };
 
-                        let memory = match ctx.caller.get_export("memory").and_then(|e| e.into_memory()) {
+                        let memory = match ctx
+                            .caller
+                            .get_export("memory")
+                            .and_then(|e| e.into_memory())
+                        {
                             Some(m) => m,
                             None => {
-                                report(HostFunctionErrorKind::MemoryWrite("no memory export".to_string()));
+                                report(HostFunctionErrorKind::MemoryWrite(
+                                    "no memory export".to_string(),
+                                ));
                                 return -1;
                             }
                         };
@@ -527,11 +532,19 @@ impl<'a, 'b, T: 'static> InterfaceBuilder<'a, 'b, T> {
                             return -1;
                         }
 
-                        if let Err(e) = memory.write(&mut ctx.caller, out_ptr_ptr as usize, &(data_offset as i32).to_le_bytes()) {
+                        if let Err(e) = memory.write(
+                            &mut ctx.caller,
+                            out_ptr_ptr as usize,
+                            &(data_offset as i32).to_le_bytes(),
+                        ) {
                             report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
                             return -1;
                         }
-                        if let Err(e) = memory.write(&mut ctx.caller, out_len_ptr as usize, &(bytes.len() as i32).to_le_bytes()) {
+                        if let Err(e) = memory.write(
+                            &mut ctx.caller,
+                            out_len_ptr as usize,
+                            &(bytes.len() as i32).to_le_bytes(),
+                        ) {
                             report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
                             return -1;
                         }
@@ -553,14 +566,22 @@ impl<'a, 'b, T: 'static> InterfaceBuilder<'a, 'b, T> {
 
                     // Check interceptor for short-circuit (replay)
                     if let Some(ref interceptor) = interceptor {
-                        if let Some(recorded_output) = interceptor.before_import(&interface_name, &func_name, &input_value) {
-                            interceptor.after_import(&interface_name, &func_name, &input_value, &recorded_output);
+                        if let Some(recorded_output) =
+                            interceptor.before_import(&interface_name, &func_name, &input_value)
+                        {
+                            interceptor.after_import(
+                                &interface_name,
+                                &func_name,
+                                &input_value,
+                                &recorded_output,
+                            );
                             return write_output(&mut ctx, &recorded_output);
                         }
                     }
 
                     // Clone input_value for after_import notification if interceptor exists
-                    let input_value_for_interceptor = interceptor.as_ref().map(|_| input_value.clone());
+                    let input_value_for_interceptor =
+                        interceptor.as_ref().map(|_| input_value.clone());
 
                     // Convert to user type
                     let input: P = match P::try_from(input_value) {
@@ -580,7 +601,12 @@ impl<'a, 'b, T: 'static> InterfaceBuilder<'a, 'b, T> {
                     // Notify interceptor of completed call
                     if let Some(ref interceptor) = interceptor {
                         if let Some(ref iv) = input_value_for_interceptor {
-                            interceptor.after_import(&interface_name, &func_name, iv, &output_value);
+                            interceptor.after_import(
+                                &interface_name,
+                                &func_name,
+                                iv,
+                                &output_value,
+                            );
                         }
                     }
 
@@ -668,10 +694,16 @@ impl<'a, 'b, T: 'static> InterfaceBuilder<'a, 'b, T> {
                             }
                         };
 
-                        let memory = match ctx.caller.get_export("memory").and_then(|e| e.into_memory()) {
+                        let memory = match ctx
+                            .caller
+                            .get_export("memory")
+                            .and_then(|e| e.into_memory())
+                        {
                             Some(m) => m,
                             None => {
-                                report(HostFunctionErrorKind::MemoryWrite("no memory export".to_string()));
+                                report(HostFunctionErrorKind::MemoryWrite(
+                                    "no memory export".to_string(),
+                                ));
                                 return -1;
                             }
                         };
@@ -682,11 +714,19 @@ impl<'a, 'b, T: 'static> InterfaceBuilder<'a, 'b, T> {
                             return -1;
                         }
 
-                        if let Err(e) = memory.write(&mut ctx.caller, out_ptr_ptr as usize, &(data_offset as i32).to_le_bytes()) {
+                        if let Err(e) = memory.write(
+                            &mut ctx.caller,
+                            out_ptr_ptr as usize,
+                            &(data_offset as i32).to_le_bytes(),
+                        ) {
                             report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
                             return -1;
                         }
-                        if let Err(e) = memory.write(&mut ctx.caller, out_len_ptr as usize, &(bytes.len() as i32).to_le_bytes()) {
+                        if let Err(e) = memory.write(
+                            &mut ctx.caller,
+                            out_len_ptr as usize,
+                            &(bytes.len() as i32).to_le_bytes(),
+                        ) {
                             report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
                             return -1;
                         }
@@ -707,14 +747,22 @@ impl<'a, 'b, T: 'static> InterfaceBuilder<'a, 'b, T> {
 
                     // Check interceptor for short-circuit (replay)
                     if let Some(ref interceptor) = interceptor {
-                        if let Some(recorded_output) = interceptor.before_import(&interface_name, &func_name, &input_value) {
-                            interceptor.after_import(&interface_name, &func_name, &input_value, &recorded_output);
+                        if let Some(recorded_output) =
+                            interceptor.before_import(&interface_name, &func_name, &input_value)
+                        {
+                            interceptor.after_import(
+                                &interface_name,
+                                &func_name,
+                                &input_value,
+                                &recorded_output,
+                            );
                             return write_output(&mut ctx, &recorded_output);
                         }
                     }
 
                     // Clone input_value for after_import notification if interceptor exists
-                    let input_value_for_interceptor = interceptor.as_ref().map(|_| input_value.clone());
+                    let input_value_for_interceptor =
+                        interceptor.as_ref().map(|_| input_value.clone());
 
                     // Convert to user type
                     let input: P = match P::try_from(input_value) {
@@ -746,7 +794,12 @@ impl<'a, 'b, T: 'static> InterfaceBuilder<'a, 'b, T> {
                     // Notify interceptor of completed call
                     if let Some(ref interceptor) = interceptor {
                         if let Some(ref iv) = input_value_for_interceptor {
-                            interceptor.after_import(&interface_name, &func_name, iv, &output_value);
+                            interceptor.after_import(
+                                &interface_name,
+                                &func_name,
+                                iv,
+                                &output_value,
+                            );
                         }
                     }
 
@@ -1263,17 +1316,14 @@ impl HostFunctionProvider<HostState> for DefaultHostProvider {
                     }
                 },
             )?
-            .func_raw(
-                "alloc",
-                |caller: Caller<'_, HostState>, size: i32| -> i32 {
-                    let mut offset = caller.data().alloc_offset.lock().unwrap();
-                    let ptr = *offset;
-                    *offset += size as usize;
-                    // Align to 8 bytes
-                    *offset = (*offset + 7) & !7;
-                    ptr as i32
-                },
-            )?;
+            .func_raw("alloc", |caller: Caller<'_, HostState>, size: i32| -> i32 {
+                let mut offset = caller.data().alloc_offset.lock().unwrap();
+                let ptr = *offset;
+                *offset += size as usize;
+                // Align to 8 bytes
+                *offset = (*offset + 7) & !7;
+                ptr as i32
+            })?;
 
         Ok(())
     }

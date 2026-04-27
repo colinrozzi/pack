@@ -306,7 +306,10 @@ mod tests {
                 Type::Result { ok, err } => {
                     // ok should be result<s32, string>
                     match ok.as_ref() {
-                        Type::Result { ok: inner_ok, err: inner_err } => {
+                        Type::Result {
+                            ok: inner_ok,
+                            err: inner_err,
+                        } => {
                             assert_eq!(**inner_ok, Type::S32);
                             assert_eq!(**inner_err, Type::String);
                         }

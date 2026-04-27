@@ -161,11 +161,8 @@ mod tests {
 
     #[test]
     fn expected_signature_graph_abi_for_params() {
-        let func = Function::with_signature(
-            "process",
-            vec![Param::new("x", Type::S64)],
-            vec![Type::S64],
-        );
+        let func =
+            Function::with_signature("process", vec![Param::new("x", Type::S64)], vec![Type::S64]);
         assert_eq!(expected_signature_for(&func), ExpectedSignature::GraphAbi);
     }
 

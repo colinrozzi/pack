@@ -266,7 +266,9 @@ impl Merger {
                 wiring.import_fn.clone(),
             );
             if let Some(&old_import_idx) = resolved_imports.get(&key) {
-                consumer_remap.functions.insert(old_import_idx, new_func_idx);
+                consumer_remap
+                    .functions
+                    .insert(old_import_idx, new_func_idx);
             }
         }
 
@@ -353,7 +355,7 @@ impl Merger {
         for module in &self.modules {
             in_degree.insert(&module.name, 0);
         }
-        for (_, providers) in &deps {
+        for providers in deps.values() {
             for provider in providers {
                 *in_degree.get_mut(provider).unwrap() += 1;
             }
@@ -693,7 +695,11 @@ impl MergedModule {
                 memory_index,
                 offset_expr,
             } => {
-                let new_mem_idx = remap.memories.get(memory_index).copied().unwrap_or(*memory_index);
+                let new_mem_idx = remap
+                    .memories
+                    .get(memory_index)
+                    .copied()
+                    .unwrap_or(*memory_index);
                 // Apply data offset if this is a constant offset
                 let new_offset = match offset_expr {
                     ConstExpr::I32Const(orig_offset) => {
@@ -740,7 +746,11 @@ impl MergedModule {
                 table_index,
                 offset_expr,
             } => {
-                let new_table_idx = remap.tables.get(table_index).copied().unwrap_or(*table_index);
+                let new_table_idx = remap
+                    .tables
+                    .get(table_index)
+                    .copied()
+                    .unwrap_or(*table_index);
                 ElementKind::Active {
                     table_index: new_table_idx,
                     offset_expr: offset_expr.clone(),
@@ -764,16 +774,10 @@ impl MergedModule {
         if !self.types.is_empty() {
             let mut types = TypeSection::new();
             for func_type in &self.types {
-                let params: Vec<ValType> = func_type
-                    .params()
-                    .iter()
-                    .map(convert_val_type)
-                    .collect();
-                let results: Vec<ValType> = func_type
-                    .results()
-                    .iter()
-                    .map(convert_val_type)
-                    .collect();
+                let params: Vec<ValType> =
+                    func_type.params().iter().map(convert_val_type).collect();
+                let results: Vec<ValType> =
+                    func_type.results().iter().map(convert_val_type).collect();
                 types.ty().function(params, results);
             }
             module.section(&types);
@@ -965,7 +969,11 @@ fn convert_stored_operator(op: &StoredOperator, remap: &IndexRemap) -> Instructi
             table_index,
         } => {
             let new_type = remap.types.get(type_index).copied().unwrap_or(*type_index);
-            let new_table = remap.tables.get(table_index).copied().unwrap_or(*table_index);
+            let new_table = remap
+                .tables
+                .get(table_index)
+                .copied()
+                .unwrap_or(*table_index);
             Instruction::CallIndirect {
                 type_index: new_type,
                 table_index: new_table,
@@ -980,7 +988,11 @@ fn convert_stored_operator(op: &StoredOperator, remap: &IndexRemap) -> Instructi
             table_index,
         } => {
             let new_type = remap.types.get(type_index).copied().unwrap_or(*type_index);
-            let new_table = remap.tables.get(table_index).copied().unwrap_or(*table_index);
+            let new_table = remap
+                .tables
+                .get(table_index)
+                .copied()
+                .unwrap_or(*table_index);
             Instruction::ReturnCallIndirect {
                 type_index: new_type,
                 table_index: new_table,
@@ -1262,18 +1274,16 @@ fn convert_stored_operator(op: &StoredOperator, remap: &IndexRemap) -> Instructi
         StoredOperator::I64TruncSatF64U => Instruction::I64TruncSatF64U,
 
         // Reference types
-        StoredOperator::RefNull(kind) => {
-            match kind {
-                RefTypeKind::Func => Instruction::RefNull(HeapType::Abstract {
-                    shared: false,
-                    ty: wasm_encoder::AbstractHeapType::Func,
-                }),
-                RefTypeKind::Extern => Instruction::RefNull(HeapType::Abstract {
-                    shared: false,
-                    ty: wasm_encoder::AbstractHeapType::Extern,
-                }),
-            }
-        }
+        StoredOperator::RefNull(kind) => match kind {
+            RefTypeKind::Func => Instruction::RefNull(HeapType::Abstract {
+                shared: false,
+                ty: wasm_encoder::AbstractHeapType::Func,
+            }),
+            RefTypeKind::Extern => Instruction::RefNull(HeapType::Abstract {
+                shared: false,
+                ty: wasm_encoder::AbstractHeapType::Extern,
+            }),
+        },
         StoredOperator::RefIsNull => Instruction::RefIsNull,
         StoredOperator::RefFunc(idx) => {
             let new_idx = remap.functions.get(idx).copied().unwrap_or(*idx);

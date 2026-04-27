@@ -427,6 +427,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "dlmalloc"
+version = "0.2.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9f5b01c17f85ee988d832c40e549a64bd89ab2c9f8d8a613bdf5122ae507e294"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "either"
 version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -793,11 +804,41 @@ dependencies = [
 
 [[package]]
 name = "pack-abi"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hashbrown 0.14.5",
+ "pack-derive",
  "serde",
  "sha2",
+]
+
+[[package]]
+name = "pack-derive"
+version = "0.2.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "pack-guest"
+version = "0.2.0"
+dependencies = [
+ "dlmalloc",
+ "pack-abi",
+ "pack-derive",
+ "pack-guest-macros",
+]
+
+[[package]]
+name = "pack-guest-macros"
+version = "0.2.0"
+dependencies = [
+ "pack-abi",
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

@@ -259,7 +259,7 @@ fn tokenize(src: &str) -> Result<Vec<Token>, ParseError> {
             chars.next();
             if matches!(chars.peek(), Some('/')) {
                 // Line comment
-                while let Some(next) = chars.next() {
+                for next in chars.by_ref() {
                     if next == '\n' {
                         break;
                     }
@@ -310,7 +310,9 @@ fn tokenize(src: &str) -> Result<Vec<Token>, ParseError> {
         }
 
         // Numbers
-        if ch.is_ascii_digit() || (ch == '-' && matches!(chars.clone().nth(1), Some(c) if c.is_ascii_digit())) {
+        if ch.is_ascii_digit()
+            || (ch == '-' && matches!(chars.clone().nth(1), Some(c) if c.is_ascii_digit()))
+        {
             let mut num = String::new();
             if ch == '-' {
                 num.push(ch);
@@ -435,11 +437,10 @@ impl Parser {
     }
 
     fn accept_ident(&mut self, expected: &str) -> bool {
-        matches!(self.peek(), Token::Ident(name) if name == expected)
-            && {
-                self.pos += 1;
-                true
-            }
+        matches!(self.peek(), Token::Ident(name) if name == expected) && {
+            self.pos += 1;
+            true
+        }
     }
 
     fn accept_at(&mut self) -> bool {
@@ -503,11 +504,11 @@ pub fn parse_pact(src: &str) -> Result<PactInterface, ParseError> {
 /// The interface name will be derived from the filename (without .pact extension).
 pub fn parse_pact_file(path: impl AsRef<Path>) -> Result<PactInterface, PactFileError> {
     let path = path.as_ref();
-    let src = std::fs::read_to_string(path)
-        .map_err(|e| PactFileError::Io(path.to_path_buf(), e))?;
+    let src =
+        std::fs::read_to_string(path).map_err(|e| PactFileError::Io(path.to_path_buf(), e))?;
 
-    let mut interface = parse_pact(&src)
-        .map_err(|e| PactFileError::Parse(path.to_path_buf(), e))?;
+    let mut interface =
+        parse_pact(&src).map_err(|e| PactFileError::Parse(path.to_path_buf(), e))?;
 
     // If the interface was parsed as "root", use the filename as the name
     if interface.name == "root" {
@@ -530,10 +531,7 @@ pub fn parse_pact_dir(path: impl AsRef<Path>) -> Result<PactInterface, PactFileE
         return Err(PactFileError::NotADirectory(path.to_path_buf()));
     }
 
-    let dir_name = path
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("root");
+    let dir_name = path.file_name().and_then(|s| s.to_str()).unwrap_or("root");
 
     let mut root = PactInterface::new(dir_name);
 
@@ -542,12 +540,8 @@ pub fn parse_pact_dir(path: impl AsRef<Path>) -> Result<PactInterface, PactFileE
     Ok(root)
 }
 
-fn parse_pact_dir_recursive(
-    dir: &Path,
-    parent: &mut PactInterface,
-) -> Result<(), PactFileError> {
-    let entries = std::fs::read_dir(dir)
-        .map_err(|e| PactFileError::Io(dir.to_path_buf(), e))?;
+fn parse_pact_dir_recursive(dir: &Path, parent: &mut PactInterface) -> Result<(), PactFileError> {
+    let entries = std::fs::read_dir(dir).map_err(|e| PactFileError::Io(dir.to_path_buf(), e))?;
 
     for entry in entries {
         let entry = entry.map_err(|e| PactFileError::Io(dir.to_path_buf(), e))?;
@@ -563,8 +557,11 @@ fn parse_pact_dir_recursive(
             let mut child = PactInterface::new(subdir_name);
             parse_pact_dir_recursive(&path, &mut child)?;
 
-            if !child.children.is_empty() || !child.types.is_empty()
-                || !child.exports.is_empty() || !child.imports.is_empty() {
+            if !child.children.is_empty()
+                || !child.types.is_empty()
+                || !child.exports.is_empty()
+                || !child.imports.is_empty()
+            {
                 parent.children.push(child);
             }
         } else if path.extension().and_then(|s| s.to_str()) == Some("pact") {
@@ -652,12 +649,16 @@ impl TypeRegistry {
 
     /// Add an interface and all its children to the registry.
     pub fn add_interface(&mut self, interface: &PactInterface) {
-        let mut iface_types = InterfaceTypes::default();
-        iface_types.interface = Some(interface.clone());
+        let mut iface_types = InterfaceTypes {
+            interface: Some(interface.clone()),
+            ..Default::default()
+        };
 
         // Add all types from this interface
         for typedef in &interface.types {
-            iface_types.types.insert(typedef.name().to_string(), typedef.clone());
+            iface_types
+                .types
+                .insert(typedef.name().to_string(), typedef.clone());
         }
 
         self.interfaces.insert(interface.name.clone(), iface_types);
@@ -699,20 +700,28 @@ impl TypeRegistry {
     /// If `use_decl.items` is empty, returns all types from the interface.
     /// Otherwise, returns only the specified types.
     pub fn resolve_use(&self, use_decl: &PactUse) -> Result<Vec<(String, TypeDef)>, String> {
-        let iface = self.interfaces
+        let iface = self
+            .interfaces
             .get(&use_decl.interface)
             .ok_or_else(|| format!("Unknown interface: {}", use_decl.interface))?;
 
         if use_decl.items.is_empty() {
             // Import all types
-            Ok(iface.types.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+            Ok(iface
+                .types
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect())
         } else {
             // Import specific types
             let mut result = Vec::new();
             for item in &use_decl.items {
-                let typedef = iface.types
-                    .get(item)
-                    .ok_or_else(|| format!("Type {} not found in interface {}", item, use_decl.interface))?;
+                let typedef = iface.types.get(item).ok_or_else(|| {
+                    format!(
+                        "Type {} not found in interface {}",
+                        item, use_decl.interface
+                    )
+                })?;
                 result.push((item.clone(), typedef.clone()));
             }
             Ok(result)
@@ -721,7 +730,10 @@ impl TypeRegistry {
 
     /// Create a resolved scope for an interface, including its own types
     /// and all types brought in via `use` statements.
-    pub fn resolve_scope(&self, interface: &PactInterface) -> Result<HashMap<String, TypeDef>, String> {
+    pub fn resolve_scope(
+        &self,
+        interface: &PactInterface,
+    ) -> Result<HashMap<String, TypeDef>, String> {
         let mut scope = HashMap::new();
 
         // Add the interface's own types
@@ -758,13 +770,17 @@ impl TypeRegistry {
             // Transform use declaration: use rpc(calculator)
             // interface field is the transform name, transform_args[0] is the base interface
             let transform_name = &use_decl.interface;
-            let base_interface_name = use_decl.transform_args.first()
+            let base_interface_name = use_decl
+                .transform_args
+                .first()
                 .ok_or_else(|| "Transform requires at least one argument".to_string())?;
 
-            let transform = transforms.get(transform_name)
+            let transform = transforms
+                .get(transform_name)
                 .ok_or_else(|| format!("Unknown transform: {}", transform_name))?;
 
-            let base_interface = self.get_interface(base_interface_name)
+            let base_interface = self
+                .get_interface(base_interface_name)
                 .ok_or_else(|| format!("Unknown interface: {}", base_interface_name))?;
 
             let transformed = transform.transform(base_interface);
@@ -776,9 +792,13 @@ impl TypeRegistry {
                 // Return specific types from the transformed interface
                 let mut types = Vec::new();
                 for item in &use_decl.items {
-                    let typedef = transformed.types.iter()
+                    let typedef = transformed
+                        .types
+                        .iter()
                         .find(|t| t.name() == item)
-                        .ok_or_else(|| format!("Type {} not found in transformed interface", item))?;
+                        .ok_or_else(|| {
+                            format!("Type {} not found in transformed interface", item)
+                        })?;
                     types.push((item.clone(), typedef.clone()));
                 }
                 Ok(ResolvedUse::Types(types))
@@ -798,7 +818,9 @@ impl TypeRegistry {
 
         // Add the interface's own types
         for typedef in &interface.types {
-            scope.types.insert(typedef.name().to_string(), typedef.clone());
+            scope
+                .types
+                .insert(typedef.name().to_string(), typedef.clone());
         }
 
         // Resolve each `use` and add those types/interfaces
@@ -812,7 +834,9 @@ impl TypeRegistry {
                 ResolvedUse::TransformedInterface(iface) => {
                     // Add all types from the transformed interface
                     for typedef in &iface.types {
-                        scope.types.insert(typedef.name().to_string(), typedef.clone());
+                        scope
+                            .types
+                            .insert(typedef.name().to_string(), typedef.clone());
                     }
                     // Store the transformed interface for function resolution
                     scope.transformed_interfaces.push(iface);
@@ -822,17 +846,22 @@ impl TypeRegistry {
 
         // Resolve interface aliases
         for alias in &interface.aliases {
-            let transform = transforms.get(&alias.transform)
+            let transform = transforms
+                .get(&alias.transform)
                 .ok_or_else(|| format!("Unknown transform: {}", alias.transform))?;
 
-            let base_name = alias.args.first()
-                .ok_or_else(|| format!("Interface alias {} requires a base interface", alias.name))?;
+            let base_name = alias.args.first().ok_or_else(|| {
+                format!("Interface alias {} requires a base interface", alias.name)
+            })?;
 
-            let base_interface = self.get_interface(base_name)
+            let base_interface = self
+                .get_interface(base_name)
                 .ok_or_else(|| format!("Unknown interface: {}", base_name))?;
 
             let transformed = transform.transform(base_interface);
-            scope.aliased_interfaces.insert(alias.name.clone(), transformed);
+            scope
+                .aliased_interfaces
+                .insert(alias.name.clone(), transformed);
         }
 
         Ok(scope)
@@ -845,10 +874,12 @@ impl TypeRegistry {
         base_interface_name: &str,
         transforms: &crate::transform::TransformRegistry,
     ) -> Result<PactInterface, String> {
-        let transform = transforms.get(transform_name)
+        let transform = transforms
+            .get(transform_name)
             .ok_or_else(|| format!("Unknown transform: {}", transform_name))?;
 
-        let base_interface = self.get_interface(base_interface_name)
+        let base_interface = self
+            .get_interface(base_interface_name)
             .ok_or_else(|| format!("Unknown interface: {}", base_interface_name))?;
 
         Ok(transform.transform(base_interface))
@@ -921,7 +952,10 @@ fn parse_interface_alias(parser: &mut Parser, name: String) -> Result<InterfaceA
     })
 }
 
-fn parse_interface_body(parser: &mut Parser, interface: &mut PactInterface) -> Result<(), ParseError> {
+fn parse_interface_body(
+    parser: &mut Parser,
+    interface: &mut PactInterface,
+) -> Result<(), ParseError> {
     while !parser.is_eof() {
         // Skip semicolons
         if parser.accept_symbol(';') {
@@ -1194,7 +1228,10 @@ fn parse_use(parser: &mut Parser) -> Result<PactUse, ParseError> {
     })
 }
 
-fn parse_imports_block(parser: &mut Parser, interface: &mut PactInterface) -> Result<(), ParseError> {
+fn parse_imports_block(
+    parser: &mut Parser,
+    interface: &mut PactInterface,
+) -> Result<(), ParseError> {
     while !matches!(parser.peek(), Token::Symbol('}')) {
         if parser.accept_symbol(';') {
             continue;
@@ -1229,7 +1266,10 @@ fn parse_imports_block(parser: &mut Parser, interface: &mut PactInterface) -> Re
     Ok(())
 }
 
-fn parse_exports_block(parser: &mut Parser, interface: &mut PactInterface) -> Result<(), ParseError> {
+fn parse_exports_block(
+    parser: &mut Parser,
+    interface: &mut PactInterface,
+) -> Result<(), ParseError> {
     while !matches!(parser.peek(), Token::Symbol('}')) {
         if parser.accept_symbol(';') {
             continue;
@@ -1246,7 +1286,9 @@ fn parse_exports_block(parser: &mut Parser, interface: &mut PactInterface) -> Re
             }
             // Could be a type alias in exports
             let ty = parse_type(parser)?;
-            interface.exports.push(PactExport::Type(TypeDef::alias(name, ty)));
+            interface
+                .exports
+                .push(PactExport::Type(TypeDef::alias(name, ty)));
             continue;
         }
 
@@ -1315,8 +1357,8 @@ fn parse_type(parser: &mut Parser) -> Result<Type, ParseError> {
         "self" => Ok(Type::self_ref()),
         "value" => Ok(Type::Value),
         "_" => Ok(Type::Tuple(vec![])), // Unit type, used in result<_, E> for void ok type
-        "list" => parse_generic_type(parser, |t| Type::list(t)),
-        "option" => parse_generic_type(parser, |t| Type::option(t)),
+        "list" => parse_generic_type(parser, Type::list),
+        "option" => parse_generic_type(parser, Type::option),
         "tuple" => parse_tuple(parser),
         "result" => parse_result(parser),
         _ => Ok(Type::named(ident)),
@@ -1430,7 +1472,10 @@ mod tests {
         let interface = parse_pact(src).expect("parse");
         assert_eq!(interface.type_params.len(), 1);
         assert_eq!(interface.type_params[0].name, "T");
-        assert_eq!(interface.type_params[0].constraint, Some("Serializable".to_string()));
+        assert_eq!(
+            interface.type_params[0].constraint,
+            Some("Serializable".to_string())
+        );
     }
 
     #[test]
@@ -1793,14 +1838,18 @@ mod tests {
 
         // Verify runtime can resolve 'chain'
         let runtime = registry.get_interface("runtime").unwrap();
-        let runtime_scope = registry.resolve_scope(runtime).expect("resolve runtime scope");
+        let runtime_scope = registry
+            .resolve_scope(runtime)
+            .expect("resolve runtime scope");
         assert!(runtime_scope.contains_key("chain"));
         let chain_type = runtime_scope.get("chain").unwrap();
         assert!(matches!(chain_type, TypeDef::Record { .. }));
 
         // Verify message-server-client can resolve 'channel-accept'
         let client = registry.get_interface("message-server-client").unwrap();
-        let client_scope = registry.resolve_scope(client).expect("resolve client scope");
+        let client_scope = registry
+            .resolve_scope(client)
+            .expect("resolve client scope");
         assert!(client_scope.contains_key("channel-accept"));
         let channel_accept = client_scope.get("channel-accept").unwrap();
         assert!(matches!(channel_accept, TypeDef::Record { .. }));
@@ -1836,7 +1885,8 @@ mod tests {
 
         // Resolve the caller's scope with transforms
         let caller = type_registry.get_interface("caller").unwrap();
-        let scope = type_registry.resolve_scope_with_transforms(caller, &transform_registry)
+        let scope = type_registry
+            .resolve_scope_with_transforms(caller, &transform_registry)
             .expect("resolve scope");
 
         // Should have rpc-error type from the transform
@@ -1877,7 +1927,8 @@ mod tests {
 
         // Resolve the aliases interface scope with transforms
         let aliases = type_registry.get_interface("aliases").unwrap();
-        let scope = type_registry.resolve_scope_with_transforms(aliases, &transform_registry)
+        let scope = type_registry
+            .resolve_scope_with_transforms(aliases, &transform_registry)
             .expect("resolve scope");
 
         // Should have calc-client alias
@@ -1910,11 +1961,9 @@ mod tests {
         let type_registry = TypeRegistry::from_interface(&root);
         let transform_registry = TransformRegistry::with_builtins();
 
-        let transformed = type_registry.get_transformed_interface(
-            "rpc",
-            "calculator",
-            &transform_registry
-        ).expect("get transformed");
+        let transformed = type_registry
+            .get_transformed_interface("rpc", "calculator", &transform_registry)
+            .expect("get transformed");
 
         assert_eq!(transformed.name, "rpc(calculator)");
 

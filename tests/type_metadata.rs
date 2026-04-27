@@ -1,8 +1,8 @@
 //! Integration tests for embedded type metadata.
 
+use pack::abi::{encode, Value, ValueType};
 use pack::metadata::{decode_metadata, MetadataError, TypeDesc};
 use pack::runtime::{CompositionBuilder, Runtime};
-use pack::abi::{encode, Value, ValueType};
 
 fn load_wasm(name: &str) -> Vec<u8> {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -28,14 +28,22 @@ fn test_echo_metadata() {
     // Echo has 2 exports: echo and transform
     assert_eq!(metadata.exports().len(), 2, "echo should have 2 exports");
 
-    let echo_fn = metadata.exports().into_iter().find(|f| f.name == "echo").expect("echo export");
+    let echo_fn = metadata
+        .exports()
+        .into_iter()
+        .find(|f| f.name == "echo")
+        .expect("echo export");
     assert_eq!(echo_fn.params.len(), 1);
     assert_eq!(echo_fn.params[0].name, "input");
     assert_eq!(echo_fn.params[0].ty, TypeDesc::Value);
     assert_eq!(echo_fn.results.len(), 1);
     assert_eq!(echo_fn.results[0], TypeDesc::Value);
 
-    let transform_fn = metadata.exports().into_iter().find(|f| f.name == "transform").expect("transform export");
+    let transform_fn = metadata
+        .exports()
+        .into_iter()
+        .find(|f| f.name == "transform")
+        .expect("transform export");
     assert_eq!(transform_fn.params.len(), 1);
     assert_eq!(transform_fn.params[0].name, "input");
     assert_eq!(transform_fn.params[0].ty, TypeDesc::Value);
@@ -46,7 +54,9 @@ fn test_echo_metadata() {
 #[test]
 fn test_doubler_metadata() {
     let runtime = Runtime::new();
-    let module = runtime.load_module(&load_wasm("doubler")).expect("load doubler");
+    let module = runtime
+        .load_module(&load_wasm("doubler"))
+        .expect("load doubler");
     let mut instance = module.instantiate().expect("instantiate doubler");
 
     let metadata = instance.types().expect("should have metadata");
