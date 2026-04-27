@@ -74,16 +74,14 @@ fn inspect_command(wasm_file: &PathBuf, show_hashes: bool, json: bool) -> anyhow
         } else {
             print_json(&metadata.arena)?;
         }
+    } else if show_hashes {
+        print_metadata_with_hashes(
+            &metadata.arena,
+            &metadata.import_hashes,
+            &metadata.export_hashes,
+        );
     } else {
-        if show_hashes {
-            print_metadata_with_hashes(
-                &metadata.arena,
-                &metadata.import_hashes,
-                &metadata.export_hashes,
-            );
-        } else {
-            print_metadata(&metadata.arena);
-        }
+        print_metadata(&metadata.arena);
     }
 
     Ok(())
@@ -156,10 +154,7 @@ fn print_functions(functions: &[Function], indent: &str) {
         std::collections::BTreeMap::new();
 
     for func in functions {
-        by_interface
-            .entry(&func.interface)
-            .or_default()
-            .push(func);
+        by_interface.entry(&func.interface).or_default().push(func);
     }
 
     for (interface, funcs) in by_interface {
@@ -190,7 +185,11 @@ fn format_results(results: &[Type]) -> String {
     } else {
         format!(
             "({})",
-            results.iter().map(format_type).collect::<Vec<_>>().join(", ")
+            results
+                .iter()
+                .map(format_type)
+                .collect::<Vec<_>>()
+                .join(", ")
         )
     }
 }

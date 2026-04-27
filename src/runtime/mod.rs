@@ -10,9 +10,8 @@ mod interface_check;
 pub use composition::{BuiltComposition, CompositionBuilder, HostFn};
 pub use host::{
     AsyncCtx, Ctx, DefaultHostProvider, ErrorHandler, HostFunctionError, HostFunctionErrorKind,
-    HostFunctionProvider, HostLinkerBuilder, InterfaceBuilder, LinkerError,
-    INPUT_BUFFER_OFFSET, OUTPUT_BUFFER_CAPACITY, OUTPUT_BUFFER_OFFSET,
-    RESULT_PTR_OFFSET, RESULT_LEN_OFFSET,
+    HostFunctionProvider, HostLinkerBuilder, InterfaceBuilder, LinkerError, INPUT_BUFFER_OFFSET,
+    OUTPUT_BUFFER_CAPACITY, OUTPUT_BUFFER_OFFSET, RESULT_LEN_OFFSET, RESULT_PTR_OFFSET,
 };
 pub use interceptor::CallInterceptor;
 pub use interface_check::{
@@ -250,7 +249,11 @@ impl<'a> AsyncCompiledModule<'a> {
             .await
             .map_err(|e| RuntimeError::WasmError(e.to_string()))?;
 
-        Ok(AsyncInstance { store, instance, interceptor: None })
+        Ok(AsyncInstance {
+            store,
+            instance,
+            interceptor: None,
+        })
     }
 
     /// Instantiate the module with a builder function for configuring host functions (async).
@@ -310,7 +313,11 @@ impl<'a> AsyncCompiledModule<'a> {
             .await
             .map_err(|e| RuntimeError::WasmError(e.to_string()))?;
 
-        Ok(AsyncInstance { store, instance, interceptor })
+        Ok(AsyncInstance {
+            store,
+            instance,
+            interceptor,
+        })
     }
 
     /// Get a reference to the engine.
@@ -417,7 +424,8 @@ impl<T: Send> AsyncInstance<T> {
 
         // Write input to buffer
         let memory = self.get_memory()?;
-        memory.write(&mut self.store, in_ptr, &input_bytes)
+        memory
+            .write(&mut self.store, in_ptr, &input_bytes)
             .map_err(|_| RuntimeError::MemoryError("Failed to write input".into()))?;
 
         // Call the function
@@ -441,16 +449,20 @@ impl<T: Send> AsyncInstance<T> {
 
         // Free the input buffer if dynamically allocated
         if dynamic_input {
-            self.call_pack_free_async(in_ptr, input_bytes.len()).await.ok();
+            self.call_pack_free_async(in_ptr, input_bytes.len())
+                .await
+                .ok();
         }
 
         // Read result ptr/len from slots
         let memory = self.get_memory()?;
         let mut ptr_bytes = [0u8; 4];
         let mut len_bytes = [0u8; 4];
-        memory.read(&self.store, RESULT_PTR_OFFSET, &mut ptr_bytes)
+        memory
+            .read(&self.store, RESULT_PTR_OFFSET, &mut ptr_bytes)
             .map_err(|_| RuntimeError::MemoryError("Failed to read result ptr".into()))?;
-        memory.read(&self.store, RESULT_LEN_OFFSET, &mut len_bytes)
+        memory
+            .read(&self.store, RESULT_LEN_OFFSET, &mut len_bytes)
             .map_err(|_| RuntimeError::MemoryError("Failed to read result len".into()))?;
 
         let out_ptr = i32::from_le_bytes(ptr_bytes) as usize;
@@ -460,7 +472,8 @@ impl<T: Send> AsyncInstance<T> {
         if status != 0 {
             // Read error message
             let mut err_bytes = vec![0u8; out_len];
-            memory.read(&self.store, out_ptr, &mut err_bytes)
+            memory
+                .read(&self.store, out_ptr, &mut err_bytes)
                 .map_err(|_| RuntimeError::MemoryError("Failed to read error".into()))?;
 
             // Free the error buffer
@@ -508,7 +521,10 @@ impl<T: Send> AsyncInstance<T> {
 
     /// Call __pack_free to free a guest-allocated buffer (async).
     async fn call_pack_free_async(&mut self, ptr: usize, len: usize) -> Result<(), RuntimeError> {
-        if let Ok(free_func) = self.instance.get_typed_func::<(i32, i32), ()>(&mut self.store, "__pack_free") {
+        if let Ok(free_func) = self
+            .instance
+            .get_typed_func::<(i32, i32), ()>(&mut self.store, "__pack_free")
+        {
             free_func
                 .call_async(&mut self.store, (ptr as i32, len as i32))
                 .await
@@ -539,14 +555,19 @@ impl<T: Send> AsyncInstance<T> {
     /// Calls the `__pack_types` export to get CGRF-encoded metadata describing
     /// the package's imports and exports. Returns `Err(MetadataError::NotFound)`
     /// if the package doesn't export `__pack_types`.
-    pub async fn types(&mut self) -> Result<crate::metadata::PackageMetadata, crate::metadata::MetadataError> {
+    pub async fn types(
+        &mut self,
+    ) -> Result<crate::metadata::PackageMetadata, crate::metadata::MetadataError> {
         let types_func = self
             .instance
             .get_typed_func::<(i32, i32), i32>(&mut self.store, "__pack_types")
             .map_err(|_| crate::metadata::MetadataError::NotFound)?;
 
         let status = types_func
-            .call_async(&mut self.store, (RESULT_PTR_OFFSET as i32, RESULT_LEN_OFFSET as i32))
+            .call_async(
+                &mut self.store,
+                (RESULT_PTR_OFFSET as i32, RESULT_LEN_OFFSET as i32),
+            )
             .await
             .map_err(|e| crate::metadata::MetadataError::CallFailed(e.to_string()))?;
 
@@ -556,13 +577,16 @@ impl<T: Send> AsyncInstance<T> {
             ));
         }
 
-        let memory = self.get_memory()
+        let memory = self
+            .get_memory()
             .map_err(|e| crate::metadata::MetadataError::CallFailed(e.to_string()))?;
         let mut ptr_bytes = [0u8; 4];
         let mut len_bytes = [0u8; 4];
-        memory.read(&self.store, RESULT_PTR_OFFSET, &mut ptr_bytes)
+        memory
+            .read(&self.store, RESULT_PTR_OFFSET, &mut ptr_bytes)
             .map_err(|e| crate::metadata::MetadataError::CallFailed(e.to_string()))?;
-        memory.read(&self.store, RESULT_LEN_OFFSET, &mut len_bytes)
+        memory
+            .read(&self.store, RESULT_LEN_OFFSET, &mut len_bytes)
             .map_err(|e| crate::metadata::MetadataError::CallFailed(e.to_string()))?;
 
         let out_ptr = i32::from_le_bytes(ptr_bytes) as usize;
@@ -570,7 +594,8 @@ impl<T: Send> AsyncInstance<T> {
 
         // Read metadata bytes (static data, no __pack_free needed)
         let mut metadata_bytes = vec![0u8; out_len];
-        memory.read(&self.store, out_ptr, &mut metadata_bytes)
+        memory
+            .read(&self.store, out_ptr, &mut metadata_bytes)
             .map_err(|e| crate::metadata::MetadataError::CallFailed(e.to_string()))?;
 
         crate::metadata::decode_metadata(&metadata_bytes)
@@ -579,14 +604,19 @@ impl<T: Send> AsyncInstance<T> {
     /// Read embedded type metadata with interface hashes from the package (async).
     ///
     /// Like `types()`, but also decodes interface hashes for compatibility checking.
-    pub async fn types_with_hashes(&mut self) -> Result<crate::metadata::MetadataWithHashes, crate::metadata::MetadataError> {
+    pub async fn types_with_hashes(
+        &mut self,
+    ) -> Result<crate::metadata::MetadataWithHashes, crate::metadata::MetadataError> {
         let types_func = self
             .instance
             .get_typed_func::<(i32, i32), i32>(&mut self.store, "__pack_types")
             .map_err(|_| crate::metadata::MetadataError::NotFound)?;
 
         let status = types_func
-            .call_async(&mut self.store, (RESULT_PTR_OFFSET as i32, RESULT_LEN_OFFSET as i32))
+            .call_async(
+                &mut self.store,
+                (RESULT_PTR_OFFSET as i32, RESULT_LEN_OFFSET as i32),
+            )
             .await
             .map_err(|e| crate::metadata::MetadataError::CallFailed(e.to_string()))?;
 
@@ -596,13 +626,16 @@ impl<T: Send> AsyncInstance<T> {
             ));
         }
 
-        let memory = self.get_memory()
+        let memory = self
+            .get_memory()
             .map_err(|e| crate::metadata::MetadataError::CallFailed(e.to_string()))?;
         let mut ptr_bytes = [0u8; 4];
         let mut len_bytes = [0u8; 4];
-        memory.read(&self.store, RESULT_PTR_OFFSET, &mut ptr_bytes)
+        memory
+            .read(&self.store, RESULT_PTR_OFFSET, &mut ptr_bytes)
             .map_err(|e| crate::metadata::MetadataError::CallFailed(e.to_string()))?;
-        memory.read(&self.store, RESULT_LEN_OFFSET, &mut len_bytes)
+        memory
+            .read(&self.store, RESULT_LEN_OFFSET, &mut len_bytes)
             .map_err(|e| crate::metadata::MetadataError::CallFailed(e.to_string()))?;
 
         let out_ptr = i32::from_le_bytes(ptr_bytes) as usize;
@@ -610,7 +643,8 @@ impl<T: Send> AsyncInstance<T> {
 
         // Read metadata bytes (static data, no __pack_free needed)
         let mut metadata_bytes = vec![0u8; out_len];
-        memory.read(&self.store, out_ptr, &mut metadata_bytes)
+        memory
+            .read(&self.store, out_ptr, &mut metadata_bytes)
             .map_err(|e| crate::metadata::MetadataError::CallFailed(e.to_string()))?;
 
         crate::metadata::decode_metadata_with_hashes(&metadata_bytes)
@@ -854,11 +888,7 @@ impl InstanceWithHost {
     ///
     /// The WASM function signature is `(in_ptr, in_len, out_ptr_ptr, out_len_ptr) -> status`:
     /// - Returns: 0 on success, -1 on error (error message in ptr/len)
-    pub fn call_with_value(
-        &mut self,
-        name: &str,
-        input: &Value,
-    ) -> Result<Value, RuntimeError> {
+    pub fn call_with_value(&mut self, name: &str, input: &Value) -> Result<Value, RuntimeError> {
         // Encode input
         let input_bytes = encode(input).map_err(|e| RuntimeError::AbiError(e.to_string()))?;
 
@@ -870,7 +900,8 @@ impl InstanceWithHost {
 
         // Write input to buffer
         let memory = self.get_memory()?;
-        memory.write(&mut self.store, in_ptr, &input_bytes)
+        memory
+            .write(&mut self.store, in_ptr, &input_bytes)
             .map_err(|_| RuntimeError::MemoryError("Failed to write input".into()))?;
 
         // Call the function
@@ -900,9 +931,11 @@ impl InstanceWithHost {
         let memory = self.get_memory()?;
         let mut ptr_bytes = [0u8; 4];
         let mut len_bytes = [0u8; 4];
-        memory.read(&self.store, RESULT_PTR_OFFSET, &mut ptr_bytes)
+        memory
+            .read(&self.store, RESULT_PTR_OFFSET, &mut ptr_bytes)
             .map_err(|_| RuntimeError::MemoryError("Failed to read result ptr".into()))?;
-        memory.read(&self.store, RESULT_LEN_OFFSET, &mut len_bytes)
+        memory
+            .read(&self.store, RESULT_LEN_OFFSET, &mut len_bytes)
             .map_err(|_| RuntimeError::MemoryError("Failed to read result len".into()))?;
 
         let out_ptr = i32::from_le_bytes(ptr_bytes) as usize;
@@ -912,7 +945,8 @@ impl InstanceWithHost {
         if status != 0 {
             // Read error message
             let mut err_bytes = vec![0u8; out_len];
-            memory.read(&self.store, out_ptr, &mut err_bytes)
+            memory
+                .read(&self.store, out_ptr, &mut err_bytes)
                 .map_err(|_| RuntimeError::MemoryError("Failed to read error".into()))?;
 
             // Free the error buffer
@@ -954,7 +988,10 @@ impl InstanceWithHost {
 
     /// Call __pack_free to free a guest-allocated buffer.
     fn call_pack_free(&mut self, ptr: usize, len: usize) -> Result<(), RuntimeError> {
-        if let Ok(free_func) = self.instance.get_typed_func::<(i32, i32), ()>(&mut self.store, "__pack_free") {
+        if let Ok(free_func) = self
+            .instance
+            .get_typed_func::<(i32, i32), ()>(&mut self.store, "__pack_free")
+        {
             free_func
                 .call(&mut self.store, (ptr as i32, len as i32))
                 .map_err(|e| RuntimeError::WasmError(e.to_string()))?;
@@ -967,14 +1004,19 @@ impl InstanceWithHost {
     /// Calls the `__pack_types` export to get CGRF-encoded metadata describing
     /// the package's imports and exports. Returns `Err(MetadataError::NotFound)`
     /// if the package doesn't export `__pack_types`.
-    pub fn types(&mut self) -> Result<crate::metadata::PackageMetadata, crate::metadata::MetadataError> {
+    pub fn types(
+        &mut self,
+    ) -> Result<crate::metadata::PackageMetadata, crate::metadata::MetadataError> {
         let types_func = self
             .instance
             .get_typed_func::<(i32, i32), i32>(&mut self.store, "__pack_types")
             .map_err(|_| crate::metadata::MetadataError::NotFound)?;
 
         let status = types_func
-            .call(&mut self.store, (RESULT_PTR_OFFSET as i32, RESULT_LEN_OFFSET as i32))
+            .call(
+                &mut self.store,
+                (RESULT_PTR_OFFSET as i32, RESULT_LEN_OFFSET as i32),
+            )
             .map_err(|e| crate::metadata::MetadataError::CallFailed(e.to_string()))?;
 
         if status != 0 {
@@ -983,13 +1025,16 @@ impl InstanceWithHost {
             ));
         }
 
-        let memory = self.get_memory()
+        let memory = self
+            .get_memory()
             .map_err(|e| crate::metadata::MetadataError::CallFailed(e.to_string()))?;
         let mut ptr_bytes = [0u8; 4];
         let mut len_bytes = [0u8; 4];
-        memory.read(&self.store, RESULT_PTR_OFFSET, &mut ptr_bytes)
+        memory
+            .read(&self.store, RESULT_PTR_OFFSET, &mut ptr_bytes)
             .map_err(|e| crate::metadata::MetadataError::CallFailed(e.to_string()))?;
-        memory.read(&self.store, RESULT_LEN_OFFSET, &mut len_bytes)
+        memory
+            .read(&self.store, RESULT_LEN_OFFSET, &mut len_bytes)
             .map_err(|e| crate::metadata::MetadataError::CallFailed(e.to_string()))?;
 
         let out_ptr = i32::from_le_bytes(ptr_bytes) as usize;
@@ -997,7 +1042,8 @@ impl InstanceWithHost {
 
         // Read metadata bytes (static data, no __pack_free needed)
         let mut metadata_bytes = vec![0u8; out_len];
-        memory.read(&self.store, out_ptr, &mut metadata_bytes)
+        memory
+            .read(&self.store, out_ptr, &mut metadata_bytes)
             .map_err(|e| crate::metadata::MetadataError::CallFailed(e.to_string()))?;
 
         crate::metadata::decode_metadata(&metadata_bytes)
@@ -1006,14 +1052,19 @@ impl InstanceWithHost {
     /// Read embedded type metadata with interface hashes from the package.
     ///
     /// Like `types()`, but also decodes interface hashes for compatibility checking.
-    pub fn types_with_hashes(&mut self) -> Result<crate::metadata::MetadataWithHashes, crate::metadata::MetadataError> {
+    pub fn types_with_hashes(
+        &mut self,
+    ) -> Result<crate::metadata::MetadataWithHashes, crate::metadata::MetadataError> {
         let types_func = self
             .instance
             .get_typed_func::<(i32, i32), i32>(&mut self.store, "__pack_types")
             .map_err(|_| crate::metadata::MetadataError::NotFound)?;
 
         let status = types_func
-            .call(&mut self.store, (RESULT_PTR_OFFSET as i32, RESULT_LEN_OFFSET as i32))
+            .call(
+                &mut self.store,
+                (RESULT_PTR_OFFSET as i32, RESULT_LEN_OFFSET as i32),
+            )
             .map_err(|e| crate::metadata::MetadataError::CallFailed(e.to_string()))?;
 
         if status != 0 {
@@ -1022,13 +1073,16 @@ impl InstanceWithHost {
             ));
         }
 
-        let memory = self.get_memory()
+        let memory = self
+            .get_memory()
             .map_err(|e| crate::metadata::MetadataError::CallFailed(e.to_string()))?;
         let mut ptr_bytes = [0u8; 4];
         let mut len_bytes = [0u8; 4];
-        memory.read(&self.store, RESULT_PTR_OFFSET, &mut ptr_bytes)
+        memory
+            .read(&self.store, RESULT_PTR_OFFSET, &mut ptr_bytes)
             .map_err(|e| crate::metadata::MetadataError::CallFailed(e.to_string()))?;
-        memory.read(&self.store, RESULT_LEN_OFFSET, &mut len_bytes)
+        memory
+            .read(&self.store, RESULT_LEN_OFFSET, &mut len_bytes)
             .map_err(|e| crate::metadata::MetadataError::CallFailed(e.to_string()))?;
 
         let out_ptr = i32::from_le_bytes(ptr_bytes) as usize;
@@ -1036,7 +1090,8 @@ impl InstanceWithHost {
 
         // Read metadata bytes (static data, no __pack_free needed)
         let mut metadata_bytes = vec![0u8; out_len];
-        memory.read(&self.store, out_ptr, &mut metadata_bytes)
+        memory
+            .read(&self.store, out_ptr, &mut metadata_bytes)
             .map_err(|e| crate::metadata::MetadataError::CallFailed(e.to_string()))?;
 
         crate::metadata::decode_metadata_with_hashes(&metadata_bytes)
@@ -1141,11 +1196,7 @@ impl<T> Instance<T> {
     ///
     /// The WASM function signature is `(in_ptr, in_len, out_ptr_ptr, out_len_ptr) -> status`:
     /// - Returns: 0 on success, -1 on error (error message in ptr/len)
-    pub fn call_with_value(
-        &mut self,
-        name: &str,
-        input: &Value,
-    ) -> Result<Value, RuntimeError> {
+    pub fn call_with_value(&mut self, name: &str, input: &Value) -> Result<Value, RuntimeError> {
         // Encode input
         let input_bytes = encode(input).map_err(|e| RuntimeError::AbiError(e.to_string()))?;
 
@@ -1157,7 +1208,8 @@ impl<T> Instance<T> {
 
         // Write input to buffer
         let memory = self.get_memory()?;
-        memory.write(&mut self.store, in_ptr, &input_bytes)
+        memory
+            .write(&mut self.store, in_ptr, &input_bytes)
             .map_err(|_| RuntimeError::MemoryError("Failed to write input".into()))?;
 
         // Call the function
@@ -1187,9 +1239,11 @@ impl<T> Instance<T> {
         let memory = self.get_memory()?;
         let mut ptr_bytes = [0u8; 4];
         let mut len_bytes = [0u8; 4];
-        memory.read(&self.store, RESULT_PTR_OFFSET, &mut ptr_bytes)
+        memory
+            .read(&self.store, RESULT_PTR_OFFSET, &mut ptr_bytes)
             .map_err(|_| RuntimeError::MemoryError("Failed to read result ptr".into()))?;
-        memory.read(&self.store, RESULT_LEN_OFFSET, &mut len_bytes)
+        memory
+            .read(&self.store, RESULT_LEN_OFFSET, &mut len_bytes)
             .map_err(|_| RuntimeError::MemoryError("Failed to read result len".into()))?;
 
         let out_ptr = i32::from_le_bytes(ptr_bytes) as usize;
@@ -1199,7 +1253,8 @@ impl<T> Instance<T> {
         if status != 0 {
             // Read error message
             let mut err_bytes = vec![0u8; out_len];
-            memory.read(&self.store, out_ptr, &mut err_bytes)
+            memory
+                .read(&self.store, out_ptr, &mut err_bytes)
                 .map_err(|_| RuntimeError::MemoryError("Failed to read error".into()))?;
 
             // Free the error buffer
@@ -1241,7 +1296,10 @@ impl<T> Instance<T> {
 
     /// Call __pack_free to free a guest-allocated buffer.
     fn call_pack_free(&mut self, ptr: usize, len: usize) -> Result<(), RuntimeError> {
-        if let Ok(free_func) = self.instance.get_typed_func::<(i32, i32), ()>(&mut self.store, "__pack_free") {
+        if let Ok(free_func) = self
+            .instance
+            .get_typed_func::<(i32, i32), ()>(&mut self.store, "__pack_free")
+        {
             free_func
                 .call(&mut self.store, (ptr as i32, len as i32))
                 .map_err(|e| RuntimeError::WasmError(e.to_string()))?;
@@ -1254,14 +1312,19 @@ impl<T> Instance<T> {
     /// Calls the `__pack_types` export to get CGRF-encoded metadata describing
     /// the package's imports and exports. Returns `Err(MetadataError::NotFound)`
     /// if the package doesn't export `__pack_types`.
-    pub fn types(&mut self) -> Result<crate::metadata::PackageMetadata, crate::metadata::MetadataError> {
+    pub fn types(
+        &mut self,
+    ) -> Result<crate::metadata::PackageMetadata, crate::metadata::MetadataError> {
         let types_func = self
             .instance
             .get_typed_func::<(i32, i32), i32>(&mut self.store, "__pack_types")
             .map_err(|_| crate::metadata::MetadataError::NotFound)?;
 
         let status = types_func
-            .call(&mut self.store, (RESULT_PTR_OFFSET as i32, RESULT_LEN_OFFSET as i32))
+            .call(
+                &mut self.store,
+                (RESULT_PTR_OFFSET as i32, RESULT_LEN_OFFSET as i32),
+            )
             .map_err(|e| crate::metadata::MetadataError::CallFailed(e.to_string()))?;
 
         if status != 0 {
@@ -1270,13 +1333,16 @@ impl<T> Instance<T> {
             ));
         }
 
-        let memory = self.get_memory()
+        let memory = self
+            .get_memory()
             .map_err(|e| crate::metadata::MetadataError::CallFailed(e.to_string()))?;
         let mut ptr_bytes = [0u8; 4];
         let mut len_bytes = [0u8; 4];
-        memory.read(&self.store, RESULT_PTR_OFFSET, &mut ptr_bytes)
+        memory
+            .read(&self.store, RESULT_PTR_OFFSET, &mut ptr_bytes)
             .map_err(|e| crate::metadata::MetadataError::CallFailed(e.to_string()))?;
-        memory.read(&self.store, RESULT_LEN_OFFSET, &mut len_bytes)
+        memory
+            .read(&self.store, RESULT_LEN_OFFSET, &mut len_bytes)
             .map_err(|e| crate::metadata::MetadataError::CallFailed(e.to_string()))?;
 
         let out_ptr = i32::from_le_bytes(ptr_bytes) as usize;
@@ -1284,7 +1350,8 @@ impl<T> Instance<T> {
 
         // Read metadata bytes (static data, no __pack_free needed)
         let mut metadata_bytes = vec![0u8; out_len];
-        memory.read(&self.store, out_ptr, &mut metadata_bytes)
+        memory
+            .read(&self.store, out_ptr, &mut metadata_bytes)
             .map_err(|e| crate::metadata::MetadataError::CallFailed(e.to_string()))?;
 
         crate::metadata::decode_metadata(&metadata_bytes)
@@ -1293,14 +1360,19 @@ impl<T> Instance<T> {
     /// Read embedded type metadata with interface hashes from the package.
     ///
     /// Like `types()`, but also decodes interface hashes for compatibility checking.
-    pub fn types_with_hashes(&mut self) -> Result<crate::metadata::MetadataWithHashes, crate::metadata::MetadataError> {
+    pub fn types_with_hashes(
+        &mut self,
+    ) -> Result<crate::metadata::MetadataWithHashes, crate::metadata::MetadataError> {
         let types_func = self
             .instance
             .get_typed_func::<(i32, i32), i32>(&mut self.store, "__pack_types")
             .map_err(|_| crate::metadata::MetadataError::NotFound)?;
 
         let status = types_func
-            .call(&mut self.store, (RESULT_PTR_OFFSET as i32, RESULT_LEN_OFFSET as i32))
+            .call(
+                &mut self.store,
+                (RESULT_PTR_OFFSET as i32, RESULT_LEN_OFFSET as i32),
+            )
             .map_err(|e| crate::metadata::MetadataError::CallFailed(e.to_string()))?;
 
         if status != 0 {
@@ -1309,13 +1381,16 @@ impl<T> Instance<T> {
             ));
         }
 
-        let memory = self.get_memory()
+        let memory = self
+            .get_memory()
             .map_err(|e| crate::metadata::MetadataError::CallFailed(e.to_string()))?;
         let mut ptr_bytes = [0u8; 4];
         let mut len_bytes = [0u8; 4];
-        memory.read(&self.store, RESULT_PTR_OFFSET, &mut ptr_bytes)
+        memory
+            .read(&self.store, RESULT_PTR_OFFSET, &mut ptr_bytes)
             .map_err(|e| crate::metadata::MetadataError::CallFailed(e.to_string()))?;
-        memory.read(&self.store, RESULT_LEN_OFFSET, &mut len_bytes)
+        memory
+            .read(&self.store, RESULT_LEN_OFFSET, &mut len_bytes)
             .map_err(|e| crate::metadata::MetadataError::CallFailed(e.to_string()))?;
 
         let out_ptr = i32::from_le_bytes(ptr_bytes) as usize;
@@ -1323,7 +1398,8 @@ impl<T> Instance<T> {
 
         // Read metadata bytes (static data, no __pack_free needed)
         let mut metadata_bytes = vec![0u8; out_len];
-        memory.read(&self.store, out_ptr, &mut metadata_bytes)
+        memory
+            .read(&self.store, out_ptr, &mut metadata_bytes)
             .map_err(|e| crate::metadata::MetadataError::CallFailed(e.to_string()))?;
 
         crate::metadata::decode_metadata_with_hashes(&metadata_bytes)
@@ -1400,11 +1476,7 @@ mod tests {
             fields: vec![("wrong".to_string(), Value::String("x".to_string()))],
         };
         let err = runtime
-            .encode_result_with_schema(
-                &interface.types,
-                &value,
-                &Type::named("config".to_string()),
-            )
+            .encode_result_with_schema(&interface.types, &value, &Type::named("config".to_string()))
             .expect_err("expected error");
 
         match err {

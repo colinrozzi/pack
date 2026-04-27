@@ -41,20 +41,20 @@ fn test_namespaced_interface_registration() {
 
     let mut instance = module
         .instantiate_with_host(state, |builder| {
-            builder
-                .interface("theater:simple/runtime")?
-                .func_raw(
-                    "add_offset",
-                    |caller: Caller<'_, TestState>, a: i32, b: i32| -> i32 {
-                        a + b + caller.data().actor_id
-                    },
-                )?;
+            builder.interface("theater:simple/runtime")?.func_raw(
+                "add_offset",
+                |caller: Caller<'_, TestState>, a: i32, b: i32| -> i32 {
+                    a + b + caller.data().actor_id
+                },
+            )?;
             Ok(())
         })
         .expect("instantiate");
 
     // compute(5, 10) should return 5 + 10 + 100 = 115
-    let result = instance.call_i32_i32_to_i32("compute", 5, 10).expect("call");
+    let result = instance
+        .call_i32_i32_to_i32("compute", 5, 10)
+        .expect("call");
     assert_eq!(result, 115);
 }
 
@@ -176,7 +176,9 @@ fn test_multiple_interfaces() {
         })
         .expect("instantiate");
 
-    let result = instance.call_i32_i32_to_i32("compute", 5, 10).expect("call");
+    let result = instance
+        .call_i32_i32_to_i32("compute", 5, 10)
+        .expect("call");
     assert_eq!(result, 30); // double(add(5, 10)) = double(15) = 30
 }
 
@@ -187,10 +189,7 @@ fn test_provider_pattern() {
     struct MathProvider;
 
     impl HostFunctionProvider<()> for MathProvider {
-        fn register(
-            &self,
-            builder: &mut HostLinkerBuilder<'_, ()>,
-        ) -> Result<(), LinkerError> {
+        fn register(&self, builder: &mut HostLinkerBuilder<'_, ()>) -> Result<(), LinkerError> {
             builder
                 .interface("math")?
                 .func_raw("add", |_: Caller<'_, ()>, a: i32, b: i32| a + b)?
@@ -637,10 +636,16 @@ fn test_func_typed_result_encodes_as_value_result_ok() {
 
     // Verify output is Value::Result with Ok variant, NOT Value::Variant
     match output {
-        Value::Result { value: Ok(inner), .. } => {
+        Value::Result {
+            value: Ok(inner), ..
+        } => {
             assert_eq!(*inner, Value::S64(42)); // 21 * 2 = 42
         }
-        Value::Variant { type_name, case_name, .. } => {
+        Value::Variant {
+            type_name,
+            case_name,
+            ..
+        } => {
             panic!(
                 "Expected Value::Result but got Value::Variant(type_name={}, case_name={})",
                 type_name, case_name
@@ -705,7 +710,9 @@ fn test_func_typed_result_encodes_as_value_result_err() {
                 |_ctx: &mut pack::Ctx<'_, ()>, input: Value| -> Result<Value, Value> {
                     // Return Err for negative numbers
                     match input {
-                        Value::S64(n) if n < 0 => Err(Value::String("negative not allowed".to_string())),
+                        Value::S64(n) if n < 0 => {
+                            Err(Value::String("negative not allowed".to_string()))
+                        }
                         Value::S64(n) => Ok(Value::S64(n * 2)),
                         other => Ok(other),
                     }
@@ -723,10 +730,16 @@ fn test_func_typed_result_encodes_as_value_result_err() {
 
     // Verify output is Value::Result with Err variant, NOT Value::Variant
     match output {
-        Value::Result { value: Err(inner), .. } => {
+        Value::Result {
+            value: Err(inner), ..
+        } => {
             assert_eq!(*inner, Value::String("negative not allowed".to_string()));
         }
-        Value::Variant { type_name, case_name, .. } => {
+        Value::Variant {
+            type_name,
+            case_name,
+            ..
+        } => {
             panic!(
                 "Expected Value::Result but got Value::Variant(type_name={}, case_name={})",
                 type_name, case_name
@@ -812,10 +825,16 @@ async fn test_func_async_result_encodes_as_value_result_ok() {
 
     // Verify output is Value::Result with Ok variant, NOT Value::Variant
     match output {
-        Value::Result { value: Ok(inner), .. } => {
+        Value::Result {
+            value: Ok(inner), ..
+        } => {
             assert_eq!(*inner, Value::S64(42)); // 21 * 2 = 42
         }
-        Value::Variant { type_name, case_name, .. } => {
+        Value::Variant {
+            type_name,
+            case_name,
+            ..
+        } => {
             panic!(
                 "Expected Value::Result but got Value::Variant(type_name={}, case_name={})",
                 type_name, case_name
@@ -882,7 +901,9 @@ async fn test_func_async_result_encodes_as_value_result_err() {
                 |_ctx: pack::AsyncCtx<()>, input: Value| async move {
                     // Return Err for negative numbers
                     let result: Result<Value, Value> = match input {
-                        Value::S64(n) if n < 0 => Err(Value::String("negative not allowed".to_string())),
+                        Value::S64(n) if n < 0 => {
+                            Err(Value::String("negative not allowed".to_string()))
+                        }
                         Value::S64(n) => Ok(Value::S64(n * 2)),
                         other => Ok(other),
                     };
@@ -903,10 +924,16 @@ async fn test_func_async_result_encodes_as_value_result_err() {
 
     // Verify output is Value::Result with Err variant, NOT Value::Variant
     match output {
-        Value::Result { value: Err(inner), .. } => {
+        Value::Result {
+            value: Err(inner), ..
+        } => {
             assert_eq!(*inner, Value::String("negative not allowed".to_string()));
         }
-        Value::Variant { type_name, case_name, .. } => {
+        Value::Variant {
+            type_name,
+            case_name,
+            ..
+        } => {
             panic!(
                 "Expected Value::Result but got Value::Variant(type_name={}, case_name={})",
                 type_name, case_name
@@ -995,10 +1022,18 @@ fn test_func_typed_result_preserves_ok_type_on_err() {
 
     // Verify output has correct types even though we returned Err
     match output {
-        Value::Result { ok_type, err_type, value: Err(inner) } => {
+        Value::Result {
+            ok_type,
+            err_type,
+            value: Err(inner),
+        } => {
             // ok_type should be List<U8>, NOT String (the bug was defaulting to String)
-            assert_eq!(ok_type, ValueType::List(Box::new(ValueType::U8)),
-                "ok_type should be List<U8>, not {:?}", ok_type);
+            assert_eq!(
+                ok_type,
+                ValueType::List(Box::new(ValueType::U8)),
+                "ok_type should be List<U8>, not {:?}",
+                ok_type
+            );
             assert_eq!(err_type, ValueType::String);
             assert_eq!(*inner, Value::String("Resource not found".to_string()));
         }
@@ -1078,11 +1113,19 @@ fn test_func_typed_result_preserves_err_type_on_ok() {
 
     // Verify output has correct types even though we returned Ok
     match output {
-        Value::Result { ok_type, err_type, value: Ok(inner) } => {
+        Value::Result {
+            ok_type,
+            err_type,
+            value: Ok(inner),
+        } => {
             assert_eq!(ok_type, ValueType::String);
             // err_type should be List<U8>, NOT String (the bug was defaulting to String)
-            assert_eq!(err_type, ValueType::List(Box::new(ValueType::U8)),
-                "err_type should be List<U8>, not {:?}", err_type);
+            assert_eq!(
+                err_type,
+                ValueType::List(Box::new(ValueType::U8)),
+                "err_type should be List<U8>, not {:?}",
+                err_type
+            );
             assert_eq!(*inner, Value::String("Success!".to_string()));
         }
         other => {

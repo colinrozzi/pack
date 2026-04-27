@@ -35,11 +35,8 @@
 //! ```
 
 use proc_macro::TokenStream;
-use quote::{quote, format_ident};
-use syn::{
-    parse_macro_input, Data, DeriveInput, Fields,
-    Attribute, Meta,
-};
+use quote::{format_ident, quote};
+use syn::{parse_macro_input, Attribute, Data, DeriveInput, Fields, Meta};
 
 /// Extract the crate path from `#[graph(crate = "...")]` attribute.
 /// Defaults to `pack_abi` if not specified.
@@ -54,10 +51,10 @@ fn get_crate_path(attrs: &[Attribute]) -> proc_macro2::TokenStream {
                     if let Some(rest) = rest.strip_prefix('=') {
                         let rest = rest.trim();
                         if rest.starts_with('"') && rest.ends_with('"') {
-                            let path_str = &rest[1..rest.len()-1];
+                            let path_str = &rest[1..rest.len() - 1];
                             // Convert string path to token stream
-                            let path: syn::Path = syn::parse_str(path_str)
-                                .expect("Invalid crate path");
+                            let path: syn::Path =
+                                syn::parse_str(path_str).expect("Invalid crate path");
                             return quote! { #path };
                         }
                     }
@@ -119,7 +116,11 @@ pub fn derive_graph_value(input: TokenStream) -> TokenStream {
     expanded.into()
 }
 
-fn derive_struct(input: &DeriveInput, data: &syn::DataStruct, krate: &proc_macro2::TokenStream) -> proc_macro2::TokenStream {
+fn derive_struct(
+    input: &DeriveInput,
+    data: &syn::DataStruct,
+    krate: &proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
     let name = &input.ident;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
@@ -150,16 +151,21 @@ fn derive_struct(input: &DeriveInput, data: &syn::DataStruct, krate: &proc_macro
             let field_count = fields.named.len();
 
             // Generate field accessors for From impl
-            let field_accessors: Vec<_> = fields.named.iter().map(|f| {
-                let field_name = f.ident.as_ref().unwrap();
-                let field_name_str = get_rename(&f.attrs).unwrap_or_else(|| field_name.to_string());
-                quote! {
-                    (
-                        #krate::__private::String::from(#field_name_str),
-                        #krate::Value::from(value.#field_name)
-                    )
-                }
-            }).collect();
+            let field_accessors: Vec<_> = fields
+                .named
+                .iter()
+                .map(|f| {
+                    let field_name = f.ident.as_ref().unwrap();
+                    let field_name_str =
+                        get_rename(&f.attrs).unwrap_or_else(|| field_name.to_string());
+                    quote! {
+                        (
+                            #krate::__private::String::from(#field_name_str),
+                            #krate::Value::from(value.#field_name)
+                        )
+                    }
+                })
+                .collect();
 
             let type_name_str = name.to_string();
 
@@ -201,9 +207,7 @@ fn derive_struct(input: &DeriveInput, data: &syn::DataStruct, krate: &proc_macro
         }
         Fields::Unnamed(fields) => {
             // Tuple struct -> Value::Tuple
-            let field_indices: Vec<_> = (0..fields.unnamed.len())
-                .map(syn::Index::from)
-                .collect();
+            let field_indices: Vec<_> = (0..fields.unnamed.len()).map(syn::Index::from).collect();
 
             let field_from_value: Vec<_> = fields.unnamed.iter().enumerate().map(|(i, f)| {
                 let field_type = &f.ty;
@@ -283,83 +287,99 @@ fn derive_struct(input: &DeriveInput, data: &syn::DataStruct, krate: &proc_macro
     }
 }
 
-fn derive_enum(input: &DeriveInput, data: &syn::DataEnum, krate: &proc_macro2::TokenStream) -> proc_macro2::TokenStream {
+fn derive_enum(
+    input: &DeriveInput,
+    data: &syn::DataEnum,
+    krate: &proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
     let name = &input.ident;
     let type_name_str = name.to_string();
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
     // Generate match arms for From<T> for Value
-    let to_value_arms: Vec<_> = data.variants.iter().enumerate().map(|(default_tag, variant)| {
-        let variant_name = &variant.ident;
-        let case_name_str = variant_name.to_string();
-        let tag = get_tag(&variant.attrs).unwrap_or(default_tag);
+    let to_value_arms: Vec<_> = data
+        .variants
+        .iter()
+        .enumerate()
+        .map(|(default_tag, variant)| {
+            let variant_name = &variant.ident;
+            let case_name_str = variant_name.to_string();
+            let tag = get_tag(&variant.attrs).unwrap_or(default_tag);
 
-        match &variant.fields {
-            Fields::Named(fields) => {
-                let field_names: Vec<_> = fields.named.iter()
-                    .map(|f| f.ident.as_ref().unwrap())
-                    .collect();
-                // For named fields, we wrap in a Record as the single payload element
-                let field_to_value: Vec<_> = fields.named.iter().map(|f| {
-                    let field_name = f.ident.as_ref().unwrap();
-                    let field_name_str = get_rename(&f.attrs).unwrap_or_else(|| field_name.to_string());
+            match &variant.fields {
+                Fields::Named(fields) => {
+                    let field_names: Vec<_> = fields
+                        .named
+                        .iter()
+                        .map(|f| f.ident.as_ref().unwrap())
+                        .collect();
+                    // For named fields, we wrap in a Record as the single payload element
+                    let field_to_value: Vec<_> = fields
+                        .named
+                        .iter()
+                        .map(|f| {
+                            let field_name = f.ident.as_ref().unwrap();
+                            let field_name_str =
+                                get_rename(&f.attrs).unwrap_or_else(|| field_name.to_string());
+                            quote! {
+                                (
+                                    #krate::__private::String::from(#field_name_str),
+                                    #krate::Value::from(#field_name)
+                                )
+                            }
+                        })
+                        .collect();
+
                     quote! {
-                        (
-                            #krate::__private::String::from(#field_name_str),
-                            #krate::Value::from(#field_name)
-                        )
+                        #name::#variant_name { #(#field_names),* } => {
+                            #krate::Value::Variant {
+                                type_name: #krate::__private::String::from(#type_name_str),
+                                case_name: #krate::__private::String::from(#case_name_str),
+                                tag: #tag,
+                                payload: #krate::__private::vec![
+                                    #krate::Value::Record {
+                                        type_name: #krate::__private::String::from(#case_name_str),
+                                        fields: #krate::__private::vec![#(#field_to_value),*],
+                                    }
+                                ],
+                            }
+                        }
                     }
-                }).collect();
+                }
+                Fields::Unnamed(fields) => {
+                    let field_names: Vec<_> = (0..fields.unnamed.len())
+                        .map(|i| format_ident!("f{}", i))
+                        .collect();
 
-                quote! {
-                    #name::#variant_name { #(#field_names),* } => {
-                        #krate::Value::Variant {
-                            type_name: #krate::__private::String::from(#type_name_str),
-                            case_name: #krate::__private::String::from(#case_name_str),
-                            tag: #tag,
-                            payload: #krate::__private::vec![
-                                #krate::Value::Record {
-                                    type_name: #krate::__private::String::from(#case_name_str),
-                                    fields: #krate::__private::vec![#(#field_to_value),*],
-                                }
-                            ],
+                    // Payload is a vec of all the field values
+                    quote! {
+                        #name::#variant_name(#(#field_names),*) => {
+                            #krate::Value::Variant {
+                                type_name: #krate::__private::String::from(#type_name_str),
+                                case_name: #krate::__private::String::from(#case_name_str),
+                                tag: #tag,
+                                payload: #krate::__private::vec![
+                                    #(#krate::Value::from(#field_names)),*
+                                ],
+                            }
+                        }
+                    }
+                }
+                Fields::Unit => {
+                    quote! {
+                        #name::#variant_name => {
+                            #krate::Value::Variant {
+                                type_name: #krate::__private::String::from(#type_name_str),
+                                case_name: #krate::__private::String::from(#case_name_str),
+                                tag: #tag,
+                                payload: #krate::__private::vec![],
+                            }
                         }
                     }
                 }
             }
-            Fields::Unnamed(fields) => {
-                let field_names: Vec<_> = (0..fields.unnamed.len())
-                    .map(|i| format_ident!("f{}", i))
-                    .collect();
-
-                // Payload is a vec of all the field values
-                quote! {
-                    #name::#variant_name(#(#field_names),*) => {
-                        #krate::Value::Variant {
-                            type_name: #krate::__private::String::from(#type_name_str),
-                            case_name: #krate::__private::String::from(#case_name_str),
-                            tag: #tag,
-                            payload: #krate::__private::vec![
-                                #(#krate::Value::from(#field_names)),*
-                            ],
-                        }
-                    }
-                }
-            }
-            Fields::Unit => {
-                quote! {
-                    #name::#variant_name => {
-                        #krate::Value::Variant {
-                            type_name: #krate::__private::String::from(#type_name_str),
-                            case_name: #krate::__private::String::from(#case_name_str),
-                            tag: #tag,
-                            payload: #krate::__private::vec![],
-                        }
-                    }
-                }
-            }
-        }
-    }).collect();
+        })
+        .collect();
 
     // Generate match arms for TryFrom<Value> for T
     let from_value_arms: Vec<_> = data.variants.iter().enumerate().map(|(default_tag, variant)| {
@@ -495,7 +515,7 @@ fn get_rename(attrs: &[Attribute]) -> Option<String> {
                     if let Some(rest) = rest.strip_prefix('=') {
                         let rest = rest.trim();
                         if rest.starts_with('"') && rest.ends_with('"') {
-                            return Some(rest[1..rest.len()-1].to_string());
+                            return Some(rest[1..rest.len() - 1].to_string());
                         }
                     }
                 }

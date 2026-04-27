@@ -24,9 +24,12 @@ pub enum ValueType {
     String,
     List(Box<ValueType>),
     Option(Box<ValueType>),
-    Result { ok: Box<ValueType>, err: Box<ValueType> },
-    Record(String),   // type name
-    Variant(String),  // type name
+    Result {
+        ok: Box<ValueType>,
+        err: Box<ValueType>,
+    },
+    Record(String),  // type name
+    Variant(String), // type name
     Tuple(Vec<ValueType>),
     Flags,
 }
@@ -51,11 +54,29 @@ pub enum Value {
     String(String),
 
     // Compound types WITH type info
-    List { elem_type: ValueType, items: Vec<Value> },
-    Option { inner_type: ValueType, value: Option<Box<Value>> },
-    Result { ok_type: ValueType, err_type: ValueType, value: core::result::Result<Box<Value>, Box<Value>> },
-    Record { type_name: String, fields: Vec<(String, Value)> },
-    Variant { type_name: String, case_name: String, tag: usize, payload: Vec<Value> },
+    List {
+        elem_type: ValueType,
+        items: Vec<Value>,
+    },
+    Option {
+        inner_type: ValueType,
+        value: Option<Box<Value>>,
+    },
+    Result {
+        ok_type: ValueType,
+        err_type: ValueType,
+        value: core::result::Result<Box<Value>, Box<Value>>,
+    },
+    Record {
+        type_name: String,
+        fields: Vec<(String, Value)>,
+    },
+    Variant {
+        type_name: String,
+        case_name: String,
+        tag: usize,
+        payload: Vec<Value>,
+    },
 
     // Keep Tuple as-is (no type info needed - positional)
     Tuple(Vec<Value>),
@@ -114,7 +135,9 @@ impl Value {
             Value::String(_) => ValueType::String,
             Value::List { elem_type, .. } => ValueType::List(Box::new(elem_type.clone())),
             Value::Option { inner_type, .. } => ValueType::Option(Box::new(inner_type.clone())),
-            Value::Result { ok_type, err_type, .. } => ValueType::Result {
+            Value::Result {
+                ok_type, err_type, ..
+            } => ValueType::Result {
                 ok: Box::new(ok_type.clone()),
                 err: Box::new(err_type.clone()),
             },
@@ -131,66 +154,97 @@ impl Value {
 // ============================================================================
 
 impl From<bool> for Value {
-    fn from(v: bool) -> Self { Value::Bool(v) }
+    fn from(v: bool) -> Self {
+        Value::Bool(v)
+    }
 }
 
 impl From<u8> for Value {
-    fn from(v: u8) -> Self { Value::U8(v) }
+    fn from(v: u8) -> Self {
+        Value::U8(v)
+    }
 }
 
 impl From<u16> for Value {
-    fn from(v: u16) -> Self { Value::U16(v) }
+    fn from(v: u16) -> Self {
+        Value::U16(v)
+    }
 }
 
 impl From<u32> for Value {
-    fn from(v: u32) -> Self { Value::U32(v) }
+    fn from(v: u32) -> Self {
+        Value::U32(v)
+    }
 }
 
 impl From<u64> for Value {
-    fn from(v: u64) -> Self { Value::U64(v) }
+    fn from(v: u64) -> Self {
+        Value::U64(v)
+    }
 }
 
 impl From<i8> for Value {
-    fn from(v: i8) -> Self { Value::S8(v) }
+    fn from(v: i8) -> Self {
+        Value::S8(v)
+    }
 }
 
 impl From<i16> for Value {
-    fn from(v: i16) -> Self { Value::S16(v) }
+    fn from(v: i16) -> Self {
+        Value::S16(v)
+    }
 }
 
 impl From<i32> for Value {
-    fn from(v: i32) -> Self { Value::S32(v) }
+    fn from(v: i32) -> Self {
+        Value::S32(v)
+    }
 }
 
 impl From<i64> for Value {
-    fn from(v: i64) -> Self { Value::S64(v) }
+    fn from(v: i64) -> Self {
+        Value::S64(v)
+    }
 }
 
 impl From<f32> for Value {
-    fn from(v: f32) -> Self { Value::F32(v) }
+    fn from(v: f32) -> Self {
+        Value::F32(v)
+    }
 }
 
 impl From<f64> for Value {
-    fn from(v: f64) -> Self { Value::F64(v) }
+    fn from(v: f64) -> Self {
+        Value::F64(v)
+    }
 }
 
 impl From<char> for Value {
-    fn from(v: char) -> Self { Value::Char(v) }
+    fn from(v: char) -> Self {
+        Value::Char(v)
+    }
 }
 
 impl From<String> for Value {
-    fn from(v: String) -> Self { Value::String(v) }
+    fn from(v: String) -> Self {
+        Value::String(v)
+    }
 }
 
 impl From<&str> for Value {
-    fn from(v: &str) -> Self { Value::String(String::from(v)) }
+    fn from(v: &str) -> Self {
+        Value::String(String::from(v))
+    }
 }
 
 impl<T: Into<Value>> From<Vec<T>> for Value {
     fn from(v: Vec<T>) -> Self {
         let items: Vec<Value> = v.into_iter().map(Into::into).collect();
         // Infer elem_type from first item, default to S32
-        let elem_type = items.first().map(|v| v.infer_type()).unwrap_or(ValueType::S32);
+        let elem_type = items
+            .first()
+            .map(|v| v.infer_type())
+            .unwrap_or(ValueType::S32);
         Value::List { elem_type, items }
     }
 }
@@ -198,7 +252,10 @@ impl<T: Into<Value>> From<Vec<T>> for Value {
 impl<T: Into<Value>, const N: usize> From<[T; N]> for Value {
     fn from(v: [T; N]) -> Self {
         let items: Vec<Value> = v.into_iter().map(Into::into).collect();
-        let elem_type = items.first().map(|v| v.infer_type()).unwrap_or(ValueType::S32);
+        let elem_type = items
+            .first()
+            .map(|v| v.infer_type())
+            .unwrap_or(ValueType::S32);
         Value::List { elem_type, items }
     }
 }
@@ -218,13 +275,12 @@ impl<T: TryFrom<Value, Error = ConversionError>, const N: usize> TryFrom<Value> 
                     .into_iter()
                     .enumerate()
                     .map(|(i, item)| {
-                        T::try_from(item)
-                            .map_err(|e| ConversionError::IndexError(i, Box::new(e)))
+                        T::try_from(item).map_err(|e| ConversionError::IndexError(i, Box::new(e)))
                     })
                     .collect::<Result<Vec<T>, _>>()?;
-                vec.try_into().map_err(|_| ConversionError::ExpectedList(
-                    String::from("array conversion failed"),
-                ))
+                vec.try_into().map_err(|_| {
+                    ConversionError::ExpectedList(String::from("array conversion failed"))
+                })
             }
             other => Err(ConversionError::ExpectedList(format!("{:?}", other))),
         }
@@ -445,7 +501,10 @@ impl<T: TryFrom<Value, Error = ConversionError>> TryFrom<Value> for Vec<T> {
 impl<T: Into<Value> + Ord> From<BTreeSet<T>> for Value {
     fn from(v: BTreeSet<T>) -> Self {
         let items: Vec<Value> = v.into_iter().map(Into::into).collect();
-        let elem_type = items.first().map(|v| v.infer_type()).unwrap_or(ValueType::S32);
+        let elem_type = items
+            .first()
+            .map(|v| v.infer_type())
+            .unwrap_or(ValueType::S32);
         Value::List { elem_type, items }
     }
 }
@@ -472,13 +531,18 @@ impl<K: Into<Value> + Ord, V: Into<Value>> From<BTreeMap<K, V>> for Value {
             .into_iter()
             .map(|(k, v)| Value::Tuple(Vec::from([k.into(), v.into()])))
             .collect();
-        let elem_type = items.first().map(|v| v.infer_type()).unwrap_or(ValueType::S32);
+        let elem_type = items
+            .first()
+            .map(|v| v.infer_type())
+            .unwrap_or(ValueType::S32);
         Value::List { elem_type, items }
     }
 }
 
-impl<K: TryFrom<Value, Error = ConversionError> + Ord, V: TryFrom<Value, Error = ConversionError>>
-    TryFrom<Value> for BTreeMap<K, V>
+impl<
+        K: TryFrom<Value, Error = ConversionError> + Ord,
+        V: TryFrom<Value, Error = ConversionError>,
+    > TryFrom<Value> for BTreeMap<K, V>
 {
     type Error = ConversionError;
     fn try_from(v: Value) -> Result<Self, Self::Error> {
@@ -536,7 +600,9 @@ impl<T: FromValue> FromValue for Option<T> {
     fn from_value(v: Value) -> Result<Self, ConversionError> {
         match v {
             Value::Option { value: None, .. } => Ok(None),
-            Value::Option { value: Some(inner), .. } => {
+            Value::Option {
+                value: Some(inner), ..
+            } => {
                 let value = T::from_value(*inner)?;
                 Ok(Some(value))
             }
@@ -549,23 +615,31 @@ impl<T: FromValue> FromValue for Option<T> {
 impl<T: FromValue, E: FromValue> FromValue for core::result::Result<T, E> {
     fn from_value(v: Value) -> Result<Self, ConversionError> {
         match v {
-            Value::Result { value: Ok(inner), .. } => {
+            Value::Result {
+                value: Ok(inner), ..
+            } => {
                 let value = T::from_value(*inner)
                     .map_err(|e| ConversionError::PayloadError(Box::new(e)))?;
                 Ok(Ok(value))
             }
-            Value::Result { value: Err(inner), .. } => {
+            Value::Result {
+                value: Err(inner), ..
+            } => {
                 let value = E::from_value(*inner)
                     .map_err(|e| ConversionError::PayloadError(Box::new(e)))?;
                 Ok(Err(value))
             }
             // Also support legacy variant encoding for backwards compatibility
-            Value::Variant { tag: 0, payload, .. } if !payload.is_empty() => {
+            Value::Variant {
+                tag: 0, payload, ..
+            } if !payload.is_empty() => {
                 let value = T::from_value(payload.into_iter().next().unwrap())
                     .map_err(|e| ConversionError::PayloadError(Box::new(e)))?;
                 Ok(Ok(value))
             }
-            Value::Variant { tag: 1, payload, .. } if !payload.is_empty() => {
+            Value::Variant {
+                tag: 1, payload, ..
+            } if !payload.is_empty() => {
                 let value = E::from_value(payload.into_iter().next().unwrap())
                     .map_err(|e| ConversionError::PayloadError(Box::new(e)))?;
                 Ok(Err(value))
