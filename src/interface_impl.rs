@@ -352,7 +352,10 @@ impl InterfaceImpl {
     ///
     /// Useful for per-function verification.
     pub fn function_hash(&self, name: &str) -> Option<TypeHash> {
-        self.functions.iter().find(|f| f.name == name).map(|f| f.hash())
+        self.functions
+            .iter()
+            .find(|f| f.name == name)
+            .map(|f| f.hash())
     }
 
     /// Get the interface name.
@@ -451,7 +454,12 @@ impl<A: PackType, B: PackType, C: PackType> PackParams for (A, B, C) {
 
 impl<A: PackType, B: PackType, C: PackType, D: PackType> PackParams for (A, B, C, D) {
     fn pack_types() -> Vec<Type> {
-        vec![A::pack_type(), B::pack_type(), C::pack_type(), D::pack_type()]
+        vec![
+            A::pack_type(),
+            B::pack_type(),
+            C::pack_type(),
+            D::pack_type(),
+        ]
     }
 }
 
@@ -469,14 +477,16 @@ impl<F, Ret> HostFunc<(), Ret> for F
 where
     F: Fn() -> Ret,
     Ret: PackType,
-{}
+{
+}
 
 impl<F, A, Ret> HostFunc<(A,), Ret> for F
 where
     F: Fn(A) -> Ret,
     A: PackType,
     Ret: PackType,
-{}
+{
+}
 
 impl<F, A, B, Ret> HostFunc<(A, B), Ret> for F
 where
@@ -484,7 +494,8 @@ where
     A: PackType,
     B: PackType,
     Ret: PackType,
-{}
+{
+}
 
 impl<F, A, B, C, Ret> HostFunc<(A, B, C), Ret> for F
 where
@@ -493,7 +504,8 @@ where
     B: PackType,
     C: PackType,
     Ret: PackType,
-{}
+{
+}
 
 impl<F, A, B, C, D, Ret> HostFunc<(A, B, C, D), Ret> for F
 where
@@ -503,7 +515,8 @@ where
     C: PackType,
     D: PackType,
     Ret: PackType,
-{}
+{
+}
 
 #[cfg(test)]
 mod tests {
@@ -534,9 +547,7 @@ mod tests {
             .func("greet", |name: String| -> String {
                 format!("Hello, {}!", name)
             })
-            .func("add", |a: i32, b: i32| -> i32 {
-                a + b
-            });
+            .func("add", |a: i32, b: i32| -> i32 { a + b });
 
         assert_eq!(interface.name(), "test:example/api");
         assert_eq!(interface.functions.len(), 2);
@@ -561,7 +572,7 @@ mod tests {
             .func("bar", |s: String| -> String { s });
 
         let interface2 = InterfaceImpl::new("test:api")
-            .func("bar", |s: String| -> String { s })  // Different order
+            .func("bar", |s: String| -> String { s }) // Different order
             .func("foo", |x: i32| -> i32 { x });
 
         // Same interface, different declaration order -> same hash
@@ -570,11 +581,9 @@ mod tests {
 
     #[test]
     fn test_interface_hash_differs_on_signature() {
-        let interface1 = InterfaceImpl::new("test:api")
-            .func("foo", |x: i32| -> i32 { x });
+        let interface1 = InterfaceImpl::new("test:api").func("foo", |x: i32| -> i32 { x });
 
-        let interface2 = InterfaceImpl::new("test:api")
-            .func("foo", |x: i64| -> i64 { x });  // Different type!
+        let interface2 = InterfaceImpl::new("test:api").func("foo", |x: i64| -> i64 { x }); // Different type!
 
         assert_ne!(interface1.hash(), interface2.hash());
     }
@@ -602,19 +611,31 @@ mod tests {
         assert_eq!(interface.functions.len(), 3);
 
         // Check function names
-        let names: Vec<&str> = interface.functions.iter().map(|f| f.name.as_str()).collect();
+        let names: Vec<&str> = interface
+            .functions
+            .iter()
+            .map(|f| f.name.as_str())
+            .collect();
         assert!(names.contains(&"log"));
         assert!(names.contains(&"get-chain"));
         assert!(names.contains(&"shutdown"));
 
         // Check log function signature
-        let log_fn = interface.functions.iter().find(|f| f.name == "log").unwrap();
+        let log_fn = interface
+            .functions
+            .iter()
+            .find(|f| f.name == "log")
+            .unwrap();
         assert_eq!(log_fn.params.len(), 1);
         assert!(matches!(log_fn.params[0], Type::String));
         assert!(log_fn.results.is_empty());
 
         // Check get-chain function signature
-        let get_chain_fn = interface.functions.iter().find(|f| f.name == "get-chain").unwrap();
+        let get_chain_fn = interface
+            .functions
+            .iter()
+            .find(|f| f.name == "get-chain")
+            .unwrap();
         assert!(get_chain_fn.params.is_empty());
         assert_eq!(get_chain_fn.results.len(), 1);
         assert!(matches!(get_chain_fn.results[0], Type::List(_)));

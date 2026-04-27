@@ -6,9 +6,9 @@
 use std::collections::HashMap;
 
 use wasmparser::{
-    BinaryReaderError, DataSectionReader, ElementSectionReader, ExportSectionReader,
-    FunctionBody, FunctionSectionReader, GlobalSectionReader, ImportSectionReader,
-    MemorySectionReader, Operator, Parser, Payload, TableSectionReader, TypeSectionReader,
+    BinaryReaderError, DataSectionReader, ElementSectionReader, ExportSectionReader, FunctionBody,
+    FunctionSectionReader, GlobalSectionReader, ImportSectionReader, MemorySectionReader, Operator,
+    Parser, Payload, TableSectionReader, TypeSectionReader,
 };
 
 use super::error::ComposeError;
@@ -202,43 +202,156 @@ pub enum StoredOperator {
     F64Const(f64),
 
     // Comparison operators
-    I32Eqz, I32Eq, I32Ne, I32LtS, I32LtU, I32GtS, I32GtU, I32LeS, I32LeU, I32GeS, I32GeU,
-    I64Eqz, I64Eq, I64Ne, I64LtS, I64LtU, I64GtS, I64GtU, I64LeS, I64LeU, I64GeS, I64GeU,
-    F32Eq, F32Ne, F32Lt, F32Gt, F32Le, F32Ge,
-    F64Eq, F64Ne, F64Lt, F64Gt, F64Le, F64Ge,
+    I32Eqz,
+    I32Eq,
+    I32Ne,
+    I32LtS,
+    I32LtU,
+    I32GtS,
+    I32GtU,
+    I32LeS,
+    I32LeU,
+    I32GeS,
+    I32GeU,
+    I64Eqz,
+    I64Eq,
+    I64Ne,
+    I64LtS,
+    I64LtU,
+    I64GtS,
+    I64GtU,
+    I64LeS,
+    I64LeU,
+    I64GeS,
+    I64GeU,
+    F32Eq,
+    F32Ne,
+    F32Lt,
+    F32Gt,
+    F32Le,
+    F32Ge,
+    F64Eq,
+    F64Ne,
+    F64Lt,
+    F64Gt,
+    F64Le,
+    F64Ge,
 
     // Numeric operators - i32
-    I32Clz, I32Ctz, I32Popcnt, I32Add, I32Sub, I32Mul, I32DivS, I32DivU,
-    I32RemS, I32RemU, I32And, I32Or, I32Xor, I32Shl, I32ShrS, I32ShrU, I32Rotl, I32Rotr,
+    I32Clz,
+    I32Ctz,
+    I32Popcnt,
+    I32Add,
+    I32Sub,
+    I32Mul,
+    I32DivS,
+    I32DivU,
+    I32RemS,
+    I32RemU,
+    I32And,
+    I32Or,
+    I32Xor,
+    I32Shl,
+    I32ShrS,
+    I32ShrU,
+    I32Rotl,
+    I32Rotr,
 
     // Numeric operators - i64
-    I64Clz, I64Ctz, I64Popcnt, I64Add, I64Sub, I64Mul, I64DivS, I64DivU,
-    I64RemS, I64RemU, I64And, I64Or, I64Xor, I64Shl, I64ShrS, I64ShrU, I64Rotl, I64Rotr,
+    I64Clz,
+    I64Ctz,
+    I64Popcnt,
+    I64Add,
+    I64Sub,
+    I64Mul,
+    I64DivS,
+    I64DivU,
+    I64RemS,
+    I64RemU,
+    I64And,
+    I64Or,
+    I64Xor,
+    I64Shl,
+    I64ShrS,
+    I64ShrU,
+    I64Rotl,
+    I64Rotr,
 
     // Numeric operators - f32
-    F32Abs, F32Neg, F32Ceil, F32Floor, F32Trunc, F32Nearest, F32Sqrt,
-    F32Add, F32Sub, F32Mul, F32Div, F32Min, F32Max, F32Copysign,
+    F32Abs,
+    F32Neg,
+    F32Ceil,
+    F32Floor,
+    F32Trunc,
+    F32Nearest,
+    F32Sqrt,
+    F32Add,
+    F32Sub,
+    F32Mul,
+    F32Div,
+    F32Min,
+    F32Max,
+    F32Copysign,
 
     // Numeric operators - f64
-    F64Abs, F64Neg, F64Ceil, F64Floor, F64Trunc, F64Nearest, F64Sqrt,
-    F64Add, F64Sub, F64Mul, F64Div, F64Min, F64Max, F64Copysign,
+    F64Abs,
+    F64Neg,
+    F64Ceil,
+    F64Floor,
+    F64Trunc,
+    F64Nearest,
+    F64Sqrt,
+    F64Add,
+    F64Sub,
+    F64Mul,
+    F64Div,
+    F64Min,
+    F64Max,
+    F64Copysign,
 
     // Conversions
     I32WrapI64,
-    I32TruncF32S, I32TruncF32U, I32TruncF64S, I32TruncF64U,
-    I64ExtendI32S, I64ExtendI32U,
-    I64TruncF32S, I64TruncF32U, I64TruncF64S, I64TruncF64U,
-    F32ConvertI32S, F32ConvertI32U, F32ConvertI64S, F32ConvertI64U, F32DemoteF64,
-    F64ConvertI32S, F64ConvertI32U, F64ConvertI64S, F64ConvertI64U, F64PromoteF32,
-    I32ReinterpretF32, I64ReinterpretF64, F32ReinterpretI32, F64ReinterpretI64,
+    I32TruncF32S,
+    I32TruncF32U,
+    I32TruncF64S,
+    I32TruncF64U,
+    I64ExtendI32S,
+    I64ExtendI32U,
+    I64TruncF32S,
+    I64TruncF32U,
+    I64TruncF64S,
+    I64TruncF64U,
+    F32ConvertI32S,
+    F32ConvertI32U,
+    F32ConvertI64S,
+    F32ConvertI64U,
+    F32DemoteF64,
+    F64ConvertI32S,
+    F64ConvertI32U,
+    F64ConvertI64S,
+    F64ConvertI64U,
+    F64PromoteF32,
+    I32ReinterpretF32,
+    I64ReinterpretF64,
+    F32ReinterpretI32,
+    F64ReinterpretI64,
 
     // Sign extension
-    I32Extend8S, I32Extend16S,
-    I64Extend8S, I64Extend16S, I64Extend32S,
+    I32Extend8S,
+    I32Extend16S,
+    I64Extend8S,
+    I64Extend16S,
+    I64Extend32S,
 
     // Saturating truncation
-    I32TruncSatF32S, I32TruncSatF32U, I32TruncSatF64S, I32TruncSatF64U,
-    I64TruncSatF32S, I64TruncSatF32U, I64TruncSatF64S, I64TruncSatF64U,
+    I32TruncSatF32S,
+    I32TruncSatF32U,
+    I32TruncSatF64S,
+    I32TruncSatF64U,
+    I64TruncSatF32S,
+    I64TruncSatF32U,
+    I64TruncSatF64S,
+    I64TruncSatF64U,
 
     // Reference types
     RefNull(RefTypeKind),
@@ -292,7 +405,10 @@ pub struct DataSegment {
 #[derive(Debug, Clone)]
 pub enum DataSegmentKind {
     /// Active segment with memory index and offset expression.
-    Active { memory_index: u32, offset_expr: ConstExpr },
+    Active {
+        memory_index: u32,
+        offset_expr: ConstExpr,
+    },
     /// Passive segment.
     Passive,
 }
@@ -391,7 +507,11 @@ impl ParsedModule {
         Ok(())
     }
 
-    fn parse_types(&mut self, name: &str, reader: TypeSectionReader<'_>) -> Result<(), ComposeError> {
+    fn parse_types(
+        &mut self,
+        name: &str,
+        reader: TypeSectionReader<'_>,
+    ) -> Result<(), ComposeError> {
         for rec_group in reader {
             let rec_group = rec_group.map_err(|e| parse_error(name, e))?;
             for ty in rec_group.into_types() {
@@ -566,7 +686,9 @@ impl ParsedModule {
 
         // Parse operators
         let mut operators = Vec::new();
-        let ops_reader = body.get_operators_reader().map_err(|e| parse_error(name, e))?;
+        let ops_reader = body
+            .get_operators_reader()
+            .map_err(|e| parse_error(name, e))?;
         for op in ops_reader {
             let op = op.map_err(|e| parse_error(name, e))?;
             if let Some(stored) = convert_operator(op) {
@@ -578,7 +700,11 @@ impl ParsedModule {
         Ok(())
     }
 
-    fn parse_data(&mut self, name: &str, reader: DataSectionReader<'_>) -> Result<(), ComposeError> {
+    fn parse_data(
+        &mut self,
+        name: &str,
+        reader: DataSectionReader<'_>,
+    ) -> Result<(), ComposeError> {
         for data in reader {
             let data = data.map_err(|e| parse_error(name, e))?;
             let kind = match data.kind {
@@ -606,12 +732,16 @@ impl ParsedModule {
 
     /// Get all function exports.
     pub fn function_exports(&self) -> impl Iterator<Item = &Export> {
-        self.exports.iter().filter(|e| e.kind == ExportKind::Function)
+        self.exports
+            .iter()
+            .filter(|e| e.kind == ExportKind::Function)
     }
 
     /// Get all function imports.
     pub fn function_imports(&self) -> impl Iterator<Item = &Import> {
-        self.imports.iter().filter(|i| matches!(i.kind, ImportKind::Function(_)))
+        self.imports
+            .iter()
+            .filter(|i| matches!(i.kind, ImportKind::Function(_)))
     }
 
     /// Get the type of a function by its index in the function index space.
@@ -648,22 +778,29 @@ impl ParsedModule {
 }
 
 /// Parse a const expression.
-fn parse_const_expr(name: &str, expr: wasmparser::ConstExpr<'_>) -> Result<ConstExpr, ComposeError> {
+fn parse_const_expr(
+    name: &str,
+    expr: wasmparser::ConstExpr<'_>,
+) -> Result<ConstExpr, ComposeError> {
     let reader = expr.get_operators_reader();
     for op_result in reader {
         let op = op_result.map_err(|e| parse_error(name, e))?;
         match op {
             Operator::I32Const { value } => return Ok(ConstExpr::I32Const(value)),
             Operator::I64Const { value } => return Ok(ConstExpr::I64Const(value)),
-            Operator::F32Const { value } => return Ok(ConstExpr::F32Const(f32::from_bits(value.bits()))),
-            Operator::F64Const { value } => return Ok(ConstExpr::F64Const(f64::from_bits(value.bits()))),
+            Operator::F32Const { value } => {
+                return Ok(ConstExpr::F32Const(f32::from_bits(value.bits())))
+            }
+            Operator::F64Const { value } => {
+                return Ok(ConstExpr::F64Const(f64::from_bits(value.bits())))
+            }
             Operator::GlobalGet { global_index } => return Ok(ConstExpr::GlobalGet(global_index)),
             Operator::RefNull { hty } => {
                 let kind = match hty {
-                    wasmparser::HeapType::Abstract { ty, .. } => match ty {
-                        wasmparser::AbstractHeapType::Extern => RefTypeKind::Extern,
-                        _ => RefTypeKind::Func,
-                    },
+                    wasmparser::HeapType::Abstract {
+                        ty: wasmparser::AbstractHeapType::Extern,
+                        ..
+                    } => RefTypeKind::Extern,
                     _ => RefTypeKind::Func,
                 };
                 return Ok(ConstExpr::RefNull(kind));
@@ -696,13 +833,22 @@ fn convert_operator(op: Operator<'_>) -> Option<StoredOperator> {
         },
         Operator::Return => StoredOperator::Return,
         Operator::Call { function_index } => StoredOperator::Call(function_index),
-        Operator::CallIndirect { type_index, table_index, .. } => {
-            StoredOperator::CallIndirect { type_index, table_index }
-        }
+        Operator::CallIndirect {
+            type_index,
+            table_index,
+            ..
+        } => StoredOperator::CallIndirect {
+            type_index,
+            table_index,
+        },
         Operator::ReturnCall { function_index } => StoredOperator::ReturnCall(function_index),
-        Operator::ReturnCallIndirect { type_index, table_index } => {
-            StoredOperator::ReturnCallIndirect { type_index, table_index }
-        }
+        Operator::ReturnCallIndirect {
+            type_index,
+            table_index,
+        } => StoredOperator::ReturnCallIndirect {
+            type_index,
+            table_index,
+        },
 
         // Parametric
         Operator::Drop => StoredOperator::Drop,
@@ -722,12 +868,17 @@ fn convert_operator(op: Operator<'_>) -> Option<StoredOperator> {
         Operator::TableGrow { table } => StoredOperator::TableGrow(table),
         Operator::TableSize { table } => StoredOperator::TableSize(table),
         Operator::TableFill { table } => StoredOperator::TableFill(table),
-        Operator::TableCopy { dst_table, src_table } => {
-            StoredOperator::TableCopy { dst: dst_table, src: src_table }
-        }
-        Operator::TableInit { elem_index, table } => {
-            StoredOperator::TableInit { elem: elem_index, table }
-        }
+        Operator::TableCopy {
+            dst_table,
+            src_table,
+        } => StoredOperator::TableCopy {
+            dst: dst_table,
+            src: src_table,
+        },
+        Operator::TableInit { elem_index, table } => StoredOperator::TableInit {
+            elem: elem_index,
+            table,
+        },
         Operator::ElemDrop { elem_index } => StoredOperator::ElemDrop(elem_index),
 
         // Memory load operations
@@ -760,13 +911,15 @@ fn convert_operator(op: Operator<'_>) -> Option<StoredOperator> {
         // Memory operations
         Operator::MemorySize { mem, .. } => StoredOperator::MemorySize(mem),
         Operator::MemoryGrow { mem, .. } => StoredOperator::MemoryGrow(mem),
-        Operator::MemoryInit { data_index, mem } => {
-            StoredOperator::MemoryInit { data: data_index, mem }
-        }
+        Operator::MemoryInit { data_index, mem } => StoredOperator::MemoryInit {
+            data: data_index,
+            mem,
+        },
         Operator::DataDrop { data_index } => StoredOperator::DataDrop(data_index),
-        Operator::MemoryCopy { dst_mem, src_mem } => {
-            StoredOperator::MemoryCopy { dst: dst_mem, src: src_mem }
-        }
+        Operator::MemoryCopy { dst_mem, src_mem } => StoredOperator::MemoryCopy {
+            dst: dst_mem,
+            src: src_mem,
+        },
         Operator::MemoryFill { mem } => StoredOperator::MemoryFill(mem),
 
         // Constants
@@ -933,10 +1086,10 @@ fn convert_operator(op: Operator<'_>) -> Option<StoredOperator> {
         // Reference types
         Operator::RefNull { hty } => {
             let kind = match hty {
-                wasmparser::HeapType::Abstract { ty, .. } => match ty {
-                    wasmparser::AbstractHeapType::Extern => RefTypeKind::Extern,
-                    _ => RefTypeKind::Func,
-                },
+                wasmparser::HeapType::Abstract {
+                    ty: wasmparser::AbstractHeapType::Extern,
+                    ..
+                } => RefTypeKind::Extern,
                 _ => RefTypeKind::Func,
             };
             StoredOperator::RefNull(kind)

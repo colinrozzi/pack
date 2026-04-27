@@ -90,10 +90,10 @@ fn composition_multiple_calls() {
 
     // Test with various inputs
     let test_cases = vec![
-        (0, 1),   // 0 * 2 + 1 = 1
-        (1, 3),   // 1 * 2 + 1 = 3
-        (5, 11),  // 5 * 2 + 1 = 11
-        (10, 21), // 10 * 2 + 1 = 21
+        (0, 1),     // 0 * 2 + 1 = 1
+        (1, 3),     // 1 * 2 + 1 = 3
+        (5, 11),    // 5 * 2 + 1 = 11
+        (10, 21),   // 10 * 2 + 1 = 21
         (100, 201), // 100 * 2 + 1 = 201
     ];
 
@@ -101,7 +101,13 @@ fn composition_multiple_calls() {
         let result = composition
             .call("adder", "process", &Value::S64(input))
             .expect(&format!("failed to call process with {}", input));
-        assert_eq!(result, Value::S64(expected), "process({}) should be {}", input, expected);
+        assert_eq!(
+            result,
+            Value::S64(expected),
+            "process({}) should be {}",
+            input,
+            expected
+        );
     }
 }
 

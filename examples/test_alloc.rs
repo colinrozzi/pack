@@ -1,5 +1,5 @@
-use pack::runtime::Runtime;
 use pack::abi::Value;
+use pack::runtime::Runtime;
 
 fn main() -> anyhow::Result<()> {
     // Test with direct wasmtime to confirm it works
@@ -14,9 +14,9 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn test_direct() -> anyhow::Result<()> {
+    use pack::abi::{decode, encode, Value};
+    use pack::runtime::{RESULT_LEN_OFFSET, RESULT_PTR_OFFSET};
     use wasmtime::*;
-    use pack::abi::{encode, decode, Value};
-    use pack::runtime::{RESULT_PTR_OFFSET, RESULT_LEN_OFFSET};
 
     let wasm_path = "/home/colin/work/pack/packages/echo/target/wasm32-unknown-unknown/release/echo_package.wasm";
     let wasm_bytes = std::fs::read(wasm_path)?;
@@ -39,12 +39,15 @@ fn test_direct() -> anyhow::Result<()> {
     memory.write(&mut store, in_ptr as usize, &input_bytes)?;
 
     let echo = instance.get_typed_func::<(i32, i32, i32, i32), i32>(&mut store, "echo")?;
-    let status = echo.call(&mut store, (
-        in_ptr,
-        input_bytes.len() as i32,
-        RESULT_PTR_OFFSET as i32,
-        RESULT_LEN_OFFSET as i32
-    ))?;
+    let status = echo.call(
+        &mut store,
+        (
+            in_ptr,
+            input_bytes.len() as i32,
+            RESULT_PTR_OFFSET as i32,
+            RESULT_LEN_OFFSET as i32,
+        ),
+    )?;
     println!("Status: {}", status);
 
     // Try freeing the input buffer

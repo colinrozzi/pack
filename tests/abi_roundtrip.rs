@@ -118,7 +118,11 @@ fn roundtrip_array_s32() {
 fn roundtrip_array_f64() {
     let value = Value::List {
         elem_type: ValueType::F64,
-        items: vec![Value::F64(3.14), Value::F64(-0.0), Value::F64(f64::INFINITY)],
+        items: vec![
+            Value::F64(3.14),
+            Value::F64(-0.0),
+            Value::F64(f64::INFINITY),
+        ],
     };
 
     let bytes = encode(&value).expect("encode");
@@ -158,7 +162,11 @@ fn roundtrip_large_byte_array() {
 
     let bytes = encode(&value).expect("encode");
     // 100KB of data should encode to ~100KB, not megabytes
-    assert!(bytes.len() < 200_000, "Array encoding should be near 1:1, got {}", bytes.len());
+    assert!(
+        bytes.len() < 200_000,
+        "Array encoding should be near 1:1, got {}",
+        bytes.len()
+    );
 
     let decoded = decode(&bytes).expect("decode");
     assert_eq!(decoded, value);

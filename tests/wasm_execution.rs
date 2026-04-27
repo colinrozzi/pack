@@ -25,13 +25,17 @@ fn run_add_module() {
 
     // Create the runtime and load the module
     let runtime = Runtime::new();
-    let module = runtime.load_module(&wasm_bytes).expect("failed to load module");
+    let module = runtime
+        .load_module(&wasm_bytes)
+        .expect("failed to load module");
 
     // Instantiate and run
     let mut instance = module.instantiate().expect("failed to instantiate");
 
     // Call the add function
-    let result = instance.call_i32_i32_to_i32("add", 2, 3).expect("failed to call add");
+    let result = instance
+        .call_i32_i32_to_i32("add", 2, 3)
+        .expect("failed to call add");
     assert_eq!(result, 5);
 
     // Try a few more values
@@ -57,7 +61,9 @@ fn run_add64_module() {
     let wasm_bytes = wat::parse_str(ADD64_MODULE).expect("failed to parse WAT");
 
     let runtime = Runtime::new();
-    let module = runtime.load_module(&wasm_bytes).expect("failed to load module");
+    let module = runtime
+        .load_module(&wasm_bytes)
+        .expect("failed to load module");
     let mut instance = module.instantiate().expect("failed to instantiate");
 
     let result = instance
@@ -72,7 +78,9 @@ fn call_missing_function() {
     let wasm_bytes = wat::parse_str(ADD_MODULE).expect("failed to parse WAT");
 
     let runtime = Runtime::new();
-    let module = runtime.load_module(&wasm_bytes).expect("failed to load module");
+    let module = runtime
+        .load_module(&wasm_bytes)
+        .expect("failed to load module");
     let mut instance = module.instantiate().expect("failed to instantiate");
 
     let err = instance.call_i32_i32_to_i32("nonexistent", 1, 2);
@@ -126,12 +134,16 @@ fn memory_read_write() {
     let wasm_bytes = wat::parse_str(SUM_BYTES_MODULE).expect("failed to parse WAT");
 
     let runtime = Runtime::new();
-    let module = runtime.load_module(&wasm_bytes).expect("failed to load module");
+    let module = runtime
+        .load_module(&wasm_bytes)
+        .expect("failed to load module");
     let mut instance = module.instantiate().expect("failed to instantiate");
 
     // Write some bytes to memory
     let data = [1u8, 2, 3, 4, 5];
-    instance.write_memory(0, &data).expect("failed to write memory");
+    instance
+        .write_memory(0, &data)
+        .expect("failed to write memory");
 
     // Call sum_bytes(0, 5) - should return 1+2+3+4+5 = 15
     let result = instance
@@ -149,7 +161,9 @@ fn memory_string_roundtrip() {
     let wasm_bytes = wat::parse_str(SUM_BYTES_MODULE).expect("failed to parse WAT");
 
     let runtime = Runtime::new();
-    let module = runtime.load_module(&wasm_bytes).expect("failed to load module");
+    let module = runtime
+        .load_module(&wasm_bytes)
+        .expect("failed to load module");
     let mut instance = module.instantiate().expect("failed to instantiate");
 
     // Write a string to memory
@@ -215,7 +229,9 @@ fn memory_reverse_string() {
     let wasm_bytes = wat::parse_str(REVERSE_MODULE).expect("failed to parse WAT");
 
     let runtime = Runtime::new();
-    let module = runtime.load_module(&wasm_bytes).expect("failed to load module");
+    let module = runtime
+        .load_module(&wasm_bytes)
+        .expect("failed to load module");
     let mut instance = module.instantiate().expect("failed to instantiate");
 
     // Write a string
@@ -272,7 +288,9 @@ fn graph_abi_echo_roundtrip() {
     let wasm_bytes = wat::parse_str(ECHO_MODULE).expect("failed to parse WAT");
 
     let runtime = Runtime::new();
-    let module = runtime.load_module(&wasm_bytes).expect("failed to load module");
+    let module = runtime
+        .load_module(&wasm_bytes)
+        .expect("failed to load module");
     let mut instance = module.instantiate().expect("failed to instantiate");
 
     // Test with a simple integer
@@ -288,7 +306,9 @@ fn graph_abi_echo_string() {
     let wasm_bytes = wat::parse_str(ECHO_MODULE).expect("failed to parse WAT");
 
     let runtime = Runtime::new();
-    let module = runtime.load_module(&wasm_bytes).expect("failed to load module");
+    let module = runtime
+        .load_module(&wasm_bytes)
+        .expect("failed to load module");
     let mut instance = module.instantiate().expect("failed to instantiate");
 
     let input = Value::String("Hello, Graph ABI!".to_string());
@@ -303,16 +323,14 @@ fn graph_abi_echo_list() {
     let wasm_bytes = wat::parse_str(ECHO_MODULE).expect("failed to parse WAT");
 
     let runtime = Runtime::new();
-    let module = runtime.load_module(&wasm_bytes).expect("failed to load module");
+    let module = runtime
+        .load_module(&wasm_bytes)
+        .expect("failed to load module");
     let mut instance = module.instantiate().expect("failed to instantiate");
 
     let input = Value::List {
         elem_type: ValueType::S64,
-        items: vec![
-            Value::S64(1),
-            Value::S64(2),
-            Value::S64(3),
-        ],
+        items: vec![Value::S64(1), Value::S64(2), Value::S64(3)],
     };
     let output = instance
         .call_with_value("echo", &input)
@@ -325,7 +343,9 @@ fn graph_abi_echo_variant() {
     let wasm_bytes = wat::parse_str(ECHO_MODULE).expect("failed to parse WAT");
 
     let runtime = Runtime::new();
-    let module = runtime.load_module(&wasm_bytes).expect("failed to load module");
+    let module = runtime
+        .load_module(&wasm_bytes)
+        .expect("failed to load module");
     let mut instance = module.instantiate().expect("failed to instantiate");
 
     // This is like a simple S-expression node
@@ -346,7 +366,9 @@ fn graph_abi_echo_nested() {
     let wasm_bytes = wat::parse_str(ECHO_MODULE).expect("failed to parse WAT");
 
     let runtime = Runtime::new();
-    let module = runtime.load_module(&wasm_bytes).expect("failed to load module");
+    let module = runtime
+        .load_module(&wasm_bytes)
+        .expect("failed to load module");
     let mut instance = module.instantiate().expect("failed to instantiate");
 
     // A nested structure like (list (sym "a") (num 42))
@@ -406,7 +428,9 @@ fn rust_package_echo_roundtrip() {
     let wasm_bytes = load_rust_echo_package();
 
     let runtime = Runtime::new();
-    let module = runtime.load_module(&wasm_bytes).expect("failed to load Rust package");
+    let module = runtime
+        .load_module(&wasm_bytes)
+        .expect("failed to load Rust package");
     let mut instance = module.instantiate().expect("failed to instantiate");
 
     // Test with a simple integer
@@ -422,7 +446,9 @@ fn rust_package_echo_complex() {
     let wasm_bytes = load_rust_echo_package();
 
     let runtime = Runtime::new();
-    let module = runtime.load_module(&wasm_bytes).expect("failed to load Rust package");
+    let module = runtime
+        .load_module(&wasm_bytes)
+        .expect("failed to load Rust package");
     let mut instance = module.instantiate().expect("failed to instantiate");
 
     // Test with a nested structure
@@ -436,11 +462,7 @@ fn rust_package_echo_complex() {
                 tag: 2,
                 payload: vec![Value::List {
                     elem_type: ValueType::S64,
-                    items: vec![
-                        Value::S64(1),
-                        Value::S64(2),
-                        Value::S64(3),
-                    ],
+                    items: vec![Value::S64(1), Value::S64(2), Value::S64(3)],
                 }],
             },
             Value::Option {
@@ -461,7 +483,9 @@ fn rust_package_transform_doubles_s64() {
     let wasm_bytes = load_rust_echo_package();
 
     let runtime = Runtime::new();
-    let module = runtime.load_module(&wasm_bytes).expect("failed to load Rust package");
+    let module = runtime
+        .load_module(&wasm_bytes)
+        .expect("failed to load Rust package");
     let mut instance = module.instantiate().expect("failed to instantiate");
 
     // Test transform doubles S64
@@ -477,7 +501,9 @@ fn rust_package_transform_nested() {
     let wasm_bytes = load_rust_echo_package();
 
     let runtime = Runtime::new();
-    let module = runtime.load_module(&wasm_bytes).expect("failed to load Rust package");
+    let module = runtime
+        .load_module(&wasm_bytes)
+        .expect("failed to load Rust package");
     let mut instance = module.instantiate().expect("failed to instantiate");
 
     // Test transform on nested structure - doubles all S64 values
@@ -498,13 +524,13 @@ fn rust_package_transform_nested() {
     let expected = Value::List {
         elem_type: ValueType::Variant("node".to_string()),
         items: vec![
-            Value::S64(20),  // 10 * 2
-            Value::S64(40),  // 20 * 2
+            Value::S64(20), // 10 * 2
+            Value::S64(40), // 20 * 2
             Value::Variant {
                 type_name: "node".to_string(),
                 case_name: "num".to_string(),
                 tag: 1,
-                payload: vec![Value::S64(100)],  // 50 * 2
+                payload: vec![Value::S64(100)], // 50 * 2
             },
         ],
     };
@@ -520,7 +546,9 @@ fn rust_package_transform_preserves_strings() {
     let wasm_bytes = load_rust_echo_package();
 
     let runtime = Runtime::new();
-    let module = runtime.load_module(&wasm_bytes).expect("failed to load Rust package");
+    let module = runtime
+        .load_module(&wasm_bytes)
+        .expect("failed to load Rust package");
     let mut instance = module.instantiate().expect("failed to instantiate");
 
     // Strings should pass through unchanged
@@ -555,7 +583,9 @@ fn host_imports_logging() {
     let wasm_bytes = load_rust_logger_package();
 
     let runtime = Runtime::new();
-    let module = runtime.load_module(&wasm_bytes).expect("failed to load logger package");
+    let module = runtime
+        .load_module(&wasm_bytes)
+        .expect("failed to load logger package");
 
     // Instantiate with host imports
     let imports = HostImports::new();
@@ -577,9 +607,18 @@ fn host_imports_logging() {
     assert!(!logs.is_empty(), "Expected log messages");
 
     // Verify specific log messages
-    assert!(logs.iter().any(|m| m.contains("starting")), "Expected 'starting' log");
-    assert!(logs.iter().any(|m| m.contains("got S64")), "Expected S64 type log");
-    assert!(logs.iter().any(|m| m.contains("done")), "Expected 'done' log");
+    assert!(
+        logs.iter().any(|m| m.contains("starting")),
+        "Expected 'starting' log"
+    );
+    assert!(
+        logs.iter().any(|m| m.contains("got S64")),
+        "Expected S64 type log"
+    );
+    assert!(
+        logs.iter().any(|m| m.contains("done")),
+        "Expected 'done' log"
+    );
 }
 
 #[test]
@@ -587,7 +626,9 @@ fn host_imports_logging_with_string() {
     let wasm_bytes = load_rust_logger_package();
 
     let runtime = Runtime::new();
-    let module = runtime.load_module(&wasm_bytes).expect("failed to load logger package");
+    let module = runtime
+        .load_module(&wasm_bytes)
+        .expect("failed to load logger package");
 
     let imports = HostImports::new();
     let mut instance = module
@@ -604,8 +645,14 @@ fn host_imports_logging_with_string() {
     assert_eq!(output, input);
 
     let logs = instance.get_logs();
-    assert!(logs.iter().any(|m| m.contains("got String")), "Expected String type log");
-    assert!(logs.iter().any(|m| m.contains("test message")), "Expected the actual string in logs");
+    assert!(
+        logs.iter().any(|m| m.contains("got String")),
+        "Expected String type log"
+    );
+    assert!(
+        logs.iter().any(|m| m.contains("test message")),
+        "Expected the actual string in logs"
+    );
 }
 
 #[test]
@@ -613,7 +660,9 @@ fn host_imports_transform_nested() {
     let wasm_bytes = load_rust_logger_package();
 
     let runtime = Runtime::new();
-    let module = runtime.load_module(&wasm_bytes).expect("failed to load logger package");
+    let module = runtime
+        .load_module(&wasm_bytes)
+        .expect("failed to load logger package");
 
     let imports = HostImports::new();
     let mut instance = module
@@ -623,20 +672,12 @@ fn host_imports_transform_nested() {
     // Test with a list of S64 values
     let input = Value::List {
         elem_type: ValueType::S64,
-        items: vec![
-            Value::S64(10),
-            Value::S64(20),
-            Value::S64(30),
-        ],
+        items: vec![Value::S64(10), Value::S64(20), Value::S64(30)],
     };
 
     let expected = Value::List {
         elem_type: ValueType::S64,
-        items: vec![
-            Value::S64(20),
-            Value::S64(40),
-            Value::S64(60),
-        ],
+        items: vec![Value::S64(20), Value::S64(40), Value::S64(60)],
     };
 
     let output = instance
@@ -647,7 +688,10 @@ fn host_imports_transform_nested() {
 
     // Verify logging happened
     let logs = instance.get_logs();
-    assert!(logs.iter().any(|m| m.contains("got List")), "Expected List type log");
+    assert!(
+        logs.iter().any(|m| m.contains("got List")),
+        "Expected List type log"
+    );
 }
 
 #[test]
@@ -655,7 +699,9 @@ fn host_imports_clear_logs() {
     let wasm_bytes = load_rust_logger_package();
 
     let runtime = Runtime::new();
-    let module = runtime.load_module(&wasm_bytes).expect("failed to load logger package");
+    let module = runtime
+        .load_module(&wasm_bytes)
+        .expect("failed to load logger package");
 
     let imports = HostImports::new();
     let mut instance = module
@@ -679,7 +725,10 @@ fn host_imports_clear_logs() {
     assert!(!logs2.is_empty());
 
     // Should only have logs from second call
-    assert!(logs2.len() < logs1.len() * 2, "Should only have logs from second call");
+    assert!(
+        logs2.len() < logs1.len() * 2,
+        "Should only have logs from second call"
+    );
 }
 
 // ============================================================================
@@ -781,7 +830,9 @@ fn sexpr_eval_simple_addition() {
     let wasm_bytes = load_rust_sexpr_package();
 
     let runtime = Runtime::new();
-    let module = runtime.load_module(&wasm_bytes).expect("failed to load sexpr package");
+    let module = runtime
+        .load_module(&wasm_bytes)
+        .expect("failed to load sexpr package");
     let mut instance = module.instantiate().expect("failed to instantiate");
 
     // (+ 1 2 3) => 6
@@ -804,7 +855,9 @@ fn sexpr_eval_nested_arithmetic() {
     let wasm_bytes = load_rust_sexpr_package();
 
     let runtime = Runtime::new();
-    let module = runtime.load_module(&wasm_bytes).expect("failed to load sexpr package");
+    let module = runtime
+        .load_module(&wasm_bytes)
+        .expect("failed to load sexpr package");
     let mut instance = module.instantiate().expect("failed to instantiate");
 
     // (* (+ 2 3) (- 10 4)) => 5 * 6 = 30
@@ -826,15 +879,13 @@ fn sexpr_eval_comparison() {
     let wasm_bytes = load_rust_sexpr_package();
 
     let runtime = Runtime::new();
-    let module = runtime.load_module(&wasm_bytes).expect("failed to load sexpr package");
+    let module = runtime
+        .load_module(&wasm_bytes)
+        .expect("failed to load sexpr package");
     let mut instance = module.instantiate().expect("failed to instantiate");
 
     // (< 5 10) => true
-    let input = sexpr::list(vec![
-        sexpr::sym("<"),
-        sexpr::num(5),
-        sexpr::num(10),
-    ]);
+    let input = sexpr::list(vec![sexpr::sym("<"), sexpr::num(5), sexpr::num(10)]);
 
     let output = instance
         .call_with_value("evaluate", &input)
@@ -848,7 +899,9 @@ fn sexpr_eval_if_true() {
     let wasm_bytes = load_rust_sexpr_package();
 
     let runtime = Runtime::new();
-    let module = runtime.load_module(&wasm_bytes).expect("failed to load sexpr package");
+    let module = runtime
+        .load_module(&wasm_bytes)
+        .expect("failed to load sexpr package");
     let mut instance = module.instantiate().expect("failed to instantiate");
 
     // (if (> 10 5) 42 0) => 42
@@ -871,7 +924,9 @@ fn sexpr_eval_if_false() {
     let wasm_bytes = load_rust_sexpr_package();
 
     let runtime = Runtime::new();
-    let module = runtime.load_module(&wasm_bytes).expect("failed to load sexpr package");
+    let module = runtime
+        .load_module(&wasm_bytes)
+        .expect("failed to load sexpr package");
     let mut instance = module.instantiate().expect("failed to instantiate");
 
     // (if (< 10 5) 42 0) => 0
@@ -894,7 +949,9 @@ fn sexpr_eval_list_operations() {
     let wasm_bytes = load_rust_sexpr_package();
 
     let runtime = Runtime::new();
-    let module = runtime.load_module(&wasm_bytes).expect("failed to load sexpr package");
+    let module = runtime
+        .load_module(&wasm_bytes)
+        .expect("failed to load sexpr package");
     let mut instance = module.instantiate().expect("failed to instantiate");
 
     // (car (list 1 2 3)) => 1
@@ -920,7 +977,9 @@ fn sexpr_eval_length() {
     let wasm_bytes = load_rust_sexpr_package();
 
     let runtime = Runtime::new();
-    let module = runtime.load_module(&wasm_bytes).expect("failed to load sexpr package");
+    let module = runtime
+        .load_module(&wasm_bytes)
+        .expect("failed to load sexpr package");
     let mut instance = module.instantiate().expect("failed to instantiate");
 
     // (length (list 1 2 3 4 5)) => 5
@@ -948,7 +1007,9 @@ fn sexpr_eval_complex_expression() {
     let wasm_bytes = load_rust_sexpr_package();
 
     let runtime = Runtime::new();
-    let module = runtime.load_module(&wasm_bytes).expect("failed to load sexpr package");
+    let module = runtime
+        .load_module(&wasm_bytes)
+        .expect("failed to load sexpr package");
     let mut instance = module.instantiate().expect("failed to instantiate");
 
     // (if (and (> 10 5) (< 3 7))

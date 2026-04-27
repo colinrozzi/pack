@@ -21,16 +21,9 @@ pub enum ValidationError {
         actual: String,
     },
     #[error("Variant tag out of range at node {node}: tag {tag}, max {max}")]
-    VariantTagOutOfRange {
-        node: u32,
-        tag: u32,
-        max: usize,
-    },
+    VariantTagOutOfRange { node: u32, tag: u32, max: usize },
     #[error("Variant payload mismatch at node {node} tag {tag}")]
-    VariantPayloadMismatch {
-        node: u32,
-        tag: u32,
-    },
+    VariantPayloadMismatch { node: u32, tag: u32 },
     #[error("Unsupported type: {0}")]
     UnsupportedType(String),
 }
@@ -50,14 +43,7 @@ pub fn validate_graph_against_type(
     }
 
     let mut assigned: HashMap<u32, String> = HashMap::new();
-    validate_type(
-        buffer,
-        buffer.root,
-        root_type,
-        None,
-        &map,
-        &mut assigned,
-    )
+    validate_type(buffer, buffer.root, root_type, None, &map, &mut assigned)
 }
 
 pub fn decode_with_schema(
@@ -514,7 +500,7 @@ fn validate_value_variant(
     let has_payload = !case.payload.is_unit();
 
     match (has_payload, payload) {
-        (false, None) | (false, Some(_)) if payload.map_or(true, |_| false) => Ok(()),
+        (false, None) | (false, Some(_)) if payload.is_none() => Ok(()),
         (false, Some(_)) => Err(ValidationError::VariantPayloadMismatch {
             node: 0,
             tag: tag as u32,
@@ -606,9 +592,14 @@ fn validate_variant(
 
     match (has_payload, children.first()) {
         (false, None) => Ok(()),
-        (true, Some(&child)) => {
-            validate_type(buffer, child, &case.payload, Some(variant_name), types, assigned)
-        }
+        (true, Some(&child)) => validate_type(
+            buffer,
+            child,
+            &case.payload,
+            Some(variant_name),
+            types,
+            assigned,
+        ),
         _ => Err(ValidationError::VariantPayloadMismatch { node: index, tag }),
     }
 }
@@ -663,11 +654,7 @@ fn validate_flags(
     Ok(())
 }
 
-fn expect_kind(
-    node: u32,
-    actual: NodeKind,
-    expected: NodeKind,
-) -> Result<(), ValidationError> {
+fn expect_kind(node: u32, actual: NodeKind, expected: NodeKind) -> Result<(), ValidationError> {
     if actual == expected {
         Ok(())
     } else {

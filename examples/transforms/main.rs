@@ -1,7 +1,4 @@
-use pack::{
-    parse_pact_dir_with_registry, PactExport, TransformRegistry,
-    generate_rust,
-};
+use pack::{generate_rust, parse_pact_dir_with_registry, PactExport, TransformRegistry};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (root, type_registry) = parse_pact_dir_with_registry("examples/transforms")?;
@@ -10,16 +7,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Parsed Interfaces ===\n");
     for child in &root.children {
         println!("Interface: {}", child.name);
-        println!("  Uses: {:?}", child.uses.iter().map(|u| {
-            if u.transform_args.is_empty() {
-                u.interface.clone()
-            } else {
-                format!("{}({:?})", u.interface, u.transform_args)
-            }
-        }).collect::<Vec<_>>());
-        println!("  Aliases: {:?}", child.aliases.iter().map(|a| {
-            format!("{} = {}({:?})", a.name, a.transform, a.args)
-        }).collect::<Vec<_>>());
+        println!(
+            "  Uses: {:?}",
+            child
+                .uses
+                .iter()
+                .map(|u| {
+                    if u.transform_args.is_empty() {
+                        u.interface.clone()
+                    } else {
+                        format!("{}({:?})", u.interface, u.transform_args)
+                    }
+                })
+                .collect::<Vec<_>>()
+        );
+        println!(
+            "  Aliases: {:?}",
+            child
+                .aliases
+                .iter()
+                .map(|a| { format!("{} = {}({:?})", a.name, a.transform, a.args) })
+                .collect::<Vec<_>>()
+        );
         println!();
     }
 
@@ -33,11 +42,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
 
     println!("=== Transformed rpc(calculator) ===\n");
-    let rpc_calc = type_registry.get_transformed_interface(
-        "rpc",
-        "calculator",
-        &transform_registry
-    )?;
+    let rpc_calc =
+        type_registry.get_transformed_interface("rpc", "calculator", &transform_registry)?;
 
     println!("Name: {}", rpc_calc.name);
     println!("Types added:");
