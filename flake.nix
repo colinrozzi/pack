@@ -66,13 +66,13 @@
             echo "  cargo clippy --workspace           - Lint"
             echo "  nix run .#test                     - Run full test suite"
             echo "  nix run .#pr                       - Create PR from jj revision"
-            echo "  nix run .#release -- patch           - Bump version, tag, publish"
+            echo "  nix run .#release -- patch           - Bump version, create release PR"
           '';
         };
 
         packages.default = pkgs.rustPlatform.buildRustPackage {
           pname = "packr";
-          version = "0.3.0";
+          version = "0.4.0";
 
           src = ./.;
 
@@ -103,7 +103,8 @@
           echo "All tests passed!"
         '';
 
-        # Release: bump version, commit, tag, push
+        # Release: bump version and create a PR
+        # After merge, CI publishes to crates.io and creates the git tag
         packages.release = pkgs.writeShellScriptBin "pack-release" ''
           set -e
 
@@ -139,25 +140,27 @@
           echo "Updated to v$NEW"
           echo ""
 
-          # Commit and tag with jj
+          BRANCH="release-v$NEW"
+
           if command -v jj &>/dev/null; then
             jj describe -m "release v$NEW"
-            jj bookmark create "v$NEW" -r @ 2>/dev/null || jj bookmark set "v$NEW" -r @
-            jj git push --bookmark "v$NEW" --allow-new
-
-            # Also push main forward
-            jj new
-            jj bookmark set main -r @-
-            jj git push --bookmark main
+            jj bookmark create "$BRANCH" -r @ 2>/dev/null || jj bookmark set "$BRANCH" -r @
+            jj git push --bookmark "$BRANCH" --allow-new
           else
+            git checkout -b "$BRANCH"
             git add -A
             git commit -m "release v$NEW"
-            git tag "v$NEW"
-            git push origin main "v$NEW"
+            git push -u origin "$BRANCH"
           fi
 
+          ${pkgs.gh}/bin/gh pr create \
+            --title "release v$NEW" \
+            --body "Bump version to v$NEW. Merging will publish to crates.io and create a GitHub release." \
+            --base main \
+            --head "$BRANCH"
+
           echo ""
-          echo "Pushed v$NEW — CI will publish to crates.io"
+          echo "PR created. Merge to publish v$NEW to crates.io."
         '';
 
         # Create a PR from the current jj revision
