@@ -72,7 +72,7 @@
 
         packages.default = pkgs.rustPlatform.buildRustPackage {
           pname = "packr";
-          version = "0.3.0";
+          version = "0.4.0";
 
           src = ./.;
 
@@ -139,21 +139,18 @@
           echo "Updated to v$NEW"
           echo ""
 
-          # Commit and tag with jj
+          # Commit and tag
           if command -v jj &>/dev/null; then
             jj describe -m "release v$NEW"
-            jj bookmark create "v$NEW" -r @ 2>/dev/null || jj bookmark set "v$NEW" -r @
-            jj git push --bookmark "v$NEW" --allow-new
-
-            # Also push main forward
-            jj new
-            jj bookmark set main -r @-
-            jj git push --bookmark main
+            # Use git directly for the tag — jj bookmarks are branches, not tags
+            COMMIT=$(jj log -r @ --no-graph -T 'commit_id' 2>/dev/null)
+            ${pkgs.git}/bin/git tag "v$NEW" "$COMMIT"
+            ${pkgs.git}/bin/git push origin "refs/tags/v$NEW"
           else
             git add -A
             git commit -m "release v$NEW"
             git tag "v$NEW"
-            git push origin main "v$NEW"
+            git push origin "refs/tags/v$NEW"
           fi
 
           echo ""
