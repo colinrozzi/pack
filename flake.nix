@@ -66,7 +66,7 @@
             echo "  cargo clippy --workspace           - Lint"
             echo "  nix run .#test                     - Run full test suite"
             echo "  nix run .#pr                       - Create PR from jj revision"
-            echo "  nix run .#release -- patch           - Bump version, tag, publish"
+            echo "  nix run .#release -- patch           - Bump version, create release PR"
           '';
         };
 
@@ -103,7 +103,8 @@
           echo "All tests passed!"
         '';
 
-        # Release: bump version, commit, tag, push
+        # Release: bump version and create a PR
+        # After merge, CI publishes to crates.io and creates the git tag
         packages.release = pkgs.writeShellScriptBin "pack-release" ''
           set -e
 
@@ -139,22 +140,27 @@
           echo "Updated to v$NEW"
           echo ""
 
-          # Commit and tag
+          BRANCH="release-v$NEW"
+
           if command -v jj &>/dev/null; then
             jj describe -m "release v$NEW"
-            # Use git directly for the tag — jj bookmarks are branches, not tags
-            COMMIT=$(jj log -r @ --no-graph -T 'commit_id' 2>/dev/null)
-            ${pkgs.git}/bin/git tag "v$NEW" "$COMMIT"
-            ${pkgs.git}/bin/git push origin "refs/tags/v$NEW"
+            jj bookmark create "$BRANCH" -r @ 2>/dev/null || jj bookmark set "$BRANCH" -r @
+            jj git push --bookmark "$BRANCH" --allow-new
           else
+            git checkout -b "$BRANCH"
             git add -A
             git commit -m "release v$NEW"
-            git tag "v$NEW"
-            git push origin "refs/tags/v$NEW"
+            git push -u origin "$BRANCH"
           fi
 
+          ${pkgs.gh}/bin/gh pr create \
+            --title "release v$NEW" \
+            --body "Bump version to v$NEW. Merging will publish to crates.io and create a GitHub release." \
+            --base main \
+            --head "$BRANCH"
+
           echo ""
-          echo "Pushed v$NEW — CI will publish to crates.io"
+          echo "PR created. Merge to publish v$NEW to crates.io."
         '';
 
         # Create a PR from the current jj revision
