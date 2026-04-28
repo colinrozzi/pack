@@ -9,8 +9,8 @@ mod value;
 // Re-export PackType from local module (maps Rust types to Pack types)
 pub use value::PackType;
 
-// Re-export Value types from pack_abi for unified type system
-pub use pack_abi::{ConversionError, FromValue, Value, ValueType};
+// Re-export Value types from packr_abi for unified type system
+pub use packr_abi::{ConversionError, FromValue, Value, ValueType};
 
 use std::collections::{HashMap, HashSet};
 

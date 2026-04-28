@@ -6,12 +6,12 @@
 
 extern crate alloc;
 
-use pack_guest::{export, Value};
+use packr_guest::{export, Value};
 
 // Set up allocator and panic handler
-pack_guest::setup_guest!();
+packr_guest::setup_guest!();
 
-pack_guest::pack_types! {
+packr_guest::pack_types! {
     exports {
         double: func(input: value) -> value,
     }

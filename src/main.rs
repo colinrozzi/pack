@@ -4,7 +4,7 @@
 //!   pack inspect <wasm>  - Display metadata from a WASM package
 
 use clap::{Parser, Subcommand};
-use pack::{decode_metadata_with_hashes, Arena, Function, Param, ParsedModule, Type};
+use packr::{decode_metadata_with_hashes, Arena, Function, Param, ParsedModule, Type};
 use std::path::PathBuf;
 
 /// CGRF magic bytes: "CGRF" in little-endian
@@ -116,8 +116,8 @@ fn print_metadata(arena: &Arena) {
 
 fn print_metadata_with_hashes(
     arena: &Arena,
-    import_hashes: &[pack::InterfaceHash],
-    export_hashes: &[pack::InterfaceHash],
+    import_hashes: &[packr::InterfaceHash],
+    export_hashes: &[packr::InterfaceHash],
 ) {
     // Print imports with hashes
     let imports = arena.imports();
@@ -241,8 +241,8 @@ fn print_json(arena: &Arena) -> anyhow::Result<()> {
 
 fn print_json_with_hashes(
     arena: &Arena,
-    import_hashes: &[pack::InterfaceHash],
-    export_hashes: &[pack::InterfaceHash],
+    import_hashes: &[packr::InterfaceHash],
+    export_hashes: &[packr::InterfaceHash],
 ) -> anyhow::Result<()> {
     let output = serde_json::json!({
         "imports": arena.imports().iter().map(func_to_json).collect::<Vec<_>>(),

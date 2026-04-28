@@ -1,5 +1,5 @@
 {
-  description = "Composite - A WebAssembly component runtime with extended WIT support for recursive types";
+  description = "Pack - A WebAssembly package runtime with extended WIT support for recursive types";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -24,7 +24,6 @@
           targets = [ "wasm32-unknown-unknown" ];
         };
 
-        # Build inputs needed for the project
         buildInputs = with pkgs; [
           rustToolchain
           pkg-config
@@ -41,57 +40,39 @@
 
       in
       {
-        # Development shell
         devShells.default = pkgs.mkShell {
           inherit buildInputs nativeBuildInputs;
 
           packages = with pkgs; [
-            # Rust development tools
             cargo-watch
             cargo-edit
             cargo-expand
-
-            # WASM tools
             wasm-pack
             wasmtime
-
-            # Debugging and profiling
-            lldb
-            valgrind
-
-            # Build tools
-            cmake
-            gnumake
-
-            # GitHub CLI
             gh
           ];
 
-          # Environment variables
           RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
           RUST_BACKTRACE = "1";
 
           shellHook = ''
-            echo "🔧 Composite development environment"
-            echo "Rust version: $(rustc --version)"
-            echo "Cargo version: $(cargo --version)"
+            echo "Pack development environment"
+            echo "Rust: $(rustc --version)"
             echo ""
-            echo "Available targets:"
-            rustup target list --installed 2>/dev/null || rustc --print target-list | grep wasm32
-            echo ""
-            echo "💡 Quick commands:"
-            echo "  cargo build                    - Build the runtime"
-            echo "  cargo test                     - Run tests"
-            echo "  cargo build --release          - Build optimized"
-            echo "  cd components/sexpr && cargo build --target wasm32-unknown-unknown"
-            echo "                                 - Build a WASM component"
+            echo "Commands:"
+            echo "  cargo build                        - Build packr runtime"
+            echo "  cargo test --workspace             - Run all tests"
+            echo "  cargo test -p packr-abi --features derive  - Run derive tests"
+            echo "  cargo clippy --workspace           - Lint"
+            echo "  nix run .#test                     - Run full test suite"
+            echo "  nix run .#pr                       - Create PR from jj revision"
+            echo "  nix run .#release -- patch           - Bump version, tag, publish"
           '';
         };
 
-        # Package definition for the composite runtime
         packages.default = pkgs.rustPlatform.buildRustPackage {
-          pname = "composite";
-          version = "0.1.0";
+          pname = "packr";
+          version = "0.3.0";
 
           src = ./.;
 
@@ -102,15 +83,82 @@
           inherit nativeBuildInputs buildInputs;
 
           meta = with pkgs.lib; {
-            description = "A WebAssembly component runtime with extended WIT support for recursive types";
-            homepage = "https://github.com/your-repo/composite";
+            description = "A WebAssembly package runtime with extended WIT support for recursive types";
+            homepage = "https://github.com/colinrozzi/pack";
             license = licenses.mit;
-            maintainers = [ ];
           };
         };
 
-        # Alias for the package
-        packages.composite = self.packages.${system}.default;
+        packages.packr = self.packages.${system}.default;
+
+        # Run full test suite (workspace + derive tests)
+        packages.test = pkgs.writeShellScriptBin "pack-test" ''
+          set -e
+          echo "Running workspace tests..."
+          cargo test --workspace
+          echo ""
+          echo "Running derive tests..."
+          cargo test -p packr-abi --features derive
+          echo ""
+          echo "All tests passed!"
+        '';
+
+        # Release: bump version, commit, tag, push
+        packages.release = pkgs.writeShellScriptBin "pack-release" ''
+          set -e
+
+          BUMP="''${1:-patch}"
+          CURRENT=$(${pkgs.gnugrep}/bin/grep -m1 '^version = ' Cargo.toml | ${pkgs.gnused}/bin/sed 's/version = "\(.*\)"/\1/')
+
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+
+          case "$BUMP" in
+            patch) PATCH=$((PATCH + 1)) ;;
+            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+            [0-9]*.[0-9]*.[0-9]*) IFS='.' read -r MAJOR MINOR PATCH <<< "$BUMP" ;;
+            *) echo "Usage: nix run .#release -- [patch|minor|major|X.Y.Z]"; exit 1 ;;
+          esac
+
+          NEW="$MAJOR.$MINOR.$PATCH"
+          echo "Bumping $CURRENT -> $NEW"
+
+          # Update workspace version in root Cargo.toml
+          ${pkgs.gnused}/bin/sed -i "0,/^version = \"$CURRENT\"/s//version = \"$NEW\"/" Cargo.toml
+
+          # Update workspace dependency versions
+          ${pkgs.gnused}/bin/sed -i "s/version = \"$CURRENT\", path/version = \"$NEW\", path/g" Cargo.toml
+
+          # Update flake.nix version
+          ${pkgs.gnused}/bin/sed -i "s/version = \"$CURRENT\"/version = \"$NEW\"/" flake.nix
+
+          # Update Cargo.lock
+          cargo update --workspace 2>/dev/null || true
+
+          echo ""
+          echo "Updated to v$NEW"
+          echo ""
+
+          # Commit and tag with jj
+          if command -v jj &>/dev/null; then
+            jj describe -m "release v$NEW"
+            jj bookmark create "v$NEW" -r @ 2>/dev/null || jj bookmark set "v$NEW" -r @
+            jj git push --bookmark "v$NEW" --allow-new
+
+            # Also push main forward
+            jj new
+            jj bookmark set main -r @-
+            jj git push --bookmark main
+          else
+            git add -A
+            git commit -m "release v$NEW"
+            git tag "v$NEW"
+            git push origin main "v$NEW"
+          fi
+
+          echo ""
+          echo "Pushed v$NEW — CI will publish to crates.io"
+        '';
 
         # Create a PR from the current jj revision
         packages.pr = pkgs.writeShellScriptBin "pack-pr" ''

@@ -1,9 +1,9 @@
 //! Compile-time metadata encoding for pack_types!() macro.
 //!
-//! Converts type descriptors to `pack_abi::Value` and encodes to CGRF bytes.
+//! Converts type descriptors to `packr_abi::Value` and encodes to CGRF bytes.
 //! Also computes Merkle-tree hashes for type compatibility checking.
 
-use pack_abi::{
+use packr_abi::{
     encode, hash_function, hash_interface, hash_list, hash_option, hash_record, hash_result,
     hash_tuple, hash_variant, Binding, TypeHash, Value, ValueType, HASH_BOOL, HASH_CHAR, HASH_F32,
     HASH_F64, HASH_FLAGS, HASH_S16, HASH_S32, HASH_S64, HASH_S8, HASH_SELF_REF, HASH_STRING,
@@ -54,7 +54,7 @@ pub enum TypeDesc {
 }
 
 impl TypeDesc {
-    /// Convert to a pack_abi::Value variant representing a type-desc.
+    /// Convert to a packr_abi::Value variant representing a type-desc.
     pub fn to_value(&self) -> Value {
         match self {
             TypeDesc::Bool => variant_no_payload("bool", 0),

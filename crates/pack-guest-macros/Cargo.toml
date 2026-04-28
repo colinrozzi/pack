@@ -1,15 +1,17 @@
 [package]
-name = "pack-guest-macros"
+name = "packr-guest-macros"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
 description = "Proc macros for Pack guest packages"
-license = "MIT OR Apache-2.0"
 
 [lib]
+name = "packr_guest_macros"
 proc-macro = true
 
 [dependencies]
 proc-macro2 = "1"
 quote = "1"
 syn = { version = "2", features = ["full"] }
-pack-abi = { workspace = true, features = ["std"] }
+packr-abi = { workspace = true, features = ["std"] }

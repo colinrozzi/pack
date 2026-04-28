@@ -93,8 +93,8 @@ impl Parse for ExportArgs {
 /// # Example
 ///
 /// ```ignore
-/// use pack_guest::export;
-/// use pack_guest::Value;
+/// use packr_guest::export;
+/// use packr_guest::Value;
 ///
 /// // Value mode - raw Value handling
 /// #[export]
@@ -278,7 +278,7 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
             quote! {
                 // For single param, unwrap from tuple if needed
                 let #name: #ty = match params_value {
-                    pack_guest::Value::Tuple(mut items) if items.len() == 1 => {
+                    packr_guest::Value::Tuple(mut items) if items.len() == 1 => {
                         match items.remove(0).try_into() {
                             Ok(v) => v,
                             Err(_) => return Err("failed to convert parameter"),
@@ -311,7 +311,7 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
                 });
             quote! {
                 let param_items = match params_value {
-                    pack_guest::Value::Tuple(items) => items,
+                    packr_guest::Value::Tuple(items) => items,
                     _ => return Err("expected tuple of parameters"),
                 };
                 #(#extractions)*
@@ -323,14 +323,14 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
         quote! {
             // State mode: Input is Tuple([state, params])
             let (state_opt, params_value) = match value {
-                pack_guest::Value::Tuple(mut items) if items.len() >= 1 => {
+                packr_guest::Value::Tuple(mut items) if items.len() >= 1 => {
                     let state_opt = items.remove(0);
                     let params = if items.len() == 1 {
                         items.remove(0)
                     } else if items.is_empty() {
-                        pack_guest::Value::Tuple(pack_guest::__alloc::vec![])
+                        packr_guest::Value::Tuple(packr_guest::__alloc::vec![])
                     } else {
-                        pack_guest::Value::Tuple(items)
+                        packr_guest::Value::Tuple(items)
                     };
                     (state_opt, params)
                 },
@@ -352,28 +352,28 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
             // Handle Result: convert (NewState, Output) to proper Value format
             match result {
                 Ok((new_state, output)) => {
-                    let state_value: pack_guest::Value = new_state.into();
-                    let output_value: pack_guest::Value = output.into();
+                    let state_value: packr_guest::Value = new_state.into();
+                    let output_value: packr_guest::Value = output.into();
 
                     // Return Result<Tuple([state, output]), _>
-                    Ok(pack_guest::Value::Result {
-                        ok_type: pack_guest::ValueType::Tuple(pack_guest::__alloc::vec![
-                            pack_guest::ValueType::Bool,
-                            pack_guest::ValueType::Bool,
+                    Ok(packr_guest::Value::Result {
+                        ok_type: packr_guest::ValueType::Tuple(packr_guest::__alloc::vec![
+                            packr_guest::ValueType::Bool,
+                            packr_guest::ValueType::Bool,
                         ]),
-                        err_type: pack_guest::ValueType::String,
-                        value: Ok(pack_guest::__alloc::boxed::Box::new(
-                            pack_guest::Value::Tuple(pack_guest::__alloc::vec![state_value, output_value])
+                        err_type: packr_guest::ValueType::String,
+                        value: Ok(packr_guest::__alloc::boxed::Box::new(
+                            packr_guest::Value::Tuple(packr_guest::__alloc::vec![state_value, output_value])
                         )),
                     })
                 },
                 Err(e) => {
                     // Return error
-                    Ok(pack_guest::Value::Result {
-                        ok_type: pack_guest::ValueType::Bool,
-                        err_type: pack_guest::ValueType::String,
-                        value: Err(pack_guest::__alloc::boxed::Box::new(
-                            pack_guest::Value::String(e.into())
+                    Ok(packr_guest::Value::Result {
+                        ok_type: packr_guest::ValueType::Bool,
+                        err_type: packr_guest::ValueType::String,
+                        value: Err(packr_guest::__alloc::boxed::Box::new(
+                            packr_guest::Value::String(e.into())
                         )),
                     })
                 }
@@ -448,7 +448,7 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
         quote! {
             // Extract multiple typed parameters from input tuple
             let items = match value {
-                pack_guest::Value::Tuple(items) => items,
+                packr_guest::Value::Tuple(items) => items,
                 _ => return Err("expected tuple of parameters"),
             };
 
@@ -482,7 +482,7 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
                     out_len_ptr: i32,
                 ) -> i32 {
                     // Use the guest runtime to handle the boilerplate
-                    pack_guest::__export_impl(
+                    packr_guest::__export_impl(
                         in_ptr, in_len, out_ptr_ptr, out_len_ptr,
                         |value| {
                             #call_body
@@ -509,7 +509,7 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
                     out_len_ptr: i32,
                 ) -> i32 {
                     // Use the guest runtime to handle the boilerplate
-                    pack_guest::__export_impl(
+                    packr_guest::__export_impl(
                         in_ptr, in_len, out_ptr_ptr, out_len_ptr,
                         |value| {
                             #call_body
@@ -842,7 +842,7 @@ impl Parse for ImportFnSignature {
 /// # Example
 ///
 /// ```ignore
-/// use pack_guest::import;
+/// use packr_guest::import;
 ///
 /// // Import a log function from the host (manual module specification)
 /// #[import(module = "theater:simple/runtime")]
@@ -950,16 +950,16 @@ pub fn import(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     // Build the input value - tuple of all parameters
     let input_construction = if param_names.is_empty() {
-        quote! { pack_guest::Value::Tuple(pack_guest::__alloc::vec![]) }
+        quote! { packr_guest::Value::Tuple(packr_guest::__alloc::vec![]) }
     } else if param_names.len() == 1 {
         let name = &param_names[0];
-        quote! { pack_guest::Value::from(#name) }
+        quote! { packr_guest::Value::from(#name) }
     } else {
         let conversions = param_names.iter().map(|name| {
-            quote! { pack_guest::Value::from(#name) }
+            quote! { packr_guest::Value::from(#name) }
         });
         quote! {
-            pack_guest::Value::Tuple(pack_guest::__alloc::vec![#(#conversions),*])
+            packr_guest::Value::Tuple(packr_guest::__alloc::vec![#(#conversions),*])
         }
     };
 
@@ -967,7 +967,7 @@ pub fn import(attr: TokenStream, item: TokenStream) -> TokenStream {
     // Use FromValue::from_value() to support nested Option/Result types
     let return_handling = if has_return {
         quote! {
-            match pack_guest::FromValue::from_value(result) {
+            match packr_guest::FromValue::from_value(result) {
                 Ok(v) => v,
                 Err(_) => panic!("failed to convert import result"),
             }
@@ -993,7 +993,7 @@ pub fn import(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         #fn_vis fn #fn_name(#(#fn_params),*) -> #return_type {
             let input = #input_construction;
-            let result = pack_guest::__import_impl(
+            let result = packr_guest::__import_impl(
                 |in_ptr, in_len, out_ptr, out_cap| unsafe {
                     #raw_fn_name(in_ptr, in_len, out_ptr, out_cap)
                 },
@@ -1034,7 +1034,7 @@ pub fn import(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// Then in your Rust code:
 ///
 /// ```ignore
-/// use pack_guest::wit;
+/// use packr_guest::wit;
 ///
 /// // Generate types from wit/ directory
 /// wit!();
@@ -1136,10 +1136,10 @@ pub fn wit(input: TokenStream) -> TokenStream {
 /// #![no_std]
 /// extern crate alloc;
 ///
-/// use pack_guest::export;
+/// use packr_guest::export;
 ///
 /// // Generate types, imports, and export metadata
-/// pack_guest::world!();
+/// packr_guest::world!();
 ///
 /// #[export]
 /// fn init(state: Option<Vec<u8>>) -> Option<Vec<u8>> {
@@ -1323,7 +1323,7 @@ impl Parse for ImportFromArgs {
 /// # Example
 ///
 /// ```ignore
-/// use pack_guest::{import_from, export, Value};
+/// use packr_guest::{import_from, export, Value};
 ///
 /// // Import the "double" function from the "math" package
 /// #[import_from("math")]
@@ -1416,16 +1416,16 @@ pub fn import_from(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     // Build the input value - tuple of all parameters
     let input_construction = if param_names.is_empty() {
-        quote! { pack_guest::Value::Tuple(pack_guest::__alloc::vec![]) }
+        quote! { packr_guest::Value::Tuple(packr_guest::__alloc::vec![]) }
     } else if param_names.len() == 1 {
         let name = &param_names[0];
-        quote! { pack_guest::Value::from(#name) }
+        quote! { packr_guest::Value::from(#name) }
     } else {
         let conversions = param_names.iter().map(|name| {
-            quote! { pack_guest::Value::from(#name) }
+            quote! { packr_guest::Value::from(#name) }
         });
         quote! {
-            pack_guest::Value::Tuple(pack_guest::__alloc::vec![#(#conversions),*])
+            packr_guest::Value::Tuple(packr_guest::__alloc::vec![#(#conversions),*])
         }
     };
 
@@ -1458,7 +1458,7 @@ pub fn import_from(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         #fn_vis fn #fn_name(#(#fn_params),*) -> #return_type {
             let input = #input_construction;
-            let result = pack_guest::__import_impl(
+            let result = packr_guest::__import_impl(
                 |in_ptr, in_len, out_ptr, out_cap| unsafe {
                     #raw_fn_name(in_ptr, in_len, out_ptr, out_cap)
                 },
@@ -1481,7 +1481,7 @@ pub fn import_from(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// ## Inline syntax:
 ///
 /// ```ignore
-/// pack_guest::pack_types! {
+/// packr_guest::pack_types! {
 ///     exports {
 ///         echo: func(input: value) -> value,
 ///         transform: func(input: value) -> value,
@@ -1492,7 +1492,7 @@ pub fn import_from(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// With imports:
 ///
 /// ```ignore
-/// pack_guest::pack_types! {
+/// packr_guest::pack_types! {
 ///     imports {
 ///         math {
 ///             double: func(n: s64) -> s64,
@@ -1507,7 +1507,7 @@ pub fn import_from(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// ## File-based syntax:
 ///
 /// ```ignore
-/// pack_guest::pack_types!(file = "actor.types");
+/// packr_guest::pack_types!(file = "actor.types");
 /// ```
 ///
 /// The file path is relative to the crate's `CARGO_MANIFEST_DIR`.

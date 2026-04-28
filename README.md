@@ -1,4 +1,4 @@
-# Composite
+# Pack
 
 A WebAssembly package runtime with extended WIT support for recursive data types.
 
@@ -14,7 +14,7 @@ The WebAssembly Component Model's WIT interface definition language doesn't supp
 
 The standard workaround is to use **resources** (opaque handles) and manipulate trees through indirection. This works but is awkward for message-passing architectures where data is serialized anyway.
 
-**Composite** defines a WIT+ dialect with recursion allowed by default and a
+**Pack** defines a WIT+ dialect with recursion allowed by default and a
 graph-encoded ABI that naturally handles arbitrary-depth structures.
 
 ## Design Goals
@@ -38,7 +38,7 @@ variant color {
     named(string),
 }
 
-// NEW: Recursive types (implicit)
+// Recursive types (implicit)
 variant sexpr {
     sym(string),
     num(s64),
@@ -47,7 +47,7 @@ variant sexpr {
     lst(list<sexpr>),  // Self-reference allowed
 }
 
-// NEW: Mutually recursive types
+// Mutually recursive types
 variant expr {
     literal(lit),
     binary(string, expr, expr),
@@ -63,7 +63,7 @@ variant lit {
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    Composite Runtime                         │
+│                       Pack Runtime                           │
 │                                                             │
 │  ┌─────────────────────────────────────────────────────┐   │
 │  │                  Package Layer                       │   │
@@ -73,14 +73,12 @@ variant lit {
 │  │   • Host function binding                           │   │
 │  └─────────────────────────────────────────────────────┘   │
 │                           │                                 │
-│                           │                                 │
 │  ┌─────────────────────────────────────────────────────┐   │
 │  │                    ABI Layer                         │   │
 │  │                                                      │   │
 │  │   Graph-encoded ABI for all values                  │   │
 │  │   (schema-aware arena encoding)                     │   │
 │  └─────────────────────────────────────────────────────┘   │
-│                           │                                 │
 │                           │                                 │
 │  ┌─────────────────────────────────────────────────────┐   │
 │  │              WASM Execution (pluggable)              │   │
@@ -122,266 +120,75 @@ Key design decisions:
 
 See [docs/INTERFACE-HASHING.md](docs/INTERFACE-HASHING.md) for details.
 
-## Compatibility
+## Crates
 
-WIT+ is a new dialect and is not wire-compatible with canonical ABI components.
-Interop requires explicit adapters at the boundary.
-
-## Use Cases
-
-### Wisp Compiler (S-expressions)
-
-```wit
-variant sexpr {
-    sym(string),
-    num(s64),
-    lst(list<sexpr>),
-}
-
-interface macro {
-    expand: func(input: sexpr) -> result<sexpr, string>;
-}
-```
-
-### Tree Transformations
-
-```wit
-variant tree {
-    leaf(string),
-    node(list<tree>),
-}
-
-interface transform {
-    map-leaves: func(t: tree, prefix: string) -> tree;
-    flatten: func(t: tree) -> list<string>;
-}
-```
-
-### Configuration/Data
-
-```wit
-variant json {
-    null,
-    bool(bool),
-    number(f64),
-    str(string),
-    array(list<json>),
-    object(list<tuple<string, json>>),
-}
-
-interface config {
-    get: func(key: string) -> option<json>;
-    set: func(key: string, value: json) -> result<_, string>;
-}
-```
-
-## Status
-
-**Working prototype.** Core functionality is implemented and tested:
-
-- [x] **WIT+ Parser** - Parses recursive and mutually recursive type definitions
-- [x] **Graph ABI** - CGRF format encoding/decoding with schema validation
-- [x] **WASM Execution** - Load and run modules via wasmi
-- [x] **Memory Access** - Read/write linear memory, pass data to WASM
-- [x] **Graph ABI Integration** - `write_value`, `read_value`, `call_with_value` for passing recursive types
-- [x] **Rust Packages** - no_std packages using shared `composite-abi` crate
-- [x] **Host Imports** - Packages can call back to host (`host.log`, `host.alloc`)
-- [x] **Derive Macros** - `#[derive(GraphValue)]` for automatic Value conversion
-- [x] **S-expression Evaluator** - Full Lisp-like evaluator as demo package
-- [x] **Interface Enforcement** - Validate WASM modules implement WIT interfaces
-- [x] **Flexible Host Functions** - Namespaced interfaces, typed functions, provider pattern
-- [x] **Interface Hashing** - Merkle-tree hashes for O(1) compatibility checking
-
-### Project Structure
-
-```
-composite/
-├── src/
-│   ├── lib.rs              # Main library exports
-│   ├── abi/                # Graph-encoded ABI (CGRF format)
-│   ├── wit_plus/           # WIT+ parser and type system
-│   └── runtime/            # WASM execution and host binding
-├── crates/
-│   ├── composite-abi/      # Shared ABI crate (no_std compatible)
-│   └── composite-derive/   # Derive macros for Value conversion
-├── packages/
-│   ├── echo/               # Example: echo/transform values
-│   ├── logger/             # Example: uses host imports
-│   └── sexpr/              # Example: S-expression evaluator
-└── tests/
-    ├── wasm_execution.rs      # WASM runtime integration tests
-    ├── interface_enforcement.rs # Interface validation tests
-    ├── host_functions.rs      # Host function API tests
-    ├── abi_roundtrip.rs       # ABI encoding tests
-    └── schema_validation.rs   # Type validation tests
-```
-
-### Quick Start (Host)
-
-```rust
-use composite::{Runtime, abi::Value, runtime::HostImports};
-
-// Load a WASM package
-let runtime = Runtime::new();
-let module = runtime.load_module(&wasm_bytes)?;
-
-// Instantiate with host imports
-let imports = HostImports::new();
-let mut instance = module.instantiate_with_imports(imports)?;
-
-// Call with recursive values
-let input = Value::List(vec![
-    Value::S64(1),
-    Value::S64(2),
-    Value::Variant { tag: 0, payload: Some(Box::new(Value::String("hello".into()))) },
-]);
-let output = instance.call_with_value("process", &input, 0)?;
-
-// Check logs from package
-for msg in instance.get_logs() {
-    println!("Package logged: {}", msg);
-}
-```
-
-### Custom Host Functions
-
-For advanced use cases, register custom host functions with namespaced interfaces:
-
-```rust
-use composite::{Runtime, abi::Value};
-use wasmi::Caller;
-
-struct MyState {
-    counter: i32,
-}
-
-let module = runtime.load_module(&wasm_bytes)?;
-
-let mut instance = module.instantiate_with_host(MyState { counter: 0 }, |builder| {
-    // Register functions under namespaced interfaces
-    builder.interface("myapp:api/v1")?
-        // Raw functions for direct WASM-level access
-        .func_raw("increment", |caller: Caller<'_, MyState>, amount: i32| -> i32 {
-            let state = caller.data();
-            state.counter += amount;
-            state.counter
-        })?
-        // Typed functions with automatic Graph ABI encode/decode
-        .func_typed("transform", |ctx, input: Value| -> Value {
-            match input {
-                Value::S64(n) => Value::S64(n * 2),
-                other => other,
-            }
-        })?;
-    Ok(())
-})?;
-```
-
-#### Typed Functions with Custom Types
-
-Use `#[derive(GraphValue)]` types with `func_typed`:
-
-```rust
-#[derive(GraphValue)]
-struct Point { x: i64, y: i64 }
-
-builder.interface("geometry")?
-    .func_typed("translate", |ctx, point: Point| -> Point {
-        Point { x: point.x + 10, y: point.y + 10 }
-    })?;
-```
-
-#### Reusable Function Providers
-
-Create reusable sets of host functions:
-
-```rust
-use composite::runtime::{HostFunctionProvider, HostLinkerBuilder, LinkerError};
-
-struct LoggingProvider;
-
-impl<T> HostFunctionProvider<T> for LoggingProvider {
-    fn register(&self, builder: &mut HostLinkerBuilder<'_, T>) -> Result<(), LinkerError> {
-        builder.interface("logging")?
-            .func_raw("debug", |caller, ptr, len| { /* ... */ })?
-            .func_raw("info", |caller, ptr, len| { /* ... */ })?;
-        Ok(())
-    }
-}
-
-// Use it
-builder.register_provider(&LoggingProvider)?;
-```
+| Crate | Description |
+|---|---|
+| `packr` | Host-side runtime (CLI + library) |
+| `packr-abi` | Shared ABI types (`Value`, `GraphValue` derive) — `no_std` compatible |
+| `packr-derive` | Derive macros for automatic Value conversion |
+| `packr-guest` | Guest-side helpers for writing WASM packages |
+| `packr-guest-macros` | Proc macros (`#[export]`, `#[import]`, `pack_types!`) |
 
 ## Writing Packages
 
 Packages are written in Rust with `no_std` and compile to WASM.
 
-### Simple Types with Derive
-
-For non-recursive types, use the derive macro:
-
 ```rust
-use composite_abi::{GraphValue, Value};
+#![no_std]
+extern crate alloc;
+use alloc::string::String;
+use packr_guest::{export, Value};
 
-#[derive(GraphValue)]
-struct Point {
-    x: i64,
-    y: i64,
-}
+packr_guest::setup_guest!();
 
-#[derive(GraphValue)]
-enum Shape {
-    Circle(f64),
-    Rectangle(f64, f64),
-    Point,
-}
-
-// Automatic conversion
-let point = Point { x: 10, y: 20 };
-let value: Value = point.into();
-let back: Point = value.try_into().unwrap();
-```
-
-### Recursive Types (Manual)
-
-Recursive types use `Box<T>` which requires manual `From`/`TryFrom` implementations:
-
-```rust
-use composite_abi::{Value, ConversionError};
-
-enum SExpr {
-    Num(i64),
-    Cons(Box<SExpr>, Box<SExpr>),
-    Nil,
-}
-
-impl From<SExpr> for Value {
-    fn from(expr: SExpr) -> Value {
-        match expr {
-            SExpr::Num(n) => Value::Variant {
-                tag: 0,
-                payload: Some(Box::new(Value::S64(n)))
-            },
-            SExpr::Cons(head, tail) => Value::Variant {
-                tag: 1,
-                payload: Some(Box::new(Value::Tuple(vec![
-                    (*head).into(),
-                    (*tail).into(),
-                ]))),
-            },
-            SExpr::Nil => Value::Variant { tag: 2, payload: None },
-        }
+packr_guest::pack_types! {
+    exports {
+        echo: func(input: value) -> value,
     }
 }
 
-impl TryFrom<Value> for SExpr {
-    type Error = ConversionError;
-    // ... symmetric implementation
+#[export]
+fn echo(input: Value) -> Value {
+    input
 }
 ```
 
-See `packages/sexpr/` for a complete example with 25+ built-in functions.
+### Typed Actors with Derive
+
+```rust
+#![no_std]
+extern crate alloc;
+use alloc::string::String;
+use packr_guest::{export, import, pack_types, GraphValue};
+
+packr_guest::setup_guest!();
+
+#[derive(Clone, GraphValue)]
+#[graph(crate = "packr_guest::composite_abi")]
+pub struct MyState {
+    pub name: String,
+    pub count: u32,
+}
+
+pack_types! {
+    exports {
+        init: func(state: value) -> result<my-state, string>,
+        greet: func(state: my-state, name: string) -> result<tuple<my-state, string>, string>,
+    }
+}
+
+#[export]
+fn init(_state: MyState) -> Result<(MyState, ()), String> {
+    Ok((MyState { name: String::from("world"), count: 0 }, ()))
+}
+
+#[export]
+fn greet(state: MyState, name: String) -> Result<(MyState, String), String> {
+    let msg = alloc::format!("Hello, {}!", name);
+    Ok((MyState { count: state.count + 1, ..state }, msg))
+}
+```
 
 ### Package Cargo.toml
 
@@ -395,28 +202,51 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-composite-abi = { path = "../../crates/composite-abi", default-features = false, features = ["derive"] }
+packr-guest = { git = "https://github.com/colinrozzi/pack.git", tag = "v0.3.0" }
 
 [profile.release]
 opt-level = "s"
 lto = true
 ```
 
-### Host Imports
+## Project Structure
 
-Packages can call host functions:
-
-```rust
-#[link(wasm_import_module = "host")]
-extern "C" {
-    fn log(ptr: i32, len: i32);
-    fn alloc(size: i32) -> i32;
-}
 ```
+pack/
+├── src/                    # Host-side runtime
+│   ├── main.rs             # packr CLI
+│   ├── bin/pact.rs         # pact CLI (type checker)
+│   ├── abi/                # Graph-encoded ABI (CGRF format)
+│   └── runtime/            # WASM execution and host binding
+├── crates/
+│   ├── pack-abi/           # packr-abi: shared ABI types (no_std)
+│   ├── pack-derive/        # packr-derive: GraphValue derive macro
+│   ├── pack-guest/         # packr-guest: guest helpers
+│   └── pack-guest-macros/  # packr-guest-macros: proc macros
+├── packages/               # Example WASM packages
+│   ├── echo/               # Echo/transform values
+│   ├── logger/             # Uses host imports
+│   ├── sexpr/              # S-expression evaluator
+│   ├── typed-actor/        # Typed state example
+│   └── ...
+└── tests/                  # Integration tests
+```
+
+## Status
+
+**Working prototype.** Core functionality is implemented and tested:
+
+- [x] WIT+ Parser — recursive and mutually recursive type definitions
+- [x] Graph ABI — CGRF format encoding/decoding with schema validation
+- [x] WASM Execution — load and run modules via wasmtime
+- [x] Guest Macros — `#[export]`, `#[import]`, `pack_types!`, `#[derive(GraphValue)]`
+- [x] Host Imports — packages can call back to host
+- [x] Interface Enforcement — validate WASM modules implement WIT interfaces
+- [x] Interface Hashing — Merkle-tree hashes for O(1) compatibility checking
+- [x] Static Composition — compose multiple packages into one module
 
 ## Related Projects
 
+- [Theater](https://github.com/colinrozzi/theater) — Actor runtime built on Pack
+- [Wisp](https://github.com/colinrozzi/wisp) — Lisp that compiles to Pack WASM modules
 - [WebAssembly Component Model](https://github.com/WebAssembly/component-model)
-- [WIT Specification](https://github.com/WebAssembly/component-model/blob/main/design/mvp/WIT.md)
-- [wasmtime](https://github.com/bytecodealliance/wasmtime)
-- [wasmi](https://github.com/wasmi-labs/wasmi)

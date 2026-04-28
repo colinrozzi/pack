@@ -6,7 +6,7 @@
 //!   pact codegen <file>       - Generate Rust code from a pact file or directory
 
 use clap::{Parser, Subcommand};
-use pack::{
+use packr::{
     codegen, parse_pact_dir_with_registry, parse_pact_file, PactInterface, Type, TypeDef,
     TypeRegistry,
 };

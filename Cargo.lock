@@ -785,12 +785,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
-name = "pack"
-version = "0.2.0"
+name = "packr"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
- "pack-abi",
+ "packr-abi",
  "serde",
  "serde_json",
  "sha2",
@@ -803,18 +803,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "pack-abi"
-version = "0.2.0"
+name = "packr-abi"
+version = "0.3.0"
 dependencies = [
  "hashbrown 0.14.5",
- "pack-derive",
+ "packr-derive",
  "serde",
  "sha2",
 ]
 
 [[package]]
-name = "pack-derive"
-version = "0.2.0"
+name = "packr-derive"
+version = "0.3.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -822,20 +822,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "pack-guest"
-version = "0.2.0"
+name = "packr-guest"
+version = "0.3.0"
 dependencies = [
  "dlmalloc",
- "pack-abi",
- "pack-derive",
- "pack-guest-macros",
+ "packr-abi",
+ "packr-derive",
+ "packr-guest-macros",
 ]
 
 [[package]]
-name = "pack-guest-macros"
-version = "0.2.0"
+name = "packr-guest-macros"
+version = "0.3.0"
 dependencies = [
- "pack-abi",
+ "packr-abi",
  "proc-macro2",
  "quote",
  "syn",

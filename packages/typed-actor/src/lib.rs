@@ -11,15 +11,15 @@ extern crate alloc;
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use pack_guest::export;
+use packr_guest::export;
 
 // Set up panic handler and allocator
-pack_guest::setup_guest!();
+packr_guest::setup_guest!();
 
 // Parse the WIT+ world and generate:
 // - Typed import modules (runtime::log, runtime::get_time)
 // - Export metadata for #[export] validation
-pack_guest::world!();
+packr_guest::world!();
 
 /// Initialize the actor.
 ///

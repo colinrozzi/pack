@@ -1,16 +1,20 @@
 [package]
-name = "pack-guest"
+name = "packr-guest"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
 description = "Guest-side helpers for Pack WASM packages"
-license = "MIT OR Apache-2.0"
+
+[lib]
+name = "packr_guest"
 
 [features]
 default = []
-derive = ["dep:pack-derive"]
+derive = ["dep:packr-derive"]
 
 [dependencies]
-pack-abi = { workspace = true, default-features = false }
-pack-guest-macros.workspace = true
-pack-derive = { workspace = true, optional = true }
+packr-abi = { workspace = true, default-features = false }
+packr-guest-macros.workspace = true
+packr-derive = { workspace = true, optional = true }
 dlmalloc = { version = "0.2", features = ["global"] }

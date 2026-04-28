@@ -8,12 +8,12 @@
 extern crate alloc;
 
 use alloc::boxed::Box;
-use pack_guest::{export, Value};
+use packr_guest::{export, Value};
 
 // Set up allocator and panic handler
-pack_guest::setup_guest!();
+packr_guest::setup_guest!();
 
-pack_guest::pack_types! {
+packr_guest::pack_types! {
     exports {
         echo: func(input: value) -> value,
         transform: func(input: value) -> value,

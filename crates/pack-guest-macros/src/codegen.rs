@@ -101,23 +101,23 @@ fn generate_type_ref(ty: &Type, self_type_name: Option<&str>) -> TokenStream {
 #[allow(clippy::only_used_in_recursion)]
 fn generate_to_value(ty: &Type, expr: TokenStream, self_type_name: Option<&str>) -> TokenStream {
     match ty {
-        Type::Bool => quote! { pack_guest::Value::Bool(#expr) },
-        Type::U8 => quote! { pack_guest::Value::U8(#expr) },
-        Type::U16 => quote! { pack_guest::Value::U16(#expr) },
-        Type::U32 => quote! { pack_guest::Value::U32(#expr) },
-        Type::U64 => quote! { pack_guest::Value::U64(#expr) },
-        Type::S8 => quote! { pack_guest::Value::S8(#expr) },
-        Type::S16 => quote! { pack_guest::Value::S16(#expr) },
-        Type::S32 => quote! { pack_guest::Value::S32(#expr) },
-        Type::S64 => quote! { pack_guest::Value::S64(#expr) },
-        Type::F32 => quote! { pack_guest::Value::F32(#expr) },
-        Type::F64 => quote! { pack_guest::Value::F64(#expr) },
-        Type::Char => quote! { pack_guest::Value::Char(#expr) },
-        Type::String => quote! { pack_guest::Value::String(#expr) },
+        Type::Bool => quote! { packr_guest::Value::Bool(#expr) },
+        Type::U8 => quote! { packr_guest::Value::U8(#expr) },
+        Type::U16 => quote! { packr_guest::Value::U16(#expr) },
+        Type::U32 => quote! { packr_guest::Value::U32(#expr) },
+        Type::U64 => quote! { packr_guest::Value::U64(#expr) },
+        Type::S8 => quote! { packr_guest::Value::S8(#expr) },
+        Type::S16 => quote! { packr_guest::Value::S16(#expr) },
+        Type::S32 => quote! { packr_guest::Value::S32(#expr) },
+        Type::S64 => quote! { packr_guest::Value::S64(#expr) },
+        Type::F32 => quote! { packr_guest::Value::F32(#expr) },
+        Type::F64 => quote! { packr_guest::Value::F64(#expr) },
+        Type::Char => quote! { packr_guest::Value::Char(#expr) },
+        Type::String => quote! { packr_guest::Value::String(#expr) },
         Type::List(inner) => {
             let inner_conversion = generate_to_value(inner, quote! { item }, self_type_name);
             quote! {
-                pack_guest::Value::List(
+                packr_guest::Value::List(
                     #expr.into_iter().map(|item| #inner_conversion).collect()
                 )
             }
@@ -125,7 +125,7 @@ fn generate_to_value(ty: &Type, expr: TokenStream, self_type_name: Option<&str>)
         Type::Option(inner) => {
             let inner_conversion = generate_to_value(inner, quote! { v }, self_type_name);
             quote! {
-                pack_guest::Value::Option(
+                packr_guest::Value::Option(
                     #expr.map(|v| ::alloc::boxed::Box::new(#inner_conversion))
                 )
             }
@@ -134,18 +134,18 @@ fn generate_to_value(ty: &Type, expr: TokenStream, self_type_name: Option<&str>)
             let ok_conversion = ok
                 .as_ref()
                 .map(|t| generate_to_value(t, quote! { v }, self_type_name))
-                .unwrap_or_else(|| quote! { pack_guest::Value::Tuple(::alloc::vec![]) });
+                .unwrap_or_else(|| quote! { packr_guest::Value::Tuple(::alloc::vec![]) });
             let err_conversion = err
                 .as_ref()
                 .map(|t| generate_to_value(t, quote! { e }, self_type_name))
-                .unwrap_or_else(|| quote! { pack_guest::Value::Tuple(::alloc::vec![]) });
+                .unwrap_or_else(|| quote! { packr_guest::Value::Tuple(::alloc::vec![]) });
             quote! {
                 match #expr {
-                    Ok(v) => pack_guest::Value::Variant {
+                    Ok(v) => packr_guest::Value::Variant {
                         tag: 0,
                         payload: Some(::alloc::boxed::Box::new(#ok_conversion)),
                     },
-                    Err(e) => pack_guest::Value::Variant {
+                    Err(e) => packr_guest::Value::Variant {
                         tag: 1,
                         payload: Some(::alloc::boxed::Box::new(#err_conversion)),
                     },
@@ -154,7 +154,7 @@ fn generate_to_value(ty: &Type, expr: TokenStream, self_type_name: Option<&str>)
         }
         Type::Tuple(items) => {
             if items.is_empty() {
-                quote! { pack_guest::Value::Tuple(::alloc::vec![]) }
+                quote! { packr_guest::Value::Tuple(::alloc::vec![]) }
             } else {
                 let conversions: Vec<_> = items
                     .iter()
@@ -166,13 +166,13 @@ fn generate_to_value(ty: &Type, expr: TokenStream, self_type_name: Option<&str>)
                     })
                     .collect();
                 quote! {
-                    pack_guest::Value::Tuple(::alloc::vec![#(#conversions),*])
+                    packr_guest::Value::Tuple(::alloc::vec![#(#conversions),*])
                 }
             }
         }
         Type::Named(_) | Type::SelfRef => {
             // Named types and self-refs implement Into<Value>
-            quote! { pack_guest::Value::from(#expr) }
+            quote! { packr_guest::Value::from(#expr) }
         }
     }
 }
@@ -182,8 +182,8 @@ fn generate_from_value(ty: &Type, expr: TokenStream, self_type_name: Option<&str
     match ty {
         Type::Bool => quote! {
             match #expr {
-                pack_guest::Value::Bool(v) => v,
-                _ => return Err(pack_guest::ConversionError::TypeMismatch {
+                packr_guest::Value::Bool(v) => v,
+                _ => return Err(packr_guest::ConversionError::TypeMismatch {
                     expected: "Bool".into(),
                     got: ::alloc::format!("{:?}", #expr),
                 }),
@@ -191,8 +191,8 @@ fn generate_from_value(ty: &Type, expr: TokenStream, self_type_name: Option<&str
         },
         Type::U8 => quote! {
             match #expr {
-                pack_guest::Value::U8(v) => v,
-                _ => return Err(pack_guest::ConversionError::TypeMismatch {
+                packr_guest::Value::U8(v) => v,
+                _ => return Err(packr_guest::ConversionError::TypeMismatch {
                     expected: "U8".into(),
                     got: ::alloc::format!("{:?}", #expr),
                 }),
@@ -200,8 +200,8 @@ fn generate_from_value(ty: &Type, expr: TokenStream, self_type_name: Option<&str
         },
         Type::U16 => quote! {
             match #expr {
-                pack_guest::Value::U16(v) => v,
-                _ => return Err(pack_guest::ConversionError::TypeMismatch {
+                packr_guest::Value::U16(v) => v,
+                _ => return Err(packr_guest::ConversionError::TypeMismatch {
                     expected: "U16".into(),
                     got: ::alloc::format!("{:?}", #expr),
                 }),
@@ -209,8 +209,8 @@ fn generate_from_value(ty: &Type, expr: TokenStream, self_type_name: Option<&str
         },
         Type::U32 => quote! {
             match #expr {
-                pack_guest::Value::U32(v) => v,
-                _ => return Err(pack_guest::ConversionError::TypeMismatch {
+                packr_guest::Value::U32(v) => v,
+                _ => return Err(packr_guest::ConversionError::TypeMismatch {
                     expected: "U32".into(),
                     got: ::alloc::format!("{:?}", #expr),
                 }),
@@ -218,8 +218,8 @@ fn generate_from_value(ty: &Type, expr: TokenStream, self_type_name: Option<&str
         },
         Type::U64 => quote! {
             match #expr {
-                pack_guest::Value::U64(v) => v,
-                _ => return Err(pack_guest::ConversionError::TypeMismatch {
+                packr_guest::Value::U64(v) => v,
+                _ => return Err(packr_guest::ConversionError::TypeMismatch {
                     expected: "U64".into(),
                     got: ::alloc::format!("{:?}", #expr),
                 }),
@@ -227,8 +227,8 @@ fn generate_from_value(ty: &Type, expr: TokenStream, self_type_name: Option<&str
         },
         Type::S8 => quote! {
             match #expr {
-                pack_guest::Value::S8(v) => v,
-                _ => return Err(pack_guest::ConversionError::TypeMismatch {
+                packr_guest::Value::S8(v) => v,
+                _ => return Err(packr_guest::ConversionError::TypeMismatch {
                     expected: "S8".into(),
                     got: ::alloc::format!("{:?}", #expr),
                 }),
@@ -236,8 +236,8 @@ fn generate_from_value(ty: &Type, expr: TokenStream, self_type_name: Option<&str
         },
         Type::S16 => quote! {
             match #expr {
-                pack_guest::Value::S16(v) => v,
-                _ => return Err(pack_guest::ConversionError::TypeMismatch {
+                packr_guest::Value::S16(v) => v,
+                _ => return Err(packr_guest::ConversionError::TypeMismatch {
                     expected: "S16".into(),
                     got: ::alloc::format!("{:?}", #expr),
                 }),
@@ -245,8 +245,8 @@ fn generate_from_value(ty: &Type, expr: TokenStream, self_type_name: Option<&str
         },
         Type::S32 => quote! {
             match #expr {
-                pack_guest::Value::S32(v) => v,
-                _ => return Err(pack_guest::ConversionError::TypeMismatch {
+                packr_guest::Value::S32(v) => v,
+                _ => return Err(packr_guest::ConversionError::TypeMismatch {
                     expected: "S32".into(),
                     got: ::alloc::format!("{:?}", #expr),
                 }),
@@ -254,8 +254,8 @@ fn generate_from_value(ty: &Type, expr: TokenStream, self_type_name: Option<&str
         },
         Type::S64 => quote! {
             match #expr {
-                pack_guest::Value::S64(v) => v,
-                _ => return Err(pack_guest::ConversionError::TypeMismatch {
+                packr_guest::Value::S64(v) => v,
+                _ => return Err(packr_guest::ConversionError::TypeMismatch {
                     expected: "S64".into(),
                     got: ::alloc::format!("{:?}", #expr),
                 }),
@@ -263,8 +263,8 @@ fn generate_from_value(ty: &Type, expr: TokenStream, self_type_name: Option<&str
         },
         Type::F32 => quote! {
             match #expr {
-                pack_guest::Value::F32(v) => v,
-                _ => return Err(pack_guest::ConversionError::TypeMismatch {
+                packr_guest::Value::F32(v) => v,
+                _ => return Err(packr_guest::ConversionError::TypeMismatch {
                     expected: "F32".into(),
                     got: ::alloc::format!("{:?}", #expr),
                 }),
@@ -272,8 +272,8 @@ fn generate_from_value(ty: &Type, expr: TokenStream, self_type_name: Option<&str
         },
         Type::F64 => quote! {
             match #expr {
-                pack_guest::Value::F64(v) => v,
-                _ => return Err(pack_guest::ConversionError::TypeMismatch {
+                packr_guest::Value::F64(v) => v,
+                _ => return Err(packr_guest::ConversionError::TypeMismatch {
                     expected: "F64".into(),
                     got: ::alloc::format!("{:?}", #expr),
                 }),
@@ -281,8 +281,8 @@ fn generate_from_value(ty: &Type, expr: TokenStream, self_type_name: Option<&str
         },
         Type::Char => quote! {
             match #expr {
-                pack_guest::Value::Char(v) => v,
-                _ => return Err(pack_guest::ConversionError::TypeMismatch {
+                packr_guest::Value::Char(v) => v,
+                _ => return Err(packr_guest::ConversionError::TypeMismatch {
                     expected: "Char".into(),
                     got: ::alloc::format!("{:?}", #expr),
                 }),
@@ -290,8 +290,8 @@ fn generate_from_value(ty: &Type, expr: TokenStream, self_type_name: Option<&str
         },
         Type::String => quote! {
             match #expr {
-                pack_guest::Value::String(v) => v,
-                _ => return Err(pack_guest::ConversionError::TypeMismatch {
+                packr_guest::Value::String(v) => v,
+                _ => return Err(packr_guest::ConversionError::TypeMismatch {
                     expected: "String".into(),
                     got: ::alloc::format!("{:?}", #expr),
                 }),
@@ -312,14 +312,14 @@ fn generate_from_value(ty: &Type, expr: TokenStream, self_type_name: Option<&str
             };
             quote! {
                 match #expr {
-                    pack_guest::Value::List(items) => {
+                    packr_guest::Value::List(items) => {
                         let mut result = ::alloc::vec::Vec::with_capacity(items.len());
                         for item in items {
                             result.push(#item_conversion);
                         }
                         result
                     }
-                    _ => return Err(pack_guest::ConversionError::ExpectedList(
+                    _ => return Err(packr_guest::ConversionError::ExpectedList(
                         ::alloc::format!("{:?}", #expr)
                     )),
                 }
@@ -340,13 +340,13 @@ fn generate_from_value(ty: &Type, expr: TokenStream, self_type_name: Option<&str
             };
             quote! {
                 match #expr {
-                    pack_guest::Value::Option(opt) => {
+                    packr_guest::Value::Option(opt) => {
                         match opt {
                             Some(boxed) => #some_conversion,
                             None => None,
                         }
                     }
-                    _ => return Err(pack_guest::ConversionError::ExpectedOption(
+                    _ => return Err(packr_guest::ConversionError::ExpectedOption(
                         ::alloc::format!("{:?}", #expr)
                     )),
                 }
@@ -392,15 +392,15 @@ fn generate_from_value(ty: &Type, expr: TokenStream, self_type_name: Option<&str
             };
             quote! {
                 match #expr {
-                    pack_guest::Value::Variant { tag: 0, payload } => {
-                        let p = payload.ok_or(pack_guest::ConversionError::MissingPayload)?;
+                    packr_guest::Value::Variant { tag: 0, payload } => {
+                        let p = payload.ok_or(packr_guest::ConversionError::MissingPayload)?;
                         #ok_conversion
                     }
-                    pack_guest::Value::Variant { tag: 1, payload } => {
-                        let p = payload.ok_or(pack_guest::ConversionError::MissingPayload)?;
+                    packr_guest::Value::Variant { tag: 1, payload } => {
+                        let p = payload.ok_or(packr_guest::ConversionError::MissingPayload)?;
                         #err_conversion
                     }
-                    _ => return Err(pack_guest::ConversionError::ExpectedVariant(
+                    _ => return Err(packr_guest::ConversionError::ExpectedVariant(
                         ::alloc::format!("{:?}", #expr)
                     )),
                 }
@@ -429,11 +429,11 @@ fn generate_from_value(ty: &Type, expr: TokenStream, self_type_name: Option<&str
                 let len = items.len();
                 quote! {
                     match #expr {
-                        pack_guest::Value::Tuple(items) if items.len() == #len => {
+                        packr_guest::Value::Tuple(items) if items.len() == #len => {
                             let mut iter = items.into_iter();
                             (#(#extractions),*)
                         }
-                        _ => return Err(pack_guest::ConversionError::ExpectedTuple(
+                        _ => return Err(packr_guest::ConversionError::ExpectedTuple(
                             ::alloc::format!("{:?}", #expr)
                         )),
                     }
@@ -508,7 +508,7 @@ fn generate_record(name: &str, fields: &[(String, Type)]) -> TokenStream {
                     let field_value = fields.iter()
                         .find(|(n, _)| n == #wit_fname)
                         .map(|(_, v)| v.clone())
-                        .ok_or(pack_guest::ConversionError::MissingField(#wit_fname.into()))?;
+                        .ok_or(packr_guest::ConversionError::MissingField(#wit_fname.into()))?;
                     #from_val
                 }
             }
@@ -521,23 +521,23 @@ fn generate_record(name: &str, fields: &[(String, Type)]) -> TokenStream {
             #(#field_defs),*
         }
 
-        impl From<#rust_name> for pack_guest::Value {
-            fn from(value: #rust_name) -> pack_guest::Value {
-                pack_guest::Value::Record(::alloc::vec![#(#field_to_value),*])
+        impl From<#rust_name> for packr_guest::Value {
+            fn from(value: #rust_name) -> packr_guest::Value {
+                packr_guest::Value::Record(::alloc::vec![#(#field_to_value),*])
             }
         }
 
-        impl TryFrom<pack_guest::Value> for #rust_name {
-            type Error = pack_guest::ConversionError;
+        impl TryFrom<packr_guest::Value> for #rust_name {
+            type Error = packr_guest::ConversionError;
 
-            fn try_from(value: pack_guest::Value) -> Result<Self, Self::Error> {
+            fn try_from(value: packr_guest::Value) -> Result<Self, Self::Error> {
                 match value {
-                    pack_guest::Value::Record(fields) => {
+                    packr_guest::Value::Record(fields) => {
                         Ok(Self {
                             #(#field_from_value),*
                         })
                     }
-                    _ => Err(pack_guest::ConversionError::ExpectedRecord(
+                    _ => Err(packr_guest::ConversionError::ExpectedRecord(
                         ::alloc::format!("{:?}", value)
                     )),
                 }
@@ -572,14 +572,14 @@ fn generate_variant(name: &str, cases: &[VariantCase]) -> TokenStream {
                 Some(ty) => {
                     let payload_conv = generate_to_value(ty, quote! { payload }, Some(name));
                     quote! {
-                        #rust_name::#case_name(payload) => pack_guest::Value::Variant {
+                        #rust_name::#case_name(payload) => packr_guest::Value::Variant {
                             tag: #tag,
                             payload: Some(::alloc::boxed::Box::new(#payload_conv)),
                         }
                     }
                 }
                 None => quote! {
-                    #rust_name::#case_name => pack_guest::Value::Variant {
+                    #rust_name::#case_name => packr_guest::Value::Variant {
                         tag: #tag,
                         payload: None,
                     }
@@ -598,7 +598,7 @@ fn generate_variant(name: &str, cases: &[VariantCase]) -> TokenStream {
                     let payload_conv = generate_from_value(ty, quote! { (*p) }, Some(name));
                     quote! {
                         #tag => {
-                            let p = payload.ok_or(pack_guest::ConversionError::MissingPayload)?;
+                            let p = payload.ok_or(packr_guest::ConversionError::MissingPayload)?;
                             Ok(#rust_name::#case_name(#payload_conv))
                         }
                     }
@@ -618,29 +618,29 @@ fn generate_variant(name: &str, cases: &[VariantCase]) -> TokenStream {
             #(#case_defs),*
         }
 
-        impl From<#rust_name> for pack_guest::Value {
-            fn from(value: #rust_name) -> pack_guest::Value {
+        impl From<#rust_name> for packr_guest::Value {
+            fn from(value: #rust_name) -> packr_guest::Value {
                 match value {
                     #(#to_value_arms),*
                 }
             }
         }
 
-        impl TryFrom<pack_guest::Value> for #rust_name {
-            type Error = pack_guest::ConversionError;
+        impl TryFrom<packr_guest::Value> for #rust_name {
+            type Error = packr_guest::ConversionError;
 
-            fn try_from(value: pack_guest::Value) -> Result<Self, Self::Error> {
+            fn try_from(value: packr_guest::Value) -> Result<Self, Self::Error> {
                 match value {
-                    pack_guest::Value::Variant { tag, payload } => {
+                    packr_guest::Value::Variant { tag, payload } => {
                         match tag {
                             #(#from_value_arms),*
-                            _ => Err(pack_guest::ConversionError::UnknownTag {
+                            _ => Err(packr_guest::ConversionError::UnknownTag {
                                 tag,
                                 max: #max_tag,
                             }),
                         }
                     }
-                    _ => Err(pack_guest::ConversionError::ExpectedVariant(
+                    _ => Err(packr_guest::ConversionError::ExpectedVariant(
                         ::alloc::format!("{:?}", value)
                     )),
                 }
@@ -663,7 +663,7 @@ fn generate_enum(name: &str, cases: &[String]) -> TokenStream {
         .map(|(tag, case)| {
             let case_name = to_rust_variant_name(case);
             quote! {
-                #rust_name::#case_name => pack_guest::Value::Variant {
+                #rust_name::#case_name => packr_guest::Value::Variant {
                     tag: #tag,
                     payload: None,
                 }
@@ -688,29 +688,29 @@ fn generate_enum(name: &str, cases: &[String]) -> TokenStream {
             #(#case_defs),*
         }
 
-        impl From<#rust_name> for pack_guest::Value {
-            fn from(value: #rust_name) -> pack_guest::Value {
+        impl From<#rust_name> for packr_guest::Value {
+            fn from(value: #rust_name) -> packr_guest::Value {
                 match value {
                     #(#to_value_arms),*
                 }
             }
         }
 
-        impl TryFrom<pack_guest::Value> for #rust_name {
-            type Error = pack_guest::ConversionError;
+        impl TryFrom<packr_guest::Value> for #rust_name {
+            type Error = packr_guest::ConversionError;
 
-            fn try_from(value: pack_guest::Value) -> Result<Self, Self::Error> {
+            fn try_from(value: packr_guest::Value) -> Result<Self, Self::Error> {
                 match value {
-                    pack_guest::Value::Variant { tag, payload: _ } => {
+                    packr_guest::Value::Variant { tag, payload: _ } => {
                         match tag {
                             #(#from_value_arms),*
-                            _ => Err(pack_guest::ConversionError::UnknownTag {
+                            _ => Err(packr_guest::ConversionError::UnknownTag {
                                 tag,
                                 max: #max_tag,
                             }),
                         }
                     }
-                    _ => Err(pack_guest::ConversionError::ExpectedVariant(
+                    _ => Err(packr_guest::ConversionError::ExpectedVariant(
                         ::alloc::format!("{:?}", value)
                     )),
                 }
@@ -759,19 +759,19 @@ fn generate_flags(name: &str, flags: &[String]) -> TokenStream {
             }
         }
 
-        impl From<#rust_name> for pack_guest::Value {
-            fn from(value: #rust_name) -> pack_guest::Value {
-                pack_guest::Value::Flags(value.0)
+        impl From<#rust_name> for packr_guest::Value {
+            fn from(value: #rust_name) -> packr_guest::Value {
+                packr_guest::Value::Flags(value.0)
             }
         }
 
-        impl TryFrom<pack_guest::Value> for #rust_name {
-            type Error = pack_guest::ConversionError;
+        impl TryFrom<packr_guest::Value> for #rust_name {
+            type Error = packr_guest::ConversionError;
 
-            fn try_from(value: pack_guest::Value) -> Result<Self, Self::Error> {
+            fn try_from(value: packr_guest::Value) -> Result<Self, Self::Error> {
                 match value {
-                    pack_guest::Value::Flags(bits) => Ok(#rust_name(bits)),
-                    _ => Err(pack_guest::ConversionError::TypeMismatch {
+                    packr_guest::Value::Flags(bits) => Ok(#rust_name(bits)),
+                    _ => Err(packr_guest::ConversionError::TypeMismatch {
                         expected: "Flags".into(),
                         got: ::alloc::format!("{:?}", value),
                     }),
@@ -959,7 +959,7 @@ fn generate_import_function(module_path: &str, func: &Function) -> TokenStream {
 
     // Generate input value construction
     let input_construction = if func.params.is_empty() {
-        quote! { pack_guest::Value::Tuple(::alloc::vec![]) }
+        quote! { packr_guest::Value::Tuple(::alloc::vec![]) }
     } else if func.params.len() == 1 {
         let (name, ty) = &func.params[0];
         let param_name = format_ident!("{}", name.replace('-', "_"));
@@ -973,7 +973,7 @@ fn generate_import_function(module_path: &str, func: &Function) -> TokenStream {
                 generate_to_value_for_import(ty, quote! { #param_name })
             })
             .collect();
-        quote! { pack_guest::Value::Tuple(::alloc::vec![#(#conversions),*]) }
+        quote! { packr_guest::Value::Tuple(::alloc::vec![#(#conversions),*]) }
     };
 
     // Generate return extraction
@@ -982,7 +982,7 @@ fn generate_import_function(module_path: &str, func: &Function) -> TokenStream {
         let result_ty = &return_type;
         quote! {
             let input = #input_construction;
-            let result = pack_guest::__import_impl(
+            let result = packr_guest::__import_impl(
                 |a, b, c, d| unsafe { #raw_fn_name(a, b, c, d) },
                 input,
             );
@@ -994,7 +994,7 @@ fn generate_import_function(module_path: &str, func: &Function) -> TokenStream {
     } else {
         quote! {
             let input = #input_construction;
-            let _ = pack_guest::__import_impl(
+            let _ = packr_guest::__import_impl(
                 |a, b, c, d| unsafe { #raw_fn_name(a, b, c, d) },
                 input,
             );
@@ -1018,18 +1018,18 @@ fn generate_import_function(module_path: &str, func: &Function) -> TokenStream {
 fn generate_to_value_for_import(ty: &Type, expr: TokenStream) -> TokenStream {
     match ty {
         Type::String => quote! {
-            pack_guest::Value::String(::alloc::string::String::from(#expr))
+            packr_guest::Value::String(::alloc::string::String::from(#expr))
         },
         Type::Option(inner) if matches!(inner.as_ref(), Type::String) => quote! {
             match #expr {
-                Some(s) => pack_guest::Value::Option {
-                    inner_type: pack_guest::ValueType::String,
+                Some(s) => packr_guest::Value::Option {
+                    inner_type: packr_guest::ValueType::String,
                     value: Some(::alloc::boxed::Box::new(
-                        pack_guest::Value::String(::alloc::string::String::from(s))
+                        packr_guest::Value::String(::alloc::string::String::from(s))
                     )),
                 },
-                None => pack_guest::Value::Option {
-                    inner_type: pack_guest::ValueType::String,
+                None => packr_guest::Value::Option {
+                    inner_type: packr_guest::ValueType::String,
                     value: None,
                 },
             }

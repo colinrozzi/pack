@@ -1,10 +1,13 @@
 [package]
-name = "pack-derive"
+name = "packr-derive"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
 description = "Derive macros for pack-abi Value conversion"
 
 [lib]
+name = "packr_derive"
 proc-macro = true
 
 [dependencies]

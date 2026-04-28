@@ -1,0 +1,73 @@
+name: Publish to crates.io
+
+on:
+  push:
+    tags: ["v*"]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/nix-installer-action@main
+
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Check
+        run: nix develop --command cargo check --workspace
+
+      - name: Clippy
+        run: nix develop --command cargo clippy --workspace -- -D warnings
+
+      - name: Test
+        run: nix develop --command cargo test --workspace
+
+      - name: Derive tests
+        run: nix develop --command cargo test -p packr-abi --features derive
+
+  publish:
+    name: Publish
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/nix-installer-action@main
+
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Publish packr-derive
+        run: nix develop --command cargo publish -p packr-derive
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Publish packr-abi
+        run: nix develop --command cargo publish -p packr-abi
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Publish packr-guest-macros
+        run: nix develop --command cargo publish -p packr-guest-macros
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Publish packr-guest
+        run: nix develop --command cargo publish -p packr-guest
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Publish packr
+        run: nix develop --command cargo publish -p packr
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Create GitHub release
+        run: gh release create "${{ github.ref_name }}" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}

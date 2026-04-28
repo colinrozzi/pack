@@ -4,7 +4,7 @@
 
 #![cfg(feature = "derive")]
 
-use pack_abi::{GraphValue, Value};
+use packr_abi::{GraphValue, Value};
 
 // ============================================================================
 // Struct tests

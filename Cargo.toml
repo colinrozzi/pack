@@ -5,25 +5,38 @@ members = [
     "crates/pack-guest",
     "crates/pack-guest-macros",
 ]
+exclude = [
+    "packages/adder",
+    "packages/doubler",
+    "packages/echo",
+    "packages/logger",
+    "packages/sexpr",
+    "packages/typed-actor",
+    "packages/typed-math",
+]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/colinrozzi/pack"
 
 [workspace.dependencies]
-pack-abi = { version = "0.2.0", path = "crates/pack-abi", default-features = false }
-pack-derive = { version = "0.2.0", path = "crates/pack-derive" }
-pack-guest = { version = "0.2.0", path = "crates/pack-guest" }
-pack-guest-macros = { version = "0.2.0", path = "crates/pack-guest-macros" }
+packr-abi = { version = "0.3.0", path = "crates/pack-abi", default-features = false }
+packr-derive = { version = "0.3.0", path = "crates/pack-derive" }
+packr-guest = { version = "0.3.0", path = "crates/pack-guest" }
+packr-guest-macros = { version = "0.3.0", path = "crates/pack-guest-macros" }
 
 [package]
-name = "pack"
+name = "packr"
 version.workspace = true
 edition.workspace = true
-description = "A package runtime with extended WIT support for recursive types"
+license.workspace = true
+repository.workspace = true
+description = "A WebAssembly package runtime with extended WIT support for recursive types"
 
 [[bin]]
-name = "pack"
+name = "packr"
 path = "src/main.rs"
 
 [[bin]]
@@ -53,7 +66,7 @@ wasm-encoder = "0.219"
 sha2 = "0.10"
 
 # Re-export pack-abi types for unified Value/FromValue/ConversionError
-pack-abi = { workspace = true, features = ["std", "serde"] }
+packr-abi = { workspace = true, features = ["std", "serde"] }
 
 [dev-dependencies]
 wat = "1.0"  # For writing test modules in WAT

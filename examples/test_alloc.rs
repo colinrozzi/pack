@@ -1,5 +1,5 @@
-use pack::abi::Value;
-use pack::runtime::Runtime;
+use packr::abi::Value;
+use packr::runtime::Runtime;
 
 fn main() -> anyhow::Result<()> {
     // Test with direct wasmtime to confirm it works
@@ -14,8 +14,8 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn test_direct() -> anyhow::Result<()> {
-    use pack::abi::{decode, encode, Value};
-    use pack::runtime::{RESULT_LEN_OFFSET, RESULT_PTR_OFFSET};
+    use packr::abi::{decode, encode, Value};
+    use packr::runtime::{RESULT_LEN_OFFSET, RESULT_PTR_OFFSET};
     use wasmtime::*;
 
     let wasm_path = "/home/colin/work/pack/packages/echo/target/wasm32-unknown-unknown/release/echo_package.wasm";

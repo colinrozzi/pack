@@ -1,4 +1,4 @@
-use pack::abi::{decode, encode, GraphBuffer, Node, NodeKind, Value, ValueType};
+use packr::abi::{decode, encode, GraphBuffer, Node, NodeKind, Value, ValueType};
 
 #[test]
 fn roundtrip_primitives() {

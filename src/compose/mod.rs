@@ -11,7 +11,7 @@
 //! # Example
 //!
 //! ```ignore
-//! use pack::compose::StaticComposer;
+//! use packr::compose::StaticComposer;
 //!
 //! // Load package bytes
 //! let doubler_wasm = std::fs::read("doubler.wasm")?;
