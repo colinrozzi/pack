@@ -786,7 +786,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "packr"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -804,7 +804,7 @@ dependencies = [
 
 [[package]]
 name = "packr-abi"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "hashbrown 0.14.5",
  "packr-derive",
@@ -814,7 +814,7 @@ dependencies = [
 
 [[package]]
 name = "packr-derive"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -823,7 +823,7 @@ dependencies = [
 
 [[package]]
 name = "packr-guest"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "dlmalloc",
  "packr-abi",
@@ -833,7 +833,7 @@ dependencies = [
 
 [[package]]
 name = "packr-guest-macros"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "packr-abi",
  "proc-macro2",
