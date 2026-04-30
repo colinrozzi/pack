@@ -34,6 +34,42 @@ pub enum ValueType {
     Flags,
 }
 
+impl core::fmt::Display for ValueType {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            ValueType::Bool => write!(f, "bool"),
+            ValueType::U8 => write!(f, "u8"),
+            ValueType::U16 => write!(f, "u16"),
+            ValueType::U32 => write!(f, "u32"),
+            ValueType::U64 => write!(f, "u64"),
+            ValueType::S8 => write!(f, "s8"),
+            ValueType::S16 => write!(f, "s16"),
+            ValueType::S32 => write!(f, "s32"),
+            ValueType::S64 => write!(f, "s64"),
+            ValueType::F32 => write!(f, "f32"),
+            ValueType::F64 => write!(f, "f64"),
+            ValueType::Char => write!(f, "char"),
+            ValueType::String => write!(f, "string"),
+            ValueType::List(inner) => write!(f, "list<{}>", inner),
+            ValueType::Option(inner) => write!(f, "option<{}>", inner),
+            ValueType::Result { ok, err } => write!(f, "result<{}, {}>", ok, err),
+            ValueType::Record(name) => write!(f, "{}", name),
+            ValueType::Variant(name) => write!(f, "{}", name),
+            ValueType::Tuple(types) => {
+                write!(f, "tuple<")?;
+                for (i, t) in types.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", t)?;
+                }
+                write!(f, ">")
+            }
+            ValueType::Flags => write!(f, "flags"),
+        }
+    }
+}
+
 /// A runtime value that can be passed across package boundaries
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -145,6 +181,95 @@ impl Value {
             Value::Variant { type_name, .. } => ValueType::Variant(type_name.clone()),
             Value::Tuple(items) => ValueType::Tuple(items.iter().map(|v| v.infer_type()).collect()),
             Value::Flags(_) => ValueType::Flags,
+        }
+    }
+}
+
+impl core::fmt::Display for Value {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Value::Bool(v) => write!(f, "{}", v),
+            Value::U8(v) => write!(f, "{}", v),
+            Value::U16(v) => write!(f, "{}", v),
+            Value::U32(v) => write!(f, "{}", v),
+            Value::U64(v) => write!(f, "{}", v),
+            Value::S8(v) => write!(f, "{}", v),
+            Value::S16(v) => write!(f, "{}", v),
+            Value::S32(v) => write!(f, "{}", v),
+            Value::S64(v) => write!(f, "{}", v),
+            Value::F32(v) => write!(f, "{}", v),
+            Value::F64(v) => write!(f, "{}", v),
+            Value::Char(v) => write!(f, "'{}'", v),
+            Value::String(v) => write!(f, "\"{}\"", v),
+            Value::Tuple(items) => {
+                write!(f, "(")?;
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", item)?;
+                }
+                write!(f, ")")
+            }
+            Value::List { items, .. } => {
+                write!(f, "[")?;
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    if i >= 10 {
+                        write!(f, "... ({} more)", items.len() - 10)?;
+                        break;
+                    }
+                    write!(f, "{}", item)?;
+                }
+                write!(f, "]")
+            }
+            Value::Option { value, .. } => match value {
+                Some(v) => write!(f, "some({})", v),
+                None => write!(f, "none"),
+            },
+            Value::Result { value, .. } => match value {
+                Ok(v) => write!(f, "ok({})", v),
+                Err(v) => write!(f, "err({})", v),
+            },
+            Value::Record { type_name, fields } => {
+                if type_name.is_empty() {
+                    write!(f, "{{")?;
+                } else {
+                    write!(f, "{}{{", type_name)?;
+                }
+                for (i, (name, value)) in fields.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}: {}", name, value)?;
+                }
+                write!(f, "}}")
+            }
+            Value::Variant {
+                type_name,
+                case_name,
+                payload,
+                ..
+            } => {
+                if !type_name.is_empty() {
+                    write!(f, "{}::", type_name)?;
+                }
+                write!(f, "{}", case_name)?;
+                if !payload.is_empty() {
+                    write!(f, "(")?;
+                    for (i, v) in payload.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}", v)?;
+                    }
+                    write!(f, ")")?;
+                }
+                Ok(())
+            }
+            Value::Flags(v) => write!(f, "flags(0x{:x})", v),
         }
     }
 }
