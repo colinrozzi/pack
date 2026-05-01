@@ -380,14 +380,14 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
         }
     } else if is_value_mode {
-        // Value mode - pass the Value directly (backward compatible)
+        // Value mode - extract from tuple like other params
         let param_name = &param_names[0];
         let param_type = &param_types[0];
         quote! {
-            // Convert input Value to user's type (should be identity for Value)
-            let #param_name: #param_type = match value.try_into() {
-                Ok(v) => v,
-                Err(_) => return Err("failed to convert input"),
+            // Extract single Value parameter from tuple
+            let #param_name: #param_type = match value {
+                packr_guest::Value::Tuple(mut items) if items.len() == 1 => items.remove(0),
+                other => other,
             };
 
             // Call user's function
