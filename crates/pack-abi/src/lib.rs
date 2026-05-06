@@ -27,6 +27,7 @@
 extern crate alloc;
 
 mod hash;
+mod parse;
 mod value;
 
 pub use hash::{
@@ -59,6 +60,7 @@ pub use hash::{
     HASH_U64,
     HASH_U8,
 };
+pub use parse::{parse_value, ParseError};
 pub use value::{FromValue, Value, ValueType};
 
 // Re-export derive macro when feature is enabled
