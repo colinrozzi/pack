@@ -189,18 +189,53 @@ impl core::fmt::Display for Value {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Value::Bool(v) => write!(f, "{}", v),
-            Value::U8(v) => write!(f, "{}", v),
-            Value::U16(v) => write!(f, "{}", v),
-            Value::U32(v) => write!(f, "{}", v),
-            Value::U64(v) => write!(f, "{}", v),
-            Value::S8(v) => write!(f, "{}", v),
-            Value::S16(v) => write!(f, "{}", v),
-            Value::S32(v) => write!(f, "{}", v),
-            Value::S64(v) => write!(f, "{}", v),
-            Value::F32(v) => write!(f, "{}", v),
-            Value::F64(v) => write!(f, "{}", v),
-            Value::Char(v) => write!(f, "'{}'", v),
-            Value::String(v) => write!(f, "\"{}\"", v),
+            Value::U8(v) => write!(f, "{}u8", v),
+            Value::U16(v) => write!(f, "{}u16", v),
+            Value::U32(v) => write!(f, "{}u32", v),
+            Value::U64(v) => write!(f, "{}u64", v),
+            Value::S8(v) => write!(f, "{}s8", v),
+            Value::S16(v) => write!(f, "{}s16", v),
+            Value::S32(v) => write!(f, "{}s32", v),
+            Value::S64(v) => write!(f, "{}s64", v),
+            Value::F32(v) => {
+                // Ensure float always has a decimal point for unambiguous parsing
+                let s = alloc::format!("{}", v);
+                if v.is_finite() && !s.contains('.') {
+                    write!(f, "{}.0f32", s)
+                } else {
+                    write!(f, "{}f32", s)
+                }
+            }
+            Value::F64(v) => {
+                let s = alloc::format!("{}", v);
+                if v.is_finite() && !s.contains('.') {
+                    write!(f, "{}.0f64", s)
+                } else {
+                    write!(f, "{}f64", s)
+                }
+            }
+            Value::Char(v) => match v {
+                '\n' => write!(f, "'\\n'"),
+                '\r' => write!(f, "'\\r'"),
+                '\t' => write!(f, "'\\t'"),
+                '\\' => write!(f, "'\\\\'"),
+                '\'' => write!(f, "'\\''"),
+                c => write!(f, "'{}'", c),
+            },
+            Value::String(v) => {
+                write!(f, "\"")?;
+                for c in v.chars() {
+                    match c {
+                        '"' => write!(f, "\\\"")?,
+                        '\\' => write!(f, "\\\\")?,
+                        '\n' => write!(f, "\\n")?,
+                        '\r' => write!(f, "\\r")?,
+                        '\t' => write!(f, "\\t")?,
+                        c => write!(f, "{}", c)?,
+                    }
+                }
+                write!(f, "\"")
+            }
             Value::Tuple(items) => {
                 write!(f, "(")?;
                 for (i, item) in items.iter().enumerate() {
@@ -216,10 +251,6 @@ impl core::fmt::Display for Value {
                 for (i, item) in items.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
-                    }
-                    if i >= 10 {
-                        write!(f, "... ({} more)", items.len() - 10)?;
-                        break;
                     }
                     write!(f, "{}", item)?;
                 }
@@ -253,10 +284,8 @@ impl core::fmt::Display for Value {
                 payload,
                 ..
             } => {
-                if !type_name.is_empty() {
-                    write!(f, "{}::", type_name)?;
-                }
-                write!(f, "{}", case_name)?;
+                // Always emit :: to distinguish from keywords (some/none/ok/err)
+                write!(f, "{}::{}", type_name, case_name)?;
                 if !payload.is_empty() {
                     write!(f, "(")?;
                     for (i, v) in payload.iter().enumerate() {
