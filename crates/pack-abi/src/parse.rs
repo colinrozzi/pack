@@ -358,8 +358,20 @@ impl<'a> Parser<'a> {
         self.skip_whitespace();
         if self.peek() == Some(']') {
             self.advance(1);
+            // Empty list — must be annotated with type: []<TYPE>
+            self.skip_whitespace();
+            let elem_type = if self.peek() == Some('<') {
+                self.advance(1);
+                let t = self.parse_value_type()?;
+                self.expect_char('>')?;
+                t
+            } else {
+                return Err(self.error(String::from(
+                    "empty list requires type annotation: []<TYPE>",
+                )));
+            };
             return Ok(Value::List {
-                elem_type: ValueType::S32, // default for empty list
+                elem_type,
                 items: Vec::new(),
             });
         }
@@ -369,6 +381,102 @@ impl<'a> Parser<'a> {
             .map(|v| v.infer_type())
             .unwrap_or(ValueType::S32);
         Ok(Value::List { elem_type, items })
+    }
+
+    /// Parse a ValueType (e.g. `u8`, `list<u8>`, `option<string>`, `result<u32, string>`,
+    /// `tuple<u8, string>`, `record-name`, `variant-name`).
+    fn parse_value_type(&mut self) -> Result<ValueType, ParseError> {
+        self.skip_whitespace();
+        // Try built-in primitive types and compound types
+        let primitives: &[(&str, ValueType)] = &[
+            ("bool", ValueType::Bool),
+            ("u8", ValueType::U8),
+            ("u16", ValueType::U16),
+            ("u32", ValueType::U32),
+            ("u64", ValueType::U64),
+            ("s8", ValueType::S8),
+            ("s16", ValueType::S16),
+            ("s32", ValueType::S32),
+            ("s64", ValueType::S64),
+            ("f32", ValueType::F32),
+            ("f64", ValueType::F64),
+            ("char", ValueType::Char),
+            ("string", ValueType::String),
+            ("flags", ValueType::Flags),
+        ];
+        for (name, ty) in primitives {
+            if self.starts_with(name)
+                && !self.is_ident_continue_at(name.len())
+                && self
+                    .remaining()
+                    .get(name.len()..name.len() + 1)
+                    .is_none_or(|s| s != "<")
+            {
+                self.advance(name.len());
+                return Ok(ty.clone());
+            }
+        }
+        if self.starts_with("list<") {
+            self.advance(5);
+            let inner = self.parse_value_type()?;
+            self.skip_whitespace();
+            self.expect_char('>')?;
+            return Ok(ValueType::List(Box::new(inner)));
+        }
+        if self.starts_with("option<") {
+            self.advance(7);
+            let inner = self.parse_value_type()?;
+            self.skip_whitespace();
+            self.expect_char('>')?;
+            return Ok(ValueType::Option(Box::new(inner)));
+        }
+        if self.starts_with("result<") {
+            self.advance(7);
+            let ok = self.parse_value_type()?;
+            self.skip_whitespace();
+            self.expect_char(',')?;
+            self.skip_whitespace();
+            let err = self.parse_value_type()?;
+            self.skip_whitespace();
+            self.expect_char('>')?;
+            return Ok(ValueType::Result {
+                ok: Box::new(ok),
+                err: Box::new(err),
+            });
+        }
+        if self.starts_with("tuple<") {
+            self.advance(6);
+            self.skip_whitespace();
+            // Handle empty tuple: tuple<>
+            if self.peek() == Some('>') {
+                self.advance(1);
+                return Ok(ValueType::Tuple(Vec::new()));
+            }
+            let mut types = Vec::new();
+            loop {
+                self.skip_whitespace();
+                types.push(self.parse_value_type()?);
+                self.skip_whitespace();
+                match self.peek() {
+                    Some(',') => {
+                        self.advance(1);
+                    }
+                    Some('>') => {
+                        self.advance(1);
+                        return Ok(ValueType::Tuple(types));
+                    }
+                    Some(c) => {
+                        return Err(self.error(alloc::format!("expected ',' or '>', got '{}'", c)))
+                    }
+                    None => return Err(self.error(String::from("expected '>', got EOF"))),
+                }
+            }
+        }
+        // Otherwise an identifier — record or variant name
+        // We can't distinguish them syntactically; default to Record (could be wrong, but
+        // type names round-trip the same way regardless).
+        let name = self.parse_ident()?;
+        Ok(ValueType::Record(name))
     }
 
     /// Parse comma-separated values until `end_char`.
@@ -410,44 +518,64 @@ impl<'a> Parser<'a> {
             self.advance(5);
             return Ok(Value::Bool(false));
         }
-        if self.starts_with("none") && !self.is_ident_continue_at(4) {
-            self.advance(4);
+        if self.starts_with("none<") {
+            self.advance(5);
+            let inner_type = self.parse_value_type()?;
+            self.skip_whitespace();
+            self.expect_char('>')?;
             return Ok(Value::Option {
-                inner_type: ValueType::S32,
+                inner_type,
                 value: None,
             });
         }
-        if self.starts_with("some(") {
+        if self.starts_with("some<") {
             self.advance(5);
+            let inner_type = self.parse_value_type()?;
+            self.skip_whitespace();
+            self.expect_char('>')?;
+            self.expect_char('(')?;
             let inner = self.parse_value()?;
             self.skip_whitespace();
             self.expect_char(')')?;
-            let inner_type = inner.infer_type();
             return Ok(Value::Option {
                 inner_type,
                 value: Some(Box::new(inner)),
             });
         }
-        if self.starts_with("ok(") {
+        if self.starts_with("ok<") {
             self.advance(3);
+            let ok_type = self.parse_value_type()?;
+            self.skip_whitespace();
+            self.expect_char(',')?;
+            self.skip_whitespace();
+            let err_type = self.parse_value_type()?;
+            self.skip_whitespace();
+            self.expect_char('>')?;
+            self.expect_char('(')?;
             let inner = self.parse_value()?;
             self.skip_whitespace();
             self.expect_char(')')?;
-            let ok_type = inner.infer_type();
             return Ok(Value::Result {
                 ok_type,
-                err_type: ValueType::String,
+                err_type,
                 value: Ok(Box::new(inner)),
             });
         }
-        if self.starts_with("err(") {
+        if self.starts_with("err<") {
             self.advance(4);
+            let ok_type = self.parse_value_type()?;
+            self.skip_whitespace();
+            self.expect_char(',')?;
+            self.skip_whitespace();
+            let err_type = self.parse_value_type()?;
+            self.skip_whitespace();
+            self.expect_char('>')?;
+            self.expect_char('(')?;
             let inner = self.parse_value()?;
             self.skip_whitespace();
             self.expect_char(')')?;
-            let err_type = inner.infer_type();
             return Ok(Value::Result {
-                ok_type: ValueType::S32,
+                ok_type,
                 err_type,
                 value: Err(Box::new(inner)),
             });
@@ -668,9 +796,9 @@ mod tests {
     #[test]
     fn test_list() {
         assert_eq!(
-            parse_value("[]").unwrap(),
+            parse_value("[]<u8>").unwrap(),
             Value::List {
-                elem_type: ValueType::S32,
+                elem_type: ValueType::U8,
                 items: Vec::new()
             }
         );
@@ -686,14 +814,21 @@ mod tests {
     #[test]
     fn test_option() {
         assert_eq!(
-            parse_value("none").unwrap(),
+            parse_value("none<u32>").unwrap(),
             Value::Option {
-                inner_type: ValueType::S32,
+                inner_type: ValueType::U32,
                 value: None
             }
         );
         assert_eq!(
-            parse_value("some(42u32)").unwrap(),
+            parse_value("none<list<u8>>").unwrap(),
+            Value::Option {
+                inner_type: ValueType::List(Box::new(ValueType::U8)),
+                value: None
+            }
+        );
+        assert_eq!(
+            parse_value("some<u32>(42u32)").unwrap(),
             Value::Option {
                 inner_type: ValueType::U32,
                 value: Some(Box::new(Value::U32(42)))
@@ -704,7 +839,7 @@ mod tests {
     #[test]
     fn test_result() {
         assert_eq!(
-            parse_value("ok(1u32)").unwrap(),
+            parse_value("ok<u32, string>(1u32)").unwrap(),
             Value::Result {
                 ok_type: ValueType::U32,
                 err_type: ValueType::String,
@@ -712,9 +847,9 @@ mod tests {
             }
         );
         assert_eq!(
-            parse_value("err(\"bad\")").unwrap(),
+            parse_value("err<u32, string>(\"bad\")").unwrap(),
             Value::Result {
-                ok_type: ValueType::S32,
+                ok_type: ValueType::U32,
                 err_type: ValueType::String,
                 value: Err(Box::new(Value::String(String::from("bad"))))
             }
@@ -845,6 +980,69 @@ mod tests {
         let v = parse_value(input).unwrap();
         let output = alloc::format!("{}", v);
         assert_eq!(input, output);
+    }
+
+    #[test]
+    fn test_cgrf_round_trip() {
+        // Verify that Display → Parse → Encode produces identical CGRF bytes
+        // (which means identical hashes — critical for chain replay).
+        let values = vec![
+            Value::Option {
+                inner_type: ValueType::List(Box::new(ValueType::U8)),
+                value: None,
+            },
+            Value::Result {
+                ok_type: ValueType::Tuple(vec![]),
+                err_type: ValueType::String,
+                value: Ok(Box::new(Value::Tuple(vec![]))),
+            },
+            Value::List {
+                elem_type: ValueType::U8,
+                items: Vec::new(),
+            },
+            Value::Record {
+                type_name: String::from("host-function-call"),
+                fields: vec![
+                    (
+                        String::from("interface"),
+                        Value::String(String::from("theater:simple/runtime")),
+                    ),
+                    (
+                        String::from("function"),
+                        Value::String(String::from("shutdown")),
+                    ),
+                    (
+                        String::from("input"),
+                        Value::Option {
+                            inner_type: ValueType::List(Box::new(ValueType::U8)),
+                            value: None,
+                        },
+                    ),
+                    (
+                        String::from("output"),
+                        Value::Result {
+                            ok_type: ValueType::Tuple(vec![]),
+                            err_type: ValueType::String,
+                            value: Ok(Box::new(Value::Tuple(vec![]))),
+                        },
+                    ),
+                ],
+            },
+        ];
+
+        for val in &values {
+            let original_bytes = crate::encode(val).unwrap();
+            let text = alloc::format!("{}", val);
+            let parsed = parse_value(&text).unwrap_or_else(|e| {
+                panic!("Failed to parse '{}': {}", text, e);
+            });
+            let reparsed_bytes = crate::encode(&parsed).unwrap();
+            assert_eq!(
+                original_bytes, reparsed_bytes,
+                "CGRF bytes differ after round-trip for: {}",
+                text
+            );
+        }
     }
 
     #[test]

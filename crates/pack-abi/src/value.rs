@@ -246,23 +246,34 @@ impl core::fmt::Display for Value {
                 }
                 write!(f, ")")
             }
-            Value::List { items, .. } => {
-                write!(f, "[")?;
-                for (i, item) in items.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
+            Value::List { elem_type, items } => {
+                if items.is_empty() {
+                    // Empty list: annotate elem_type since we can't infer it
+                    write!(f, "[]<{}>", elem_type)
+                } else {
+                    write!(f, "[")?;
+                    for (i, item) in items.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}", item)?;
                     }
-                    write!(f, "{}", item)?;
+                    write!(f, "]")
                 }
-                write!(f, "]")
             }
-            Value::Option { value, .. } => match value {
-                Some(v) => write!(f, "some({})", v),
-                None => write!(f, "none"),
+            Value::Option { inner_type, value } => match value {
+                // Always annotate inner_type — the stored type may not match the value's type
+                Some(v) => write!(f, "some<{}>({})", inner_type, v),
+                None => write!(f, "none<{}>", inner_type),
             },
-            Value::Result { value, .. } => match value {
-                Ok(v) => write!(f, "ok({})", v),
-                Err(v) => write!(f, "err({})", v),
+            Value::Result {
+                ok_type,
+                err_type,
+                value,
+            } => match value {
+                // Always annotate both types — the stored types may not match the value's type
+                Ok(v) => write!(f, "ok<{}, {}>({})", ok_type, err_type, v),
+                Err(v) => write!(f, "err<{}, {}>({})", ok_type, err_type, v),
             },
             Value::Record { type_name, fields } => {
                 if type_name.is_empty() {
