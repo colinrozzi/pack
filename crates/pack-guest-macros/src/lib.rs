@@ -942,10 +942,12 @@ pub fn import(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     }
 
-    // Determine return type handling
-    let (return_type, has_return) = match output {
-        ReturnType::Default => (quote! { () }, false),
-        ReturnType::Type(_, ty) => (quote! { #ty }, true),
+    // Determine return type handling. When the import is `-> ()` (default),
+    // emit no `-> X` and no trailing unit expression — both trigger
+    // `clippy::unused_unit` in user code.
+    let (return_clause, has_return) = match output {
+        ReturnType::Default => (quote! {}, false),
+        ReturnType::Type(_, ty) => (quote! { -> #ty }, true),
     };
 
     // Build the input value - tuple of all parameters
@@ -963,17 +965,32 @@ pub fn import(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     };
 
-    // Build the return value handling
-    // Use FromValue::from_value() to support nested Option/Result types
-    let return_handling = if has_return {
+    // Build the body. When `has_return`, decode the result; otherwise drop it.
+    // Use FromValue::from_value() to support nested Option/Result types.
+    let body = if has_return {
         quote! {
+            let input = #input_construction;
+            let result = packr_guest::__import_impl(
+                |in_ptr, in_len, out_ptr, out_cap| unsafe {
+                    #raw_fn_name(in_ptr, in_len, out_ptr, out_cap)
+                },
+                input,
+            );
             match packr_guest::FromValue::from_value(result) {
                 Ok(v) => v,
                 Err(_) => panic!("failed to convert import result"),
             }
         }
     } else {
-        quote! { () }
+        quote! {
+            let input = #input_construction;
+            packr_guest::__import_impl(
+                |in_ptr, in_len, out_ptr, out_cap| unsafe {
+                    #raw_fn_name(in_ptr, in_len, out_ptr, out_cap)
+                },
+                input,
+            );
+        }
     };
 
     // Generate the function signature parameters
@@ -991,15 +1008,8 @@ pub fn import(attr: TokenStream, item: TokenStream) -> TokenStream {
             fn #raw_fn_name(in_ptr: i32, in_len: i32, out_ptr: i32, out_cap: i32) -> i32;
         }
 
-        #fn_vis fn #fn_name(#(#fn_params),*) -> #return_type {
-            let input = #input_construction;
-            let result = packr_guest::__import_impl(
-                |in_ptr, in_len, out_ptr, out_cap| unsafe {
-                    #raw_fn_name(in_ptr, in_len, out_ptr, out_cap)
-                },
-                input,
-            );
-            #return_handling
+        #fn_vis fn #fn_name(#(#fn_params),*) #return_clause {
+            #body
         }
     };
 
@@ -1408,10 +1418,12 @@ pub fn import_from(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     }
 
-    // Determine return type handling
-    let (return_type, has_return) = match output {
-        ReturnType::Default => (quote! { () }, false),
-        ReturnType::Type(_, ty) => (quote! { #ty }, true),
+    // Determine return type handling. When the import is `-> ()` (default),
+    // emit no `-> X` and no trailing unit expression — both trigger
+    // `clippy::unused_unit` in user code.
+    let (return_clause, has_return) = match output {
+        ReturnType::Default => (quote! {}, false),
+        ReturnType::Type(_, ty) => (quote! { -> #ty }, true),
     };
 
     // Build the input value - tuple of all parameters
@@ -1429,16 +1441,31 @@ pub fn import_from(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     };
 
-    // Build the return value handling
-    let return_handling = if has_return {
+    // Build the body. When `has_return`, decode the result; otherwise drop it.
+    let body = if has_return {
         quote! {
+            let input = #input_construction;
+            let result = packr_guest::__import_impl(
+                |in_ptr, in_len, out_ptr, out_cap| unsafe {
+                    #raw_fn_name(in_ptr, in_len, out_ptr, out_cap)
+                },
+                input,
+            );
             match result.try_into() {
                 Ok(v) => v,
                 Err(_) => panic!("failed to convert import result from package '{}'", #package),
             }
         }
     } else {
-        quote! { () }
+        quote! {
+            let input = #input_construction;
+            packr_guest::__import_impl(
+                |in_ptr, in_len, out_ptr, out_cap| unsafe {
+                    #raw_fn_name(in_ptr, in_len, out_ptr, out_cap)
+                },
+                input,
+            );
+        }
     };
 
     // Generate the function signature parameters
@@ -1456,15 +1483,8 @@ pub fn import_from(attr: TokenStream, item: TokenStream) -> TokenStream {
             fn #raw_fn_name(in_ptr: i32, in_len: i32, out_ptr: i32, out_cap: i32) -> i32;
         }
 
-        #fn_vis fn #fn_name(#(#fn_params),*) -> #return_type {
-            let input = #input_construction;
-            let result = packr_guest::__import_impl(
-                |in_ptr, in_len, out_ptr, out_cap| unsafe {
-                    #raw_fn_name(in_ptr, in_len, out_ptr, out_cap)
-                },
-                input,
-            );
-            #return_handling
+        #fn_vis fn #fn_name(#(#fn_params),*) #return_clause {
+            #body
         }
     };
 
