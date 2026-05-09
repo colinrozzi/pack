@@ -61,7 +61,7 @@ pub use hash::{
     HASH_U8,
 };
 pub use parse::{parse_value, ParseError};
-pub use value::{FromValue, Value, ValueType};
+pub use value::{FromValue, KnownValueType, Value, ValueType};
 
 // Re-export derive macro when feature is enabled
 #[cfg(feature = "derive")]
