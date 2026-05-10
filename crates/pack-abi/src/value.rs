@@ -402,26 +402,147 @@ impl From<&str> for Value {
     }
 }
 
-impl<T: Into<Value>> From<Vec<T>> for Value {
-    fn from(v: Vec<T>) -> Self {
-        let items: Vec<Value> = v.into_iter().map(Into::into).collect();
-        // Infer elem_type from first item, default to S32
-        let elem_type = items
-            .first()
-            .map(|v| v.infer_type())
-            .unwrap_or(ValueType::S32);
-        Value::List { elem_type, items }
+// ============================================================================
+// KnownValueType — compile-time ValueType for a Rust type.
+// ============================================================================
+//
+// The runtime `infer_type` only works on a concrete value; an empty
+// `Vec<T>` or `None: Option<T>` carries no information. To encode an
+// empty `Vec<Binding>` correctly (as `list<binding>`, not the default
+// `list<s32>`), we need T's ValueType at the type level. Types implement
+// `KnownValueType` to declare it — primitives statically, records via
+// the `#[derive(GraphValue)]` macro.
+
+/// Compile-time `ValueType` for a Rust type. Used by `From<Vec<T>>` and
+/// `From<Option<T>>` so that empty containers still encode with the
+/// correct element/inner type.
+pub trait KnownValueType {
+    fn known_value_type() -> ValueType;
+}
+
+macro_rules! known_primitive {
+    ($t:ty, $vt:expr) => {
+        impl KnownValueType for $t {
+            fn known_value_type() -> ValueType {
+                $vt
+            }
+        }
+    };
+}
+known_primitive!(bool, ValueType::Bool);
+known_primitive!(u8, ValueType::U8);
+known_primitive!(u16, ValueType::U16);
+known_primitive!(u32, ValueType::U32);
+known_primitive!(u64, ValueType::U64);
+known_primitive!(i8, ValueType::S8);
+known_primitive!(i16, ValueType::S16);
+known_primitive!(i32, ValueType::S32);
+known_primitive!(i64, ValueType::S64);
+known_primitive!(f32, ValueType::F32);
+known_primitive!(f64, ValueType::F64);
+known_primitive!(char, ValueType::Char);
+known_primitive!(String, ValueType::String);
+
+impl<T: KnownValueType> KnownValueType for Vec<T> {
+    fn known_value_type() -> ValueType {
+        ValueType::List(Box::new(T::known_value_type()))
     }
 }
 
-impl<T: Into<Value>, const N: usize> From<[T; N]> for Value {
+impl<T: KnownValueType> KnownValueType for Option<T> {
+    fn known_value_type() -> ValueType {
+        ValueType::Option(Box::new(T::known_value_type()))
+    }
+}
+
+impl<T: KnownValueType, E: KnownValueType> KnownValueType for core::result::Result<T, E> {
+    fn known_value_type() -> ValueType {
+        ValueType::Result {
+            ok: Box::new(T::known_value_type()),
+            err: Box::new(E::known_value_type()),
+        }
+    }
+}
+
+impl<T: KnownValueType> KnownValueType for Box<T> {
+    fn known_value_type() -> ValueType {
+        T::known_value_type()
+    }
+}
+
+impl KnownValueType for () {
+    fn known_value_type() -> ValueType {
+        ValueType::Tuple(Vec::new())
+    }
+}
+
+/// `Value` is dynamic — its actual ValueType is only known at runtime
+/// (`Value::infer_type`). The compile-time fallback is `String`, matching
+/// the previous `PackType for Value` behavior. Prefer concrete types when
+/// you need accurate static typing.
+impl KnownValueType for Value {
+    fn known_value_type() -> ValueType {
+        ValueType::String
+    }
+}
+
+impl<A: KnownValueType> KnownValueType for (A,) {
+    fn known_value_type() -> ValueType {
+        ValueType::Tuple(alloc::vec![A::known_value_type()])
+    }
+}
+
+impl<A: KnownValueType, B: KnownValueType> KnownValueType for (A, B) {
+    fn known_value_type() -> ValueType {
+        ValueType::Tuple(alloc::vec![A::known_value_type(), B::known_value_type()])
+    }
+}
+
+impl<A: KnownValueType, B: KnownValueType, C: KnownValueType> KnownValueType for (A, B, C) {
+    fn known_value_type() -> ValueType {
+        ValueType::Tuple(alloc::vec![
+            A::known_value_type(),
+            B::known_value_type(),
+            C::known_value_type()
+        ])
+    }
+}
+
+impl<A: KnownValueType, B: KnownValueType, C: KnownValueType, D: KnownValueType> KnownValueType
+    for (A, B, C, D)
+{
+    fn known_value_type() -> ValueType {
+        ValueType::Tuple(alloc::vec![
+            A::known_value_type(),
+            B::known_value_type(),
+            C::known_value_type(),
+            D::known_value_type()
+        ])
+    }
+}
+
+// ============================================================================
+// From implementations for collections — use KnownValueType for the
+// element/inner type so empty values still carry correct type info.
+// ============================================================================
+
+impl<T: Into<Value> + KnownValueType> From<Vec<T>> for Value {
+    fn from(v: Vec<T>) -> Self {
+        let items: Vec<Value> = v.into_iter().map(Into::into).collect();
+        Value::List {
+            elem_type: T::known_value_type(),
+            items,
+        }
+    }
+}
+
+impl<T: Into<Value> + KnownValueType, const N: usize> From<[T; N]> for Value {
     fn from(v: [T; N]) -> Self {
         let items: Vec<Value> = v.into_iter().map(Into::into).collect();
-        let elem_type = items
-            .first()
-            .map(|v| v.infer_type())
-            .unwrap_or(ValueType::S32);
-        Value::List { elem_type, items }
+        Value::List {
+            elem_type: T::known_value_type(),
+            items,
+        }
     }
 }
 
@@ -452,17 +573,12 @@ impl<T: TryFrom<Value, Error = ConversionError>, const N: usize> TryFrom<Value> 
     }
 }
 
-impl<T: Into<Value>> From<Option<T>> for Value {
+impl<T: Into<Value> + KnownValueType> From<Option<T>> for Value {
     fn from(v: Option<T>) -> Self {
-        let (inner_type, value) = match v {
-            Some(x) => {
-                let val: Value = x.into();
-                let ty = val.infer_type();
-                (ty, Some(Box::new(val)))
-            }
-            None => (ValueType::S32, None), // Default type for None
-        };
-        Value::Option { inner_type, value }
+        Value::Option {
+            inner_type: T::known_value_type(),
+            value: v.map(|x| Box::new(x.into())),
+        }
     }
 }
 
@@ -663,14 +779,13 @@ impl<T: TryFrom<Value, Error = ConversionError>> TryFrom<Value> for Vec<T> {
     }
 }
 
-impl<T: Into<Value> + Ord> From<BTreeSet<T>> for Value {
+impl<T: Into<Value> + KnownValueType + Ord> From<BTreeSet<T>> for Value {
     fn from(v: BTreeSet<T>) -> Self {
         let items: Vec<Value> = v.into_iter().map(Into::into).collect();
-        let elem_type = items
-            .first()
-            .map(|v| v.infer_type())
-            .unwrap_or(ValueType::S32);
-        Value::List { elem_type, items }
+        Value::List {
+            elem_type: T::known_value_type(),
+            items,
+        }
     }
 }
 
@@ -690,17 +805,18 @@ impl<T: TryFrom<Value, Error = ConversionError> + Ord> TryFrom<Value> for BTreeS
     }
 }
 
-impl<K: Into<Value> + Ord, V: Into<Value>> From<BTreeMap<K, V>> for Value {
+impl<K: Into<Value> + KnownValueType + Ord, V: Into<Value> + KnownValueType> From<BTreeMap<K, V>>
+    for Value
+{
     fn from(v: BTreeMap<K, V>) -> Self {
         let items: Vec<Value> = v
             .into_iter()
             .map(|(k, v)| Value::Tuple(Vec::from([k.into(), v.into()])))
             .collect();
-        let elem_type = items
-            .first()
-            .map(|v| v.infer_type())
-            .unwrap_or(ValueType::S32);
-        Value::List { elem_type, items }
+        Value::List {
+            elem_type: ValueType::Tuple(alloc::vec![K::known_value_type(), V::known_value_type()]),
+            items,
+        }
     }
 }
 
@@ -949,27 +1065,20 @@ impl<
 // Result conversions (now using Value::Result directly)
 // ============================================================================
 
-impl<T: Into<Value>, E: Into<Value>> From<core::result::Result<T, E>> for Value {
+impl<T: Into<Value> + KnownValueType, E: Into<Value> + KnownValueType>
+    From<core::result::Result<T, E>> for Value
+{
     fn from(r: core::result::Result<T, E>) -> Self {
-        match r {
-            Ok(v) => {
-                let val: Value = v.into();
-                let ok_type = val.infer_type();
-                Value::Result {
-                    ok_type,
-                    err_type: ValueType::String, // Default error type
-                    value: Ok(Box::new(val)),
-                }
-            }
-            Err(e) => {
-                let val: Value = e.into();
-                let err_type = val.infer_type();
-                Value::Result {
-                    ok_type: ValueType::S32, // Default ok type
-                    err_type,
-                    value: Err(Box::new(val)),
-                }
-            }
+        let ok_type = T::known_value_type();
+        let err_type = E::known_value_type();
+        let value = match r {
+            Ok(v) => Ok(Box::new(v.into())),
+            Err(e) => Err(Box::new(e.into())),
+        };
+        Value::Result {
+            ok_type,
+            err_type,
+            value,
         }
     }
 }

@@ -203,6 +203,14 @@ fn derive_struct(
                         }
                     }
                 }
+
+                impl #impl_generics #krate::KnownValueType for #name #ty_generics #where_clause {
+                    fn known_value_type() -> #krate::ValueType {
+                        #krate::ValueType::Record(
+                            #krate::__private::String::from(#type_name_str)
+                        )
+                    }
+                }
             }
         }
         Fields::Unnamed(fields) => {
@@ -219,6 +227,7 @@ fn derive_struct(
             }).collect();
 
             let field_count = fields.unnamed.len();
+            let field_types: Vec<_> = fields.unnamed.iter().map(|f| &f.ty).collect();
 
             quote! {
                 impl #impl_generics #krate::__private::From<#name #ty_generics> for #krate::Value #where_clause {
@@ -251,6 +260,14 @@ fn derive_struct(
                         }
                     }
                 }
+
+                impl #impl_generics #krate::KnownValueType for #name #ty_generics #where_clause {
+                    fn known_value_type() -> #krate::ValueType {
+                        #krate::ValueType::Tuple(#krate::__private::vec![
+                            #(<#field_types as #krate::KnownValueType>::known_value_type()),*
+                        ])
+                    }
+                }
             }
         }
         Fields::Unit => {
@@ -280,6 +297,12 @@ fn derive_struct(
                                 #krate::__private::format!("{:?}", other)
                             )),
                         }
+                    }
+                }
+
+                impl #impl_generics #krate::KnownValueType for #name #ty_generics #where_clause {
+                    fn known_value_type() -> #krate::ValueType {
+                        #krate::ValueType::Tuple(#krate::__private::vec![])
                     }
                 }
             }
@@ -498,6 +521,12 @@ fn derive_enum(
                         #krate::__private::format!("{:?}", other)
                     )),
                 }
+            }
+        }
+
+        impl #impl_generics #krate::KnownValueType for #name #ty_generics #where_clause {
+            fn known_value_type() -> #krate::ValueType {
+                #krate::ValueType::Variant(#krate::__private::String::from(#type_name_str))
             }
         }
     }

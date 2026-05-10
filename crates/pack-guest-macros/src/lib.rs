@@ -406,20 +406,27 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
             Ok(output.into())
         }
     } else if param_names.len() == 1 {
-        // Single typed parameter - extract from value directly
+        // Single typed parameter. Theater always wraps inputs in a Tuple, so
+        // a 1-param function receives Tuple([arg]) — unwrap before converting.
+        // Fall back to a direct try_into() for callers that pass the value
+        // unwrapped.
         let param_name = &param_names[0];
         let param_type = &param_types[0];
         quote! {
-            // Extract single typed parameter
-            let #param_name: #param_type = match value.try_into() {
-                Ok(v) => v,
-                Err(_) => return Err("failed to convert parameter"),
+            let #param_name: #param_type = match value {
+                packr_guest::Value::Tuple(mut items) if items.len() == 1 => {
+                    match items.remove(0).try_into() {
+                        Ok(v) => v,
+                        Err(_) => return Err("failed to convert parameter"),
+                    }
+                }
+                other => match other.try_into() {
+                    Ok(v) => v,
+                    Err(_) => return Err("failed to convert parameter"),
+                },
             };
 
-            // Call user's function
             let output = #inner_fn_name(#param_name);
-
-            // Convert output to Value
             Ok(output.into())
         }
     } else {

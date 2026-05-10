@@ -34,7 +34,7 @@ pub extern crate alloc;
 pub use packr_guest_macros::{export, import, import_from, pack_types, wit, world};
 
 // Re-export useful types from pack-abi
-pub use packr_abi::{decode, encode, ConversionError, FromValue, Value, ValueType};
+pub use packr_abi::{decode, encode, ConversionError, FromValue, KnownValueType, Value, ValueType};
 
 // Re-export derive macro
 #[cfg(feature = "derive")]
