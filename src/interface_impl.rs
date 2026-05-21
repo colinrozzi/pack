@@ -24,8 +24,7 @@
 
 use crate::metadata::TypeHash;
 use crate::parser::{MetadataValue, PactExport, PactInterface};
-use crate::types::Type;
-use sha2::Digest;
+use crate::types::{Type, TypeDef};
 
 // ============================================================================
 // PackType Trait - Maps Rust types to Pack types
@@ -194,55 +193,30 @@ pub struct FuncSignature {
 }
 
 impl FuncSignature {
-    /// Compute the hash of this function signature.
+    /// Compute the hash of this function signature without resolving named refs.
+    ///
+    /// Equivalent to `hash_in(&[])`. Suitable for `InterfaceImpl::func`-built
+    /// signatures where types come from `PackType` (no `Type::Ref`s appear).
     pub fn hash(&self) -> TypeHash {
-        // Convert Type to TypeHash for each param/result
-        let param_hashes: Vec<_> = self.params.iter().map(type_to_hash).collect();
-        let result_hashes: Vec<_> = self.results.iter().map(type_to_hash).collect();
-
-        crate::metadata::hash_function(&param_hashes, &result_hashes)
+        self.hash_in(&[])
     }
-}
 
-/// Convert a Pack Type to a TypeHash.
-fn type_to_hash(ty: &Type) -> TypeHash {
-    use crate::metadata::*;
-
-    match ty {
-        Type::Bool => HASH_BOOL,
-        Type::U8 => HASH_U8,
-        Type::U16 => HASH_U16,
-        Type::U32 => HASH_U32,
-        Type::U64 => HASH_U64,
-        Type::S8 => HASH_S8,
-        Type::S16 => HASH_S16,
-        Type::S32 => HASH_S32,
-        Type::S64 => HASH_S64,
-        Type::F32 => HASH_F32,
-        Type::F64 => HASH_F64,
-        Type::Char => HASH_CHAR,
-        Type::String => HASH_STRING,
-        Type::Unit => hash_tuple(&[]), // Unit is empty tuple
-        Type::List(inner) => hash_list(&type_to_hash(inner)),
-        Type::Option(inner) => hash_option(&type_to_hash(inner)),
-        Type::Result { ok, err } => hash_result(&type_to_hash(ok), &type_to_hash(err)),
-        Type::Tuple(items) => {
-            let hashes: Vec<_> = items.iter().map(type_to_hash).collect();
-            hash_tuple(&hashes)
-        }
-        // Type::Ref references a named type - for host functions using PackType,
-        // we won't encounter these since PackType maps Rust types to inline types.
-        // If we do encounter a Ref, use the path name to compute a placeholder hash.
-        Type::Ref(path) => {
-            // Named type reference - hash based on the path string
-            let path_str = path.to_string();
-            let mut hasher = sha2::Sha256::new();
-            hasher.update(b"ref:");
-            hasher.update(path_str.as_bytes());
-            TypeHash::from_bytes(hasher.finalize().into())
-        }
-        // Dynamic value type - use HASH_SELF_REF for consistency with pack-guest-macros
-        Type::Value => HASH_SELF_REF,
+    /// Compute the hash, resolving named refs against `types`.
+    ///
+    /// Used by `from_pact`-built interfaces where function signatures may
+    /// reference records/variants declared at the pact-interface level.
+    pub fn hash_in(&self, types: &[TypeDef]) -> TypeHash {
+        let param_hashes: Vec<_> = self
+            .params
+            .iter()
+            .map(|t| crate::metadata::hash_type_in(t, types))
+            .collect();
+        let result_hashes: Vec<_> = self
+            .results
+            .iter()
+            .map(|t| crate::metadata::hash_type_in(t, types))
+            .collect();
+        crate::metadata::hash_function(&param_hashes, &result_hashes)
     }
 }
 
@@ -258,6 +232,12 @@ fn type_to_hash(ty: &Type) -> TypeHash {
 pub struct InterfaceImpl {
     /// The interface name (e.g., "theater:simple/runtime")
     pub name: String,
+    /// Type definitions in scope for ref resolution when hashing.
+    ///
+    /// Populated by `from_pact` from `pact.types`. Manually-constructed
+    /// interfaces (via `new` + `func`) leave this empty — their signatures
+    /// come from `PackType` and don't contain `Type::Ref`s.
+    pub types: Vec<TypeDef>,
     /// Function signatures (extracted from Rust types)
     pub functions: Vec<FuncSignature>,
 }
@@ -267,6 +247,7 @@ impl InterfaceImpl {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
+            types: Vec::new(),
             functions: Vec::new(),
         }
     }
@@ -306,7 +287,7 @@ impl InterfaceImpl {
             .iter()
             .map(|f| Binding {
                 name: &f.name,
-                hash: f.hash(),
+                hash: f.hash_in(&self.types),
             })
             .collect();
         bindings.sort_by(|a, b| a.name.cmp(b.name));
@@ -334,7 +315,7 @@ impl InterfaceImpl {
             let func = self.functions.iter().find(|f| f.name == *name)?;
             bindings.push(Binding {
                 name: &func.name,
-                hash: func.hash(),
+                hash: func.hash_in(&self.types),
             });
         }
 
@@ -355,7 +336,7 @@ impl InterfaceImpl {
         self.functions
             .iter()
             .find(|f| f.name == name)
-            .map(|f| f.hash())
+            .map(|f| f.hash_in(&self.types))
     }
 
     /// Get the interface name.
@@ -400,6 +381,18 @@ impl InterfaceImpl {
         };
 
         let mut interface = InterfaceImpl::new(full_name);
+
+        // Capture interface-level typedefs so refs in function signatures
+        // (e.g. `func run(spec: container-spec) -> ...`) resolve structurally
+        // when the interface hash is computed.
+        interface.types = pact.types.clone();
+        // Type-style exports (`PactExport::Type`) also contribute to the
+        // resolution scope alongside the inline `record/variant/...` defs.
+        for export in &pact.exports {
+            if let PactExport::Type(td) = export {
+                interface.types.push(td.clone());
+            }
+        }
 
         // Extract function signatures from exports
         for export in &pact.exports {

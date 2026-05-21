@@ -408,6 +408,9 @@ pub fn wit_type_to_type_desc(
             TypeDesc::Option(Box::new(wit_type_to_type_desc(inner, types)))
         }
         crate::wit_parser::Type::Result { ok, err } => TypeDesc::Result {
+            // `_` maps to Bool for ok / String for err to match the handler-side
+            // pact parser's convention (see `parse_result` in pack/src/parser/pact.rs).
+            // Semantically odd, but the two sides must agree on the hash.
             ok: Box::new(
                 ok.as_ref()
                     .map_or(TypeDesc::Bool, |t| wit_type_to_type_desc(t, types)),

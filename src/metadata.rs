@@ -354,8 +354,25 @@ pub struct InterfaceHash {
 
 /// Compute the TypeHash for a Type from the types module.
 ///
-/// This is used when computing interface hashes from Arena metadata.
+/// Named references (`Type::Ref`) are resolved structurally when this is called
+/// via the in-scope variants. This bare entry point has no resolution context,
+/// so it falls back to a path-based hash for refs — useful only for primitive
+/// or fully-monomorphic types.
 pub fn hash_type(ty: &Type) -> TypeHash {
+    hash_type_in(ty, &[])
+}
+
+/// Compute the TypeHash for a Type, resolving named refs against `types`.
+///
+/// When a `Type::Ref` names a local typedef, the underlying record/variant/etc
+/// is hashed structurally — matching the actor-side `pack_types!` macro which
+/// inlines refs at metadata-emission time. Self-references and cycles return
+/// `HASH_SELF_REF`.
+pub fn hash_type_in(ty: &Type, types: &[TypeDef]) -> TypeHash {
+    hash_type_inner(ty, types, &mut Vec::new())
+}
+
+fn hash_type_inner(ty: &Type, types: &[TypeDef], stack: &mut Vec<String>) -> TypeHash {
     match ty {
         Type::Unit => hash_tuple(&[]), // Unit is empty tuple
         Type::Bool => HASH_BOOL,
@@ -371,47 +388,133 @@ pub fn hash_type(ty: &Type) -> TypeHash {
         Type::F64 => HASH_F64,
         Type::Char => HASH_CHAR,
         Type::String => HASH_STRING,
-        Type::List(inner) => hash_list(&hash_type(inner)),
-        Type::Option(inner) => hash_option(&hash_type(inner)),
-        Type::Result { ok, err } => hash_result(&hash_type(ok), &hash_type(err)),
-        Type::Tuple(types) => {
-            let hashes: Vec<_> = types.iter().map(hash_type).collect();
+        Type::List(inner) => hash_list(&hash_type_inner(inner, types, stack)),
+        Type::Option(inner) => hash_option(&hash_type_inner(inner, types, stack)),
+        Type::Result { ok, err } => hash_result(
+            &hash_type_inner(ok, types, stack),
+            &hash_type_inner(err, types, stack),
+        ),
+        Type::Tuple(elems) => {
+            let hashes: Vec<_> = elems
+                .iter()
+                .map(|t| hash_type_inner(t, types, stack))
+                .collect();
             hash_tuple(&hashes)
         }
-        Type::Ref(path) => {
-            // Named type reference - hash based on the path string
-            let path_str = path.to_string();
-            let mut hasher = sha2::Sha256::new();
-            hasher.update(b"ref:");
-            hasher.update(path_str.as_bytes());
-            TypeHash::from_bytes(hasher.finalize().into())
-        }
-        Type::Value => {
-            // Dynamic value type - use HASH_SELF_REF for consistency with pack-guest-macros
-            HASH_SELF_REF
-        }
+        Type::Ref(path) => hash_ref(path, types, stack),
+        Type::Value => HASH_SELF_REF,
     }
 }
 
-/// Compute the hash for a function from the types module.
+fn hash_ref(path: &TypePath, types: &[TypeDef], stack: &mut Vec<String>) -> TypeHash {
+    // Explicit self-reference: `self` in a recursive type definition.
+    if path.is_self_ref() {
+        return HASH_SELF_REF;
+    }
+
+    // Simple named ref: try to resolve against the in-scope typedefs.
+    if let Some(name) = path.as_simple() {
+        // Cycle: this name is already being hashed further up the stack.
+        if stack.iter().any(|s| s == name) {
+            return HASH_SELF_REF;
+        }
+        if let Some(td) = types.iter().find(|t| t.name() == name) {
+            stack.push(name.to_string());
+            let h = hash_typedef_inner(td, types, stack);
+            stack.pop();
+            return h;
+        }
+    }
+
+    // Unresolved or qualified path: fall back to a path-based hash so refs
+    // to types we can't see still produce a stable (if nominal) hash.
+    let path_str = path.to_string();
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(b"ref:");
+    hasher.update(path_str.as_bytes());
+    TypeHash::from_bytes(hasher.finalize().into())
+}
+
+fn hash_typedef_inner(td: &TypeDef, types: &[TypeDef], stack: &mut Vec<String>) -> TypeHash {
+    match td {
+        TypeDef::Alias { ty, .. } => hash_type_inner(ty, types, stack),
+        TypeDef::Record { fields, .. } => {
+            // Collect (name, hash) pairs, sort by name for canonical ordering.
+            let pairs: Vec<(String, TypeHash)> = fields
+                .iter()
+                .map(|f| (f.name.clone(), hash_type_inner(&f.ty, types, stack)))
+                .collect();
+            let mut sorted: Vec<_> = pairs.iter().map(|(n, h)| (n.as_str(), *h)).collect();
+            sorted.sort_by(|a, b| a.0.cmp(b.0));
+            hash_record(&sorted)
+        }
+        TypeDef::Variant { cases, .. } => {
+            // Unit payloads → None (matches actor-side `Option<TypeDesc>` shape).
+            let pairs: Vec<(String, Option<TypeHash>)> = cases
+                .iter()
+                .map(|c| {
+                    let payload = if c.payload.is_unit() {
+                        None
+                    } else {
+                        Some(hash_type_inner(&c.payload, types, stack))
+                    };
+                    (c.name.clone(), payload)
+                })
+                .collect();
+            let mut sorted: Vec<_> = pairs.iter().map(|(n, h)| (n.as_str(), *h)).collect();
+            sorted.sort_by(|a, b| a.0.cmp(b.0));
+            hash_variant(&sorted)
+        }
+        TypeDef::Enum { cases, .. } => {
+            // Enum hashes as a variant with all-None payloads (matches actor side).
+            let mut sorted: Vec<(&str, Option<TypeHash>)> =
+                cases.iter().map(|c| (c.as_str(), None)).collect();
+            sorted.sort_by(|a, b| a.0.cmp(b.0));
+            hash_variant(&sorted)
+        }
+        TypeDef::Flags { .. } => HASH_FLAGS,
+    }
+}
+
+/// Compute the hash for a function signature with no in-scope typedefs.
+///
+/// Equivalent to `hash_function_from_sig_in(func, &[])`. Refs resolve nominally.
 pub fn hash_function_from_sig(func: &Function) -> TypeHash {
-    let param_hashes: Vec<_> = func.params.iter().map(|p| hash_type(&p.ty)).collect();
-    let result_hashes: Vec<_> = func.results.iter().map(hash_type).collect();
+    hash_function_from_sig_in(func, &[])
+}
+
+/// Compute the hash for a function signature, resolving refs against `types`.
+pub fn hash_function_from_sig_in(func: &Function, types: &[TypeDef]) -> TypeHash {
+    let param_hashes: Vec<_> = func
+        .params
+        .iter()
+        .map(|p| hash_type_in(&p.ty, types))
+        .collect();
+    let result_hashes: Vec<_> = func
+        .results
+        .iter()
+        .map(|t| hash_type_in(t, types))
+        .collect();
     hash_function(&param_hashes, &result_hashes)
 }
 
 /// Compute the interface hash for an Arena containing functions.
 ///
-/// The Arena is treated as an interface - its name and function signatures
-/// are hashed to produce a content-addressed interface hash.
+/// The Arena is treated as an interface — its name, in-scope type definitions,
+/// and function signatures are hashed to produce a content-addressed
+/// interface hash. Named refs in function signatures resolve structurally
+/// against `interface_arena.types`.
 pub fn compute_interface_hash(interface_arena: &Arena) -> TypeHash {
+    // Resolve refs against this interface's own typedefs.
+    let types: &[TypeDef] = &interface_arena.types;
+
     // Create bindings for each function (sorted by name for determinism)
     let mut bindings: Vec<_> = interface_arena
         .functions
         .iter()
         .map(|f| Binding {
             name: &f.name,
-            hash: hash_function_from_sig(f),
+            hash: hash_function_from_sig_in(f, types),
         })
         .collect();
     bindings.sort_by(|a, b| a.name.cmp(b.name));
@@ -2187,5 +2290,84 @@ mod tests {
             items: vec![Value::U32(1), Value::String("oops".into())],
         };
         assert!(validate_value_in_type_space(&val_bad_list, &ty_list, &defs).is_err());
+    }
+
+    #[test]
+    fn test_hash_type_ref_resolves_structurally() {
+        // A ref to a known record hashes the same as the record's structure.
+        let types = vec![TypeDef::record(
+            "point",
+            vec![Field::new("x", Type::S32), Field::new("y", Type::S32)],
+        )];
+
+        let ref_hash = hash_type_in(&Type::named("point"), &types);
+        let structural_hash =
+            hash_record(&[("x", hash_type(&Type::S32)), ("y", hash_type(&Type::S32))]);
+        assert_eq!(ref_hash, structural_hash);
+    }
+
+    #[test]
+    fn test_hash_type_ref_unresolved_falls_back_to_path() {
+        // Without typedefs in scope, a ref hashes by path (legacy behavior).
+        let h1 = hash_type_in(&Type::named("unknown-type"), &[]);
+        let h2 = hash_type(&Type::named("unknown-type"));
+        assert_eq!(h1, h2);
+        // And it's distinct from any primitive.
+        assert_ne!(h1, HASH_STRING);
+    }
+
+    #[test]
+    fn test_hash_type_recursive_ref_terminates() {
+        // record tree { children: list<tree> } — recursive without an explicit self-ref.
+        let types = vec![TypeDef::record(
+            "tree",
+            vec![Field::new("children", Type::list(Type::named("tree")))],
+        )];
+
+        // Should terminate and produce a stable hash.
+        let h = hash_type_in(&Type::named("tree"), &types);
+        let again = hash_type_in(&Type::named("tree"), &types);
+        assert_eq!(h, again);
+
+        // The inner `list<tree>` recurses into the in-progress name and returns
+        // HASH_SELF_REF, equivalent to `list<self>` inside the record body.
+        let expected = hash_record(&[("children", hash_list(&HASH_SELF_REF))]);
+        assert_eq!(h, expected);
+    }
+
+    #[test]
+    fn test_compute_interface_hash_resolves_record_refs() {
+        // An interface with a record + a function referencing it should hash
+        // identically whether we reference the record by name or inline its
+        // structure into the function signature.
+        let mut by_ref = Arena::new("test:api/podman");
+        by_ref.add_type(TypeDef::record(
+            "container-spec",
+            vec![
+                Field::new("image", Type::String),
+                Field::new("name", Type::String),
+            ],
+        ));
+        by_ref.add_function(Function::with_signature(
+            "run",
+            vec![Param::new("spec", Type::named("container-spec"))],
+            vec![Type::result(Type::String, Type::String)],
+        ));
+
+        // Equivalent interface with the record inlined as a tuple (or hashed
+        // structurally directly). We construct the expected hash by hand using
+        // the structural hash primitives.
+        let record_hash = hash_record(&[("image", HASH_STRING), ("name", HASH_STRING)]);
+        let func_hash = hash_function(&[record_hash], &[hash_result(&HASH_STRING, &HASH_STRING)]);
+        let expected = hash_interface(
+            "test:api/podman",
+            &[],
+            &[Binding {
+                name: "run",
+                hash: func_hash,
+            }],
+        );
+
+        assert_eq!(compute_interface_hash(&by_ref), expected);
     }
 }

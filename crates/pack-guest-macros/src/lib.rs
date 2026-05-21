@@ -1740,7 +1740,22 @@ fn parse_func_sigs_into(
     sigs: &mut Vec<metadata::FuncSig>,
     types: &[wit_parser::TypeDef],
 ) -> Result<(), String> {
+    // Typedefs declared inside this block (e.g. `record foo { ... }`) shadow
+    // and extend the outer `types` slice for ref resolution within the block.
+    let mut local_types: Vec<wit_parser::TypeDef> = types.to_vec();
+
     while !parser.peek_is_symbol('}') && !parser.is_eof() {
+        // Try a typedef first — records/variants/etc declared inside an
+        // interface block are scoped to that block and resolve refs structurally.
+        if let Some(td) = wit_parser::try_parse_typedef_public(parser)
+            .map_err(|e| format!("type definition error: {}", e))?
+        {
+            local_types.push(td);
+            parser.accept_symbol(',');
+            parser.accept_symbol(';');
+            continue;
+        }
+
         let (iface, name) = parse_function_path(parser, interface)?;
         parser.expect_symbol(':').map_err(|e| e.to_string())?;
         parser.accept_ident("func");
@@ -1750,13 +1765,13 @@ fn parse_func_sigs_into(
         let params: Vec<(String, metadata::TypeDesc)> = func
             .params
             .iter()
-            .map(|(n, t)| (n.clone(), metadata::wit_type_to_type_desc(t, types)))
+            .map(|(n, t)| (n.clone(), metadata::wit_type_to_type_desc(t, &local_types)))
             .collect();
 
         let results: Vec<metadata::TypeDesc> = func
             .results
             .iter()
-            .map(|t| metadata::wit_type_to_type_desc(t, types))
+            .map(|t| metadata::wit_type_to_type_desc(t, &local_types))
             .collect();
 
         sigs.push(metadata::FuncSig {
@@ -1770,4 +1785,149 @@ fn parse_func_sigs_into(
         parser.accept_symbol(';');
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use packr_abi::{
+        hash_function, hash_interface, hash_record, hash_result, Binding, HASH_STRING,
+    };
+
+    /// Parser accepts `record name { ... }` inside `imports { iface { ... } }`,
+    /// scoping the type to that interface block, and refs in subsequent function
+    /// signatures resolve to its structural hash. This is the original
+    /// agentry-actor blocker from the user report.
+    #[test]
+    fn parses_record_inside_imports_interface_block() {
+        let src = r#"
+            imports {
+                theater:simple/podman {
+                    record container-spec {
+                        image: string,
+                        name: string,
+                    }
+
+                    run: func(spec: container-spec) -> result<string, string>
+                }
+            }
+        "#;
+
+        // Should parse without error (this is the bug from agentry).
+        let bytes = parse_and_encode_metadata(src).expect("parse");
+        assert!(!bytes.is_empty());
+
+        // Decoded metadata should carry an import-hash for the interface that
+        // matches the structural hash computed by hand.
+        let record_hash = hash_record(&[("image", HASH_STRING), ("name", HASH_STRING)]);
+        let func_hash = hash_function(&[record_hash], &[hash_result(&HASH_STRING, &HASH_STRING)]);
+        let expected_iface_hash = hash_interface(
+            "theater:simple/podman",
+            &[],
+            &[Binding {
+                name: "run",
+                hash: func_hash,
+            }],
+        );
+
+        // Re-derive via the public path used by the metadata encoder.
+        let mut sigs = Vec::new();
+        let tokens = wit_parser::tokenize(src).expect("tokenize");
+        let mut parser = wit_parser::make_parser(tokens);
+        parser.accept_ident("imports");
+        parser.expect_symbol('{').expect("imports {");
+        parse_import_sigs(&mut parser, &mut sigs, &[]).expect("import sigs");
+
+        let iface_hashes = metadata::compute_interface_hashes(&sigs);
+        assert_eq!(iface_hashes.len(), 1);
+        assert_eq!(iface_hashes[0].name, "theater:simple/podman");
+        assert_eq!(iface_hashes[0].hash, expected_iface_hash);
+    }
+
+    /// Records declared inside one interface block do not leak into a sibling
+    /// interface block's resolution scope.
+    #[test]
+    fn record_scope_does_not_leak_between_sibling_interfaces() {
+        let src = r#"
+            imports {
+                ns:pkg/a {
+                    record shape {
+                        a: string,
+                    }
+                    do-a: func(s: shape) -> string
+                }
+                ns:pkg/b {
+                    // No `shape` typedef here — `shape` should remain unresolved.
+                    do-b: func(s: shape) -> string
+                }
+            }
+        "#;
+
+        let mut sigs = Vec::new();
+        let tokens = wit_parser::tokenize(src).expect("tokenize");
+        let mut parser = wit_parser::make_parser(tokens);
+        parser.accept_ident("imports");
+        parser.expect_symbol('{').expect("imports {");
+        parse_import_sigs(&mut parser, &mut sigs, &[]).expect("import sigs");
+
+        let iface_hashes = metadata::compute_interface_hashes(&sigs);
+        let h_a = iface_hashes.iter().find(|h| h.name == "ns:pkg/a").unwrap();
+        let h_b = iface_hashes.iter().find(|h| h.name == "ns:pkg/b").unwrap();
+
+        // `a` resolves `shape` structurally; `b` falls back to opaque (HASH_SELF_REF
+        // via TypeDesc::Value). The hashes must differ.
+        assert_ne!(h_a.hash, h_b.hash);
+    }
+
+    /// Top-level typedefs remain visible inside imports/exports interface blocks.
+    #[test]
+    fn top_level_typedef_visible_inside_interface_block() {
+        let src = r#"
+            record point {
+                x: s32,
+                y: s32,
+            }
+
+            imports {
+                ns:pkg/geo {
+                    move: func(p: point) -> point
+                }
+            }
+        "#;
+        let bytes = parse_and_encode_metadata(src).expect("parse");
+        assert!(!bytes.is_empty());
+    }
+
+    /// `result<_, E>` ok-arm hashes as Bool (and `_` in err-arm as String) by
+    /// convention — see the comment in `pack/src/parser/pact.rs::parse_result`.
+    /// The actor side must match this exactly so hashes converge.
+    #[test]
+    fn result_underscore_uses_bool_string_convention() {
+        let src = r#"
+            imports {
+                ns:pkg/api {
+                    do-nothing: func() -> result<_, string>
+                }
+            }
+        "#;
+        let mut sigs = Vec::new();
+        let tokens = wit_parser::tokenize(src).expect("tokenize");
+        let mut parser = wit_parser::make_parser(tokens);
+        parser.accept_ident("imports");
+        parser.expect_symbol('{').expect("imports {");
+        parse_import_sigs(&mut parser, &mut sigs, &[]).expect("import sigs");
+
+        use packr_abi::HASH_BOOL;
+        let func_hash = hash_function(&[], &[hash_result(&HASH_BOOL, &HASH_STRING)]);
+        let expected = hash_interface(
+            "ns:pkg/api",
+            &[],
+            &[Binding {
+                name: "do-nothing",
+                hash: func_hash,
+            }],
+        );
+        let iface_hashes = metadata::compute_interface_hashes(&sigs);
+        assert_eq!(iface_hashes[0].hash, expected);
+    }
 }
