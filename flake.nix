@@ -127,8 +127,11 @@
           # Update workspace version in root Cargo.toml
           ${pkgs.gnused}/bin/sed -i "0,/^version = \"$CURRENT\"/s//version = \"$NEW\"/" Cargo.toml
 
-          # Update workspace dependency versions
-          ${pkgs.gnused}/bin/sed -i "s/version = \"$CURRENT\", path/version = \"$NEW\", path/g" Cargo.toml
+          # Update workspace dependency versions. Match any prior version (not
+          # just $CURRENT) — historically these drifted from the package version
+          # (e.g. pinned at "0.5.1" while the package was at "0.5.5"), and a
+          # regex tied to $CURRENT silently skipped them.
+          ${pkgs.gnused}/bin/sed -i -E "s/version = \"[^\"]+\", path = \"crates\//version = \"$NEW\", path = \"crates\//g" Cargo.toml
 
           # Update flake.nix version
           ${pkgs.gnused}/bin/sed -i "s/version = \"$CURRENT\"/version = \"$NEW\"/" flake.nix
