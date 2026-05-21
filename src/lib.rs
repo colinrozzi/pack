@@ -64,11 +64,12 @@ pub use interface_impl::{FuncSignature, HostFunc, InterfaceImpl, PackParams, Pac
 pub use metadata::{
     compute_interface_hash, compute_interface_hashes, decode_metadata, decode_metadata_with_hashes,
     encode_metadata, encode_metadata_with_hashes, hash_function, hash_function_from_sig,
-    hash_interface, hash_list, hash_option, hash_record, hash_result, hash_tuple, hash_type,
-    hash_variant, validate_value_in_type_space, Binding, CaseDesc, FieldDesc, FunctionSignature,
-    InterfaceHash, MetadataError, MetadataWithHashes, PackageMetadata, ParamSignature, TypeDesc,
-    TypeHash, TypeValidationError, HASH_BOOL, HASH_CHAR, HASH_F32, HASH_F64, HASH_FLAGS, HASH_S16,
-    HASH_S32, HASH_S64, HASH_S8, HASH_STRING, HASH_U16, HASH_U32, HASH_U64, HASH_U8,
+    hash_function_from_sig_in, hash_interface, hash_list, hash_option, hash_record, hash_result,
+    hash_tuple, hash_type, hash_type_in, hash_variant, validate_value_in_type_space, Binding,
+    CaseDesc, FieldDesc, FunctionSignature, InterfaceHash, MetadataError, MetadataWithHashes,
+    PackageMetadata, ParamSignature, TypeDesc, TypeHash, TypeValidationError, HASH_BOOL, HASH_CHAR,
+    HASH_F32, HASH_F64, HASH_FLAGS, HASH_S16, HASH_S32, HASH_S64, HASH_S8, HASH_STRING, HASH_U16,
+    HASH_U32, HASH_U64, HASH_U8,
 };
 pub use parser::{
     parse_pact, parse_pact_dir, parse_pact_dir_with_registry, parse_pact_file, Interface,
