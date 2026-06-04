@@ -45,10 +45,10 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            max_buffer_size: 16 * 1024 * 1024,
-            max_node_count: 1_000_000,
-            max_payload_size: 8 * 1024 * 1024,
-            max_sequence_len: 1_000_000,
+            max_buffer_size: 256 * 1024 * 1024,
+            max_node_count: 10_000_000,
+            max_payload_size: 128 * 1024 * 1024,
+            max_sequence_len: 128 * 1024 * 1024,
         }
     }
 }
