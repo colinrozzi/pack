@@ -31,6 +31,19 @@ use std::sync::Arc;
 use thiserror::Error;
 use wasmtime::{Caller, Engine, Linker};
 
+/// Drive an interceptor future to completion from a sync host-function bridge.
+///
+/// `CallInterceptor` is async (so impls can apply back-pressure on slow
+/// subscribers via `.await`). The sync `func_typed` / `func_typed_result`
+/// bridges register a sync wasmtime closure, so they need to block on the
+/// interceptor future. We require a tokio multi-thread runtime to be present
+/// — `Handle::current()` panics otherwise, and `block_in_place` releases the
+/// current worker thread so the blocked future can make progress.
+fn block_on_interceptor<F: Future>(fut: F) -> F::Output {
+    let handle = tokio::runtime::Handle::current();
+    tokio::task::block_in_place(|| handle.block_on(fut))
+}
+
 // ============================================================================
 // Calling Convention Constants
 // ============================================================================
@@ -566,15 +579,15 @@ impl<T: 'static> InterfaceBuilder<'_, '_, T> {
 
                     // Check interceptor for short-circuit (replay)
                     if let Some(ref interceptor) = interceptor {
-                        if let Some(recorded_output) =
-                            interceptor.before_import(&interface_name, &func_name, &input_value)
-                        {
-                            interceptor.after_import(
+                        if let Some(recorded_output) = block_on_interceptor(
+                            interceptor.before_import(&interface_name, &func_name, &input_value),
+                        ) {
+                            block_on_interceptor(interceptor.after_import(
                                 &interface_name,
                                 &func_name,
                                 &input_value,
                                 &recorded_output,
-                            );
+                            ));
                             return write_output(&mut ctx, &recorded_output);
                         }
                     }
@@ -601,12 +614,12 @@ impl<T: 'static> InterfaceBuilder<'_, '_, T> {
                     // Notify interceptor of completed call
                     if let Some(ref interceptor) = interceptor {
                         if let Some(ref iv) = input_value_for_interceptor {
-                            interceptor.after_import(
+                            block_on_interceptor(interceptor.after_import(
                                 &interface_name,
                                 &func_name,
                                 iv,
                                 &output_value,
-                            );
+                            ));
                         }
                     }
 
@@ -747,15 +760,15 @@ impl<T: 'static> InterfaceBuilder<'_, '_, T> {
 
                     // Check interceptor for short-circuit (replay)
                     if let Some(ref interceptor) = interceptor {
-                        if let Some(recorded_output) =
-                            interceptor.before_import(&interface_name, &func_name, &input_value)
-                        {
-                            interceptor.after_import(
+                        if let Some(recorded_output) = block_on_interceptor(
+                            interceptor.before_import(&interface_name, &func_name, &input_value),
+                        ) {
+                            block_on_interceptor(interceptor.after_import(
                                 &interface_name,
                                 &func_name,
                                 &input_value,
                                 &recorded_output,
-                            );
+                            ));
                             return write_output(&mut ctx, &recorded_output);
                         }
                     }
@@ -794,12 +807,12 @@ impl<T: 'static> InterfaceBuilder<'_, '_, T> {
                     // Notify interceptor of completed call
                     if let Some(ref interceptor) = interceptor {
                         if let Some(ref iv) = input_value_for_interceptor {
-                            interceptor.after_import(
+                            block_on_interceptor(interceptor.after_import(
                                 &interface_name,
                                 &func_name,
                                 iv,
                                 &output_value,
-                            );
+                            ));
                         }
                     }
 
@@ -924,8 +937,8 @@ impl<T: Send + Clone + 'static> InterfaceBuilder<'_, '_, T> {
 
                         // Check interceptor for short-circuit (replay)
                         if let Some(ref interceptor) = interceptor {
-                            if let Some(recorded_output) = interceptor.before_import(&interface_name, &func_name, &input_value) {
-                                interceptor.after_import(&interface_name, &func_name, &input_value, &recorded_output);
+                            if let Some(recorded_output) = interceptor.before_import(&interface_name, &func_name, &input_value).await {
+                                interceptor.after_import(&interface_name, &func_name, &input_value, &recorded_output).await;
                                 // Encode and write intercepted output to memory
                                 let bytes = match encode(&recorded_output) {
                                     Ok(b) => b,
@@ -974,7 +987,7 @@ impl<T: Send + Clone + 'static> InterfaceBuilder<'_, '_, T> {
                         // Notify interceptor of completed call
                         if let Some(ref interceptor) = interceptor {
                             if let Some(ref iv) = input_value_for_interceptor {
-                                interceptor.after_import(&interface_name, &func_name, iv, &output_value);
+                                interceptor.after_import(&interface_name, &func_name, iv, &output_value).await;
                             }
                         }
 
@@ -1109,8 +1122,8 @@ impl<T: Send + Clone + 'static> InterfaceBuilder<'_, '_, T> {
 
                         // Check interceptor for short-circuit (replay)
                         if let Some(ref interceptor) = interceptor {
-                            if let Some(recorded_output) = interceptor.before_import(&interface_name, &func_name, &input_value) {
-                                interceptor.after_import(&interface_name, &func_name, &input_value, &recorded_output);
+                            if let Some(recorded_output) = interceptor.before_import(&interface_name, &func_name, &input_value).await {
+                                interceptor.after_import(&interface_name, &func_name, &input_value, &recorded_output).await;
                                 // Encode and write intercepted output to memory
                                 let bytes = match encode(&recorded_output) {
                                     Ok(b) => b,
@@ -1171,7 +1184,7 @@ impl<T: Send + Clone + 'static> InterfaceBuilder<'_, '_, T> {
                         // Notify interceptor of completed call
                         if let Some(ref interceptor) = interceptor {
                             if let Some(ref iv) = input_value_for_interceptor {
-                                interceptor.after_import(&interface_name, &func_name, iv, &output_value);
+                                interceptor.after_import(&interface_name, &func_name, iv, &output_value).await;
                             }
                         }
 
