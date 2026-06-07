@@ -407,8 +407,10 @@ impl<T: Send> AsyncInstance<T> {
     ) -> Result<Value, RuntimeError> {
         // Check interceptor for short-circuit (replay)
         if let Some(ref interceptor) = self.interceptor {
-            if let Some(recorded_output) = interceptor.before_export(name, input) {
-                interceptor.after_export(name, input, &recorded_output);
+            if let Some(recorded_output) = interceptor.before_export(name, input).await {
+                interceptor
+                    .after_export(name, input, &recorded_output)
+                    .await;
                 return Ok(recorded_output);
             }
         }
@@ -494,7 +496,7 @@ impl<T: Send> AsyncInstance<T> {
 
         // Notify interceptor of completed export call
         if let Some(ref interceptor) = self.interceptor {
-            interceptor.after_export(name, input, &result);
+            interceptor.after_export(name, input, &result).await;
         }
 
         Ok(result)

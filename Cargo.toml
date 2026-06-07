@@ -65,12 +65,17 @@ wasm-encoder = "0.219"
 # Hashing for interface compatibility
 sha2 = "0.10"
 
+# Async trait support for CallInterceptor and tokio runtime handle for
+# the sync host-bridge -> async interceptor bridge.
+async-trait = "0.1"
+tokio = { version = "1.0", features = ["rt-multi-thread"] }
+
 # Re-export pack-abi types for unified Value/FromValue/ConversionError
 packr-abi = { workspace = true, features = ["std", "serde"] }
 
 [dev-dependencies]
 wat = "1.0"  # For writing test modules in WAT
-tokio = { version = "1.0", features = ["rt", "macros"] }  # For async tests
+tokio = { version = "1.0", features = ["rt-multi-thread", "macros", "sync", "time"] }
 
 [[example]]
 name = "transforms"
