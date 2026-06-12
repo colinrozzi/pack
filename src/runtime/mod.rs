@@ -17,6 +17,10 @@ pub use interceptor::CallInterceptor;
 pub use interface_check::{
     validate_instance_implements_interface, ExpectedSignature, InterfaceError,
 };
+// Re-export the wasmtime types that appear in this module's public API
+// (AsyncRuntime::engine / wrap_module, AsyncCompiledModule::module) so
+// callers can name them without a direct wasmtime dependency.
+pub use wasmtime::{Engine, Module};
 
 use crate::abi::{decode, encode, Value};
 use crate::parser::{decode_with_schema, encode_with_schema, Interface};
@@ -25,7 +29,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
-use wasmtime::{Config, Engine, Instance as WasmtimeInstance, Linker, Memory, Module, Store};
+use wasmtime::{Config, Instance as WasmtimeInstance, Linker, Memory, Store};
 
 #[derive(Error, Debug)]
 pub enum RuntimeError {
