@@ -220,6 +220,31 @@ impl AsyncRuntime {
         })
     }
 
+    /// Wrap an already-compiled `wasmtime::Module` as an `AsyncCompiledModule`
+    /// bound to this runtime's engine.
+    ///
+    /// Useful for callers that maintain their own compile cache: load the
+    /// module once with [`Self::load_module`], extract the inner
+    /// [`Module`] via [`AsyncCompiledModule::module`], cache it (the
+    /// `Module` is cheap-clone and `Send + Sync`), and reconstruct an
+    /// `AsyncCompiledModule` on cache hits without paying the compile
+    /// cost again.
+    ///
+    /// # Safety / correctness
+    ///
+    /// `wasmtime::Module` is engine-scoped — a module compiled against
+    /// engine A cannot be instantiated by engine B. The caller is
+    /// responsible for ensuring `module` was originally produced by this
+    /// runtime's engine (or a clone of it). Misuse will surface as an
+    /// instantiation error from wasmtime, not memory unsafety, so this
+    /// method is `safe` but logically narrow.
+    pub fn wrap_module(&self, module: Module) -> AsyncCompiledModule<'_> {
+        AsyncCompiledModule {
+            module,
+            engine: &self.engine,
+        }
+    }
+
     /// Get a reference to the engine.
     pub fn engine(&self) -> &Engine {
         &self.engine
@@ -239,6 +264,15 @@ pub struct AsyncCompiledModule<'a> {
 }
 
 impl AsyncCompiledModule<'_> {
+    /// Reference to the underlying compiled module.
+    ///
+    /// Lets callers extract the `Module` for storage in an external
+    /// compile cache; pair with [`AsyncRuntime::wrap_module`] to
+    /// reconstruct an `AsyncCompiledModule` on a cache hit.
+    pub fn module(&self) -> &Module {
+        &self.module
+    }
+
     /// Instantiate the module with no imports (async).
     pub async fn instantiate_async(&self) -> Result<AsyncInstance<()>, RuntimeError> {
         let mut store = Store::new(self.engine, ());
