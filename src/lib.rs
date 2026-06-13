@@ -79,9 +79,9 @@ pub use parser::{
 };
 pub use runtime::{
     validate_instance_implements_interface, AsyncCompiledModule, AsyncCtx, AsyncInstance,
-    AsyncRuntime, CallInterceptor, CompiledModule, Ctx, DefaultHostProvider, ErrorHandler,
+    AsyncRuntime, CallInterceptor, CompiledModule, Ctx, DefaultHostProvider, Engine, ErrorHandler,
     HostFunctionError, HostFunctionErrorKind, HostFunctionProvider, HostLinkerBuilder, Instance,
-    InterfaceBuilder, InterfaceError, LinkerError, Runtime,
+    InterfaceBuilder, InterfaceError, LinkerError, Module, Runtime,
 };
 pub use transform::{InterfaceTransform, RpcTransform, TransformRegistry};
 pub use types::{Arena, Case, Field, Function, Param, Type, TypePath};

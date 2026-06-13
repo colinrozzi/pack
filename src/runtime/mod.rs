@@ -17,6 +17,10 @@ pub use interceptor::CallInterceptor;
 pub use interface_check::{
     validate_instance_implements_interface, ExpectedSignature, InterfaceError,
 };
+// Re-export the wasmtime types that appear in this module's public API
+// (AsyncRuntime::engine / wrap_module, AsyncCompiledModule::module) so
+// callers can name them without a direct wasmtime dependency.
+pub use wasmtime::{Engine, Module};
 
 use crate::abi::{decode, encode, Value};
 use crate::parser::{decode_with_schema, encode_with_schema, Interface};
@@ -25,7 +29,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
-use wasmtime::{Config, Engine, Instance as WasmtimeInstance, Linker, Memory, Module, Store};
+use wasmtime::{Config, Instance as WasmtimeInstance, Linker, Memory, Store};
 
 #[derive(Error, Debug)]
 pub enum RuntimeError {
@@ -220,6 +224,35 @@ impl AsyncRuntime {
         })
     }
 
+    /// Wrap an already-compiled `wasmtime::Module` as an `AsyncCompiledModule`
+    /// bound to this runtime's engine.
+    ///
+    /// Useful for callers that maintain their own compile cache: load the
+    /// module once with [`Self::load_module`], extract the inner
+    /// [`Module`] via [`AsyncCompiledModule::module`], cache it (the
+    /// `Module` is cheap-clone and `Send + Sync`), and reconstruct an
+    /// `AsyncCompiledModule` on cache hits without paying the compile
+    /// cost again.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `module` was compiled by a different `Engine` than this
+    /// runtime's. wasmtime treats cross-engine usage as a programmer
+    /// error and panics deep inside `Linker::instantiate` on the cache
+    /// hit; this check moves the panic to the API boundary so the
+    /// message names the bug. The comparison is an `Arc` pointer
+    /// compare via [`Engine::same`] — free relative to instantiation.
+    pub fn wrap_module(&self, module: Module) -> AsyncCompiledModule<'_> {
+        assert!(
+            Engine::same(module.engine(), &self.engine),
+            "wrap_module: Module was compiled by a different Engine than this runtime"
+        );
+        AsyncCompiledModule {
+            module,
+            engine: &self.engine,
+        }
+    }
+
     /// Get a reference to the engine.
     pub fn engine(&self) -> &Engine {
         &self.engine
@@ -239,6 +272,15 @@ pub struct AsyncCompiledModule<'a> {
 }
 
 impl AsyncCompiledModule<'_> {
+    /// Reference to the underlying compiled module.
+    ///
+    /// Lets callers extract the `Module` for storage in an external
+    /// compile cache; pair with [`AsyncRuntime::wrap_module`] to
+    /// reconstruct an `AsyncCompiledModule` on a cache hit.
+    pub fn module(&self) -> &Module {
+        &self.module
+    }
+
     /// Instantiate the module with no imports (async).
     pub async fn instantiate_async(&self) -> Result<AsyncInstance<()>, RuntimeError> {
         let mut store = Store::new(self.engine, ());
@@ -1485,5 +1527,63 @@ mod tests {
             RuntimeError::SchemaError(_) => {}
             _ => panic!("unexpected error: {err:?}"),
         }
+    }
+
+    /// Exercises the exact cache pattern theater depends on:
+    ///   load_module → module().clone() → wrap_module → instantiate.
+    /// Confirms the wrapped instance is usable end-to-end.
+    #[tokio::test]
+    async fn wrap_module_roundtrip_through_cache_pattern() {
+        let wasm = wat::parse_str(
+            r#"
+            (module
+                (func (export "answer") (result i32)
+                    i32.const 42))
+            "#,
+        )
+        .expect("wat");
+
+        let runtime = AsyncRuntime::new();
+
+        let compiled = runtime.load_module(&wasm).expect("load_module");
+        let cached_module: Module = compiled.module().clone();
+
+        let wrapped = runtime.wrap_module(cached_module);
+        let mut instance = wrapped
+            .instantiate_async()
+            .await
+            .expect("instantiate_async from wrapped module");
+
+        // Drive a typed call so we know the engine genuinely owns this
+        // instance (instantiation alone could pass via metadata stored
+        // on the Module without ever touching the engine's allocator).
+        let func = instance
+            .instance
+            .get_typed_func::<(), i32>(&mut instance.store, "answer")
+            .expect("typed func");
+        let answer = func
+            .call_async(&mut instance.store, ())
+            .await
+            .expect("call");
+        assert_eq!(answer, 42);
+    }
+
+    /// A `Module` compiled by Engine A must not be wrappable into a
+    /// runtime on Engine B — wasmtime would panic deep inside
+    /// `Linker::instantiate` on the cache hit; we want the panic at the
+    /// API boundary with a message that names the bug.
+    #[test]
+    #[should_panic(expected = "different Engine")]
+    fn wrap_module_panics_on_cross_engine() {
+        let wasm = wat::parse_str("(module)").expect("wat");
+
+        let runtime_a = AsyncRuntime::new();
+        let runtime_b = AsyncRuntime::new();
+
+        let compiled_on_a = runtime_a.load_module(&wasm).expect("load_module");
+        let module_from_a: Module = compiled_on_a.module().clone();
+
+        // This is the misuse the assert! is there to catch.
+        let _ = runtime_b.wrap_module(module_from_a);
     }
 }
