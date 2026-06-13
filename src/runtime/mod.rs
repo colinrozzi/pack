@@ -1561,7 +1561,10 @@ mod tests {
             .instance
             .get_typed_func::<(), i32>(&mut instance.store, "answer")
             .expect("typed func");
-        let answer = func.call_async(&mut instance.store, ()).await.expect("call");
+        let answer = func
+            .call_async(&mut instance.store, ())
+            .await
+            .expect("call");
         assert_eq!(answer, 42);
     }
 
