@@ -539,6 +539,15 @@ impl<T: 'static> InterfaceBuilder<'_, '_, T> {
                             }
                         };
 
+                        if bytes.len() > OUTPUT_BUFFER_CAPACITY {
+                            report(HostFunctionErrorKind::MemoryWrite(format!(
+                                "host return {} bytes exceeds output buffer capacity {} \
+                                 (chunk the return)",
+                                bytes.len(),
+                                OUTPUT_BUFFER_CAPACITY
+                            )));
+                            return -1;
+                        }
                         let data_offset = OUTPUT_BUFFER_OFFSET + 8;
                         if let Err(e) = memory.write(&mut ctx.caller, data_offset, &bytes) {
                             report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
@@ -721,6 +730,15 @@ impl<T: 'static> InterfaceBuilder<'_, '_, T> {
                             }
                         };
 
+                        if bytes.len() > OUTPUT_BUFFER_CAPACITY {
+                            report(HostFunctionErrorKind::MemoryWrite(format!(
+                                "host return {} bytes exceeds output buffer capacity {} \
+                                 (chunk the return)",
+                                bytes.len(),
+                                OUTPUT_BUFFER_CAPACITY
+                            )));
+                            return -1;
+                        }
                         let data_offset = OUTPUT_BUFFER_OFFSET + 8;
                         if let Err(e) = memory.write(&mut ctx.caller, data_offset, &bytes) {
                             report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
@@ -947,7 +965,16 @@ impl<T: Send + Clone + 'static> InterfaceBuilder<'_, '_, T> {
                                         return -1;
                                     }
                                 };
-                                let data_offset = OUTPUT_BUFFER_OFFSET + 8;
+                                if bytes.len() > OUTPUT_BUFFER_CAPACITY {
+                            report(HostFunctionErrorKind::MemoryWrite(format!(
+                                "host return {} bytes exceeds output buffer capacity {} \
+                                 (chunk the return)",
+                                bytes.len(),
+                                OUTPUT_BUFFER_CAPACITY
+                            )));
+                            return -1;
+                        }
+                        let data_offset = OUTPUT_BUFFER_OFFSET + 8;
                                 if let Err(e) = memory.write(&mut caller, data_offset, &bytes) {
                                     report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
                                     return -1;
@@ -1000,6 +1027,15 @@ impl<T: Send + Clone + 'static> InterfaceBuilder<'_, '_, T> {
                             }
                         };
 
+                        if bytes.len() > OUTPUT_BUFFER_CAPACITY {
+                            report(HostFunctionErrorKind::MemoryWrite(format!(
+                                "host return {} bytes exceeds output buffer capacity {} \
+                                 (chunk the return)",
+                                bytes.len(),
+                                OUTPUT_BUFFER_CAPACITY
+                            )));
+                            return -1;
+                        }
                         let data_offset = OUTPUT_BUFFER_OFFSET + 8;
                         if let Err(e) = memory.write(&mut caller, data_offset, &bytes) {
                             report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
@@ -1132,7 +1168,16 @@ impl<T: Send + Clone + 'static> InterfaceBuilder<'_, '_, T> {
                                         return -1;
                                     }
                                 };
-                                let data_offset = OUTPUT_BUFFER_OFFSET + 8;
+                                if bytes.len() > OUTPUT_BUFFER_CAPACITY {
+                            report(HostFunctionErrorKind::MemoryWrite(format!(
+                                "host return {} bytes exceeds output buffer capacity {} \
+                                 (chunk the return)",
+                                bytes.len(),
+                                OUTPUT_BUFFER_CAPACITY
+                            )));
+                            return -1;
+                        }
+                        let data_offset = OUTPUT_BUFFER_OFFSET + 8;
                                 if let Err(e) = memory.write(&mut caller, data_offset, &bytes) {
                                     report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
                                     return -1;
@@ -1197,6 +1242,15 @@ impl<T: Send + Clone + 'static> InterfaceBuilder<'_, '_, T> {
                             }
                         };
 
+                        if bytes.len() > OUTPUT_BUFFER_CAPACITY {
+                            report(HostFunctionErrorKind::MemoryWrite(format!(
+                                "host return {} bytes exceeds output buffer capacity {} \
+                                 (chunk the return)",
+                                bytes.len(),
+                                OUTPUT_BUFFER_CAPACITY
+                            )));
+                            return -1;
+                        }
                         let data_offset = OUTPUT_BUFFER_OFFSET + 8;
                         if let Err(e) = memory.write(&mut caller, data_offset, &bytes) {
                             report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
