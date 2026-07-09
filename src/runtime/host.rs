@@ -66,6 +66,16 @@ pub const OUTPUT_BUFFER_OFFSET: usize = 16 * 1024;
 /// Default output buffer capacity (32KB) - DEPRECATED: guest now allocates
 pub const OUTPUT_BUFFER_CAPACITY: usize = 32 * 1024;
 
+/// Max size of a host-function return written to the fixed reserved buffer.
+///
+/// The return is written at `OUTPUT_BUFFER_OFFSET+8`, which sits in the guest's
+/// shadow stack (grows down from ~1MB). A return of N bytes is safe only while
+/// it doesn't reach the stack pointer at the call. 512KB stays safely below the
+/// shallowest realistic `sp` (actor handlers use well under ~470KB of the 1MB
+/// stack before a large-return host call). Larger returns fail cleanly here;
+/// the real *unbounded* fix is the PIC async-guest-allocate path.
+pub const HOST_RETURN_MAX: usize = 512 * 1024;
+
 // ============================================================================
 // Error Handling Infrastructure
 // ============================================================================
@@ -539,12 +549,11 @@ impl<T: 'static> InterfaceBuilder<'_, '_, T> {
                             }
                         };
 
-                        if bytes.len() > OUTPUT_BUFFER_CAPACITY {
+                        if bytes.len() > HOST_RETURN_MAX {
                             report(HostFunctionErrorKind::MemoryWrite(format!(
-                                "host return {} bytes exceeds output buffer capacity {} \
-                                 (chunk the return)",
+                                "host return {} bytes exceeds the host-return cap of {} bytes",
                                 bytes.len(),
-                                OUTPUT_BUFFER_CAPACITY
+                                HOST_RETURN_MAX
                             )));
                             return -1;
                         }
@@ -730,12 +739,11 @@ impl<T: 'static> InterfaceBuilder<'_, '_, T> {
                             }
                         };
 
-                        if bytes.len() > OUTPUT_BUFFER_CAPACITY {
+                        if bytes.len() > HOST_RETURN_MAX {
                             report(HostFunctionErrorKind::MemoryWrite(format!(
-                                "host return {} bytes exceeds output buffer capacity {} \
-                                 (chunk the return)",
+                                "host return {} bytes exceeds the host-return cap of {} bytes",
                                 bytes.len(),
-                                OUTPUT_BUFFER_CAPACITY
+                                HOST_RETURN_MAX
                             )));
                             return -1;
                         }
@@ -965,12 +973,11 @@ impl<T: Send + Clone + 'static> InterfaceBuilder<'_, '_, T> {
                                         return -1;
                                     }
                                 };
-                                if bytes.len() > OUTPUT_BUFFER_CAPACITY {
+                                if bytes.len() > HOST_RETURN_MAX {
                             report(HostFunctionErrorKind::MemoryWrite(format!(
-                                "host return {} bytes exceeds output buffer capacity {} \
-                                 (chunk the return)",
+                                "host return {} bytes exceeds the host-return cap of {} bytes",
                                 bytes.len(),
-                                OUTPUT_BUFFER_CAPACITY
+                                HOST_RETURN_MAX
                             )));
                             return -1;
                         }
@@ -1027,12 +1034,11 @@ impl<T: Send + Clone + 'static> InterfaceBuilder<'_, '_, T> {
                             }
                         };
 
-                        if bytes.len() > OUTPUT_BUFFER_CAPACITY {
+                        if bytes.len() > HOST_RETURN_MAX {
                             report(HostFunctionErrorKind::MemoryWrite(format!(
-                                "host return {} bytes exceeds output buffer capacity {} \
-                                 (chunk the return)",
+                                "host return {} bytes exceeds the host-return cap of {} bytes",
                                 bytes.len(),
-                                OUTPUT_BUFFER_CAPACITY
+                                HOST_RETURN_MAX
                             )));
                             return -1;
                         }
@@ -1168,12 +1174,11 @@ impl<T: Send + Clone + 'static> InterfaceBuilder<'_, '_, T> {
                                         return -1;
                                     }
                                 };
-                                if bytes.len() > OUTPUT_BUFFER_CAPACITY {
+                                if bytes.len() > HOST_RETURN_MAX {
                             report(HostFunctionErrorKind::MemoryWrite(format!(
-                                "host return {} bytes exceeds output buffer capacity {} \
-                                 (chunk the return)",
+                                "host return {} bytes exceeds the host-return cap of {} bytes",
                                 bytes.len(),
-                                OUTPUT_BUFFER_CAPACITY
+                                HOST_RETURN_MAX
                             )));
                             return -1;
                         }
@@ -1242,12 +1247,11 @@ impl<T: Send + Clone + 'static> InterfaceBuilder<'_, '_, T> {
                             }
                         };
 
-                        if bytes.len() > OUTPUT_BUFFER_CAPACITY {
+                        if bytes.len() > HOST_RETURN_MAX {
                             report(HostFunctionErrorKind::MemoryWrite(format!(
-                                "host return {} bytes exceeds output buffer capacity {} \
-                                 (chunk the return)",
+                                "host return {} bytes exceeds the host-return cap of {} bytes",
                                 bytes.len(),
-                                OUTPUT_BUFFER_CAPACITY
+                                HOST_RETURN_MAX
                             )));
                             return -1;
                         }
