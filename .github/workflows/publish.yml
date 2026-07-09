@@ -57,27 +57,27 @@ jobs:
           nix develop --command cargo test -p packr-abi --features derive
 
       - name: Publish packr-derive
-        run: nix develop --command cargo publish -p packr-derive
+        run: nix develop --command cargo publish --allow-dirty -p packr-derive
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
       - name: Publish packr-abi
-        run: nix develop --command cargo publish -p packr-abi
+        run: nix develop --command cargo publish --allow-dirty -p packr-abi
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
       - name: Publish packr-guest-macros
-        run: nix develop --command cargo publish -p packr-guest-macros
+        run: nix develop --command cargo publish --allow-dirty -p packr-guest-macros
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
       - name: Publish packr-guest
-        run: nix develop --command cargo publish -p packr-guest
+        run: nix develop --command cargo publish --allow-dirty -p packr-guest
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
       - name: Publish packr
-        run: nix develop --command cargo publish -p packr
+        run: nix develop --command cargo publish --allow-dirty -p packr
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
