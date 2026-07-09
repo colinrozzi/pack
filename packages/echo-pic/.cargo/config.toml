@@ -1,0 +1,11 @@
+[target.wasm32-unknown-unknown]
+# PIC side module for the 1b dynamic-linking loader: imports a shared memory,
+# gets a runtime-assigned __memory_base, and exports __wasm_call_ctors so the
+# loader can run PIC init (data relocs + function-table population).
+rustflags = [
+    "-C", "relocation-model=pic",
+    "-C", "link-arg=--experimental-pic",
+    "-C", "link-arg=-shared",
+    "-C", "link-arg=--import-memory",
+    "-C", "link-arg=--export=__wasm_call_ctors",
+]

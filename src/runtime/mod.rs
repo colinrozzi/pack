@@ -29,7 +29,10 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
-use wasmtime::{Config, Instance as WasmtimeInstance, Linker, Memory, Store};
+use wasmtime::{
+    Config, Global, GlobalType, Instance as WasmtimeInstance, Linker, Memory, MemoryType,
+    Mutability, Ref, RefType, Store, Table, TableType, Val, ValType,
+};
 
 #[derive(Error, Debug)]
 pub enum RuntimeError {
@@ -172,6 +175,251 @@ impl Default for Runtime {
 }
 
 // ============================================================================
+// PIC dynamic linking (1b): run PIC "side module" packages on the shared
+// in-wasm allocator (real `free`), instead of the 1a host bump provider.
+// ============================================================================
+
+/// The default in-wasm allocator module (dlmalloc, real `free`), embedded so
+/// the runtime can instantiate it as the shared allocator for every PIC
+/// package. Built by `packages/pack-alloc`.
+const PACK_ALLOC_WASM: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/packages/pack-alloc/target/wasm32-unknown-unknown/release/pack_alloc_module.wasm"
+));
+
+/// Per-instance shared-memory layout (byte offsets). Regions are disjoint and
+/// the allocator's control struct is kept OUT of low memory — address 0 acts as
+/// a guard so stray low writes cannot corrupt the allocator's `mstate`.
+mod pic {
+    pub const MEM_PAGES: u32 = 64; // 4 MiB initial (grows on demand)
+    pub const TABLE_MIN: u32 = 4096; // shared function table
+    pub const PKG_BASE: i32 = 0x1_0000; // package data (low) + stack (grows down from PKG_STACK_TOP)
+    pub const PKG_STACK_TOP: i32 = 0x10_0000;
+    pub const ALLOC_BASE: i32 = 0x10_8000; // allocator mstate — in the stack/heap gap, never 0
+    pub const HEAP_BASE: i32 = 0x11_0000;
+    pub const HEAP_END: i32 = 0x40_0000;
+}
+
+fn werr<E: std::fmt::Display>(e: E) -> RuntimeError {
+    RuntimeError::WasmError(e.to_string())
+}
+
+fn const_g<T>(store: &mut Store<T>, v: i32) -> Global {
+    Global::new(
+        store,
+        GlobalType::new(ValType::I32, Mutability::Const),
+        Val::I32(v),
+    )
+    .expect("const i32 global")
+}
+fn var_g<T>(store: &mut Store<T>, v: i32) -> Global {
+    Global::new(
+        store,
+        GlobalType::new(ValType::I32, Mutability::Var),
+        Val::I32(v),
+    )
+    .expect("mut i32 global")
+}
+
+/// Point a package's `GOT.mem.__data_end` slot at the runtime address of its
+/// `__data_end` symbol (`__memory_base` + the module's exported offset). wasm-ld
+/// emits that GOT import whenever a module references `__data_end` cross-crate —
+/// which real actors do via their dependency trees, even though the guest never
+/// uses it for allocation (the loader owns the heap). No-op if the module doesn't
+/// export `__data_end`.
+fn resolve_got_data_end<T>(
+    store: &mut Store<T>,
+    pkg: &WasmtimeInstance,
+    got_data_end: Global,
+) -> Result<(), RuntimeError> {
+    if let Some(exported) = pkg.get_global(&mut *store, "__data_end") {
+        if let Val::I32(off) = exported.get(&mut *store) {
+            got_data_end
+                .set(&mut *store, Val::I32(pic::PKG_BASE + off))
+                .map_err(werr)?;
+        }
+    }
+    Ok(())
+}
+
+/// Instantiate the shared allocator + a PIC package into `store`, wiring the
+/// dynamic-linking imports (shared memory + table, per-module `__memory_base`/
+/// stack, GOT heap for the allocator, `pack:alloc` from the allocator) and
+/// running the package's ctors. Returns the package instance + the shared
+/// memory the host uses for marshalling.
+fn pic_link(
+    engine: &Engine,
+    store: &mut Store<()>,
+    package: &Module,
+) -> Result<(WasmtimeInstance, Memory), RuntimeError> {
+    let mem = Memory::new(&mut *store, MemoryType::new(pic::MEM_PAGES, None)).map_err(werr)?;
+    let table = Table::new(
+        &mut *store,
+        TableType::new(RefType::FUNCREF, pic::TABLE_MIN, None),
+        Ref::Func(None),
+    )
+    .map_err(werr)?;
+
+    // Allocator side module: mstate in the protected gap; owns the heap.
+    let alloc_module = Module::new(engine, PACK_ALLOC_WASM).map_err(werr)?;
+    let a_membase = const_g(&mut *store, pic::ALLOC_BASE);
+    let a_tablebase = const_g(&mut *store, 0);
+    let heap_base = var_g(&mut *store, pic::HEAP_BASE);
+    let heap_end = var_g(&mut *store, pic::HEAP_END);
+    let mut al = Linker::new(engine);
+    al.define(&*store, "env", "memory", mem).map_err(werr)?;
+    al.define(&*store, "env", "__memory_base", a_membase)
+        .map_err(werr)?;
+    al.define(&*store, "env", "__table_base", a_tablebase)
+        .map_err(werr)?;
+    al.define(&*store, "GOT.mem", "__heap_base", heap_base)
+        .map_err(werr)?;
+    al.define(&*store, "GOT.mem", "__heap_end", heap_end)
+        .map_err(werr)?;
+    let alloc_inst = al.instantiate(&mut *store, &alloc_module).map_err(werr)?;
+    let alloc_fn = alloc_inst
+        .get_export(&mut *store, "alloc")
+        .ok_or_else(|| RuntimeError::WasmError("allocator module missing `alloc`".into()))?;
+    let dealloc_fn = alloc_inst
+        .get_export(&mut *store, "dealloc")
+        .ok_or_else(|| RuntimeError::WasmError("allocator module missing `dealloc`".into()))?;
+
+    // Package side module: disjoint base + its own stack.
+    let p_membase = const_g(&mut *store, pic::PKG_BASE);
+    let p_tablebase = const_g(&mut *store, 0);
+    let p_sp = var_g(&mut *store, pic::PKG_STACK_TOP);
+    // Data-symbol GOT slot. A real actor references static data symbols (notably
+    // __data_end, via its dependency tree) cross-crate, which under -shared route
+    // through a GOT.mem import the loader must resolve to the symbol's runtime
+    // address. We provide it mutable up front, then fix it after instantiation
+    // from the module's exported offset (below). Minimal packages don't import it,
+    // and an unused define is harmless.
+    let p_data_end = var_g(&mut *store, pic::PKG_BASE);
+    let mut pl = Linker::new(engine);
+    pl.define(&*store, "env", "memory", mem).map_err(werr)?;
+    pl.define(&*store, "env", "__indirect_function_table", table)
+        .map_err(werr)?;
+    pl.define(&*store, "env", "__stack_pointer", p_sp)
+        .map_err(werr)?;
+    pl.define(&*store, "env", "__memory_base", p_membase)
+        .map_err(werr)?;
+    pl.define(&*store, "env", "__table_base", p_tablebase)
+        .map_err(werr)?;
+    pl.define(&*store, "GOT.mem", "__data_end", p_data_end)
+        .map_err(werr)?;
+    pl.define(&*store, "pack:alloc", "alloc", alloc_fn)
+        .map_err(werr)?;
+    pl.define(&*store, "pack:alloc", "dealloc", dealloc_fn)
+        .map_err(werr)?;
+    let pkg = pl.instantiate(&mut *store, package).map_err(werr)?;
+
+    // Resolve GOT.mem.__data_end to the runtime address of __data_end
+    // (__memory_base + the module's exported offset) before relocs/ctors read it.
+    resolve_got_data_end(&mut *store, &pkg, p_data_end)?;
+
+    // PIC init. Relocate stored data pointers to the assigned __memory_base FIRST:
+    // __wasm_call_ctors is empty for side modules and does NOT call this, so stored
+    // pointers (e.g. format!()'s static &str fragments) would keep raw offsets and
+    // read as blank. Then run ctors (any remaining static init).
+    if let Ok(relocs) = pkg.get_typed_func::<(), ()>(&mut *store, "__wasm_apply_data_relocs") {
+        relocs.call(&mut *store, ()).map_err(werr)?;
+    }
+    if let Ok(ctors) = pkg.get_typed_func::<(), ()>(&mut *store, "__wasm_call_ctors") {
+        ctors.call(&mut *store, ()).map_err(werr)?;
+    }
+
+    Ok((pkg, mem))
+}
+
+/// A running PIC package instance: the package + its shared in-wasm allocator,
+/// sharing one host-owned `Memory` (the host marshals through this handle,
+/// since PIC packages do not export their memory).
+pub struct PicInstance {
+    store: Store<()>,
+    instance: WasmtimeInstance,
+    memory: Memory,
+}
+
+impl PicInstance {
+    /// Call a Pack-ABI export with a `Value`. Every buffer (input, result slots,
+    /// output) is allocated via the package's `__pack_alloc`, which routes to
+    /// the in-wasm allocator.
+    pub fn call_with_value(&mut self, name: &str, input: &Value) -> Result<Value, RuntimeError> {
+        let input_bytes = encode(input).map_err(|e| RuntimeError::AbiError(e.to_string()))?;
+
+        let pack_alloc = self
+            .instance
+            .get_typed_func::<i32, i32>(&mut self.store, "__pack_alloc")
+            .map_err(|e| RuntimeError::FunctionNotFound(e.to_string()))?;
+
+        let in_ptr = pack_alloc
+            .call(&mut self.store, input_bytes.len() as i32)
+            .map_err(werr)?;
+        self.memory
+            .write(&mut self.store, in_ptr as usize, &input_bytes)
+            .map_err(|e| RuntimeError::MemoryError(e.to_string()))?;
+
+        // Result ptr/len slots: allocated, not a fixed offset (a fixed offset
+        // would collide with the allocator's region under PIC).
+        let slots = pack_alloc.call(&mut self.store, 8).map_err(werr)?;
+
+        let func = self
+            .instance
+            .get_typed_func::<(i32, i32, i32, i32), i32>(&mut self.store, name)
+            .map_err(|e| RuntimeError::FunctionNotFound(e.to_string()))?;
+        let status = func
+            .call(
+                &mut self.store,
+                (in_ptr, input_bytes.len() as i32, slots, slots + 4),
+            )
+            .map_err(werr)?;
+
+        let out_ptr = self.read_i32(slots)?;
+        let out_len = self.read_i32(slots + 4)?;
+        let mut out = vec![0u8; out_len as usize];
+        self.memory
+            .read(&self.store, out_ptr as usize, &mut out)
+            .map_err(|e| RuntimeError::MemoryError(e.to_string()))?;
+
+        if status != 0 {
+            return Err(RuntimeError::WasmError(format!(
+                "guest error: {}",
+                String::from_utf8_lossy(&out)
+            )));
+        }
+        decode(&out).map_err(|e| RuntimeError::AbiError(e.to_string()))
+    }
+
+    fn read_i32(&self, at: i32) -> Result<i32, RuntimeError> {
+        let mut b = [0u8; 4];
+        self.memory
+            .read(&self.store, at as usize, &mut b)
+            .map_err(|e| RuntimeError::MemoryError(e.to_string()))?;
+        Ok(i32::from_le_bytes(b))
+    }
+
+    /// Whether the package exports the given function.
+    pub fn has_export(&mut self, name: &str) -> bool {
+        self.instance.get_func(&mut self.store, name).is_some()
+    }
+}
+
+impl CompiledModule<'_> {
+    /// Instantiate this package as a PIC side module linked against the default
+    /// in-wasm allocator, sharing one per-instance memory + table (the 1b path:
+    /// real `free`, no allocator baked into the package).
+    pub fn instantiate_pic(&self) -> Result<PicInstance, RuntimeError> {
+        let mut store = Store::new(self.engine, ());
+        let (instance, memory) = pic_link(self.engine, &mut store, &self.module)?;
+        Ok(PicInstance {
+            store,
+            instance,
+            memory,
+        })
+    }
+}
+
+// ============================================================================
 // Async Runtime
 // ============================================================================
 
@@ -265,6 +513,73 @@ impl Default for AsyncRuntime {
     }
 }
 
+/// Register the default, per-instance `pack:alloc` provider on a linker.
+///
+/// Since `setup_guest!()` makes every package import its allocator, every
+/// instantiation must satisfy `pack:alloc`. This is the built-in default so
+/// the `AsyncInstance` API stays stable and callers (e.g. theater) don't have
+/// to supply an allocator.
+///
+/// Properties that matter downstream:
+/// - **Raw, non-intercepted link.** Registered via `func_wrap` (not the typed
+///   `HostLinkerBuilder` path), so it never routes through `CallInterceptor`
+///   and never pollutes the deterministic replay log.
+/// - **Per-instance state.** The linker is created per instantiation, so the
+///   captured bump offset is fresh per instance — no cross-instance aliasing
+///   even when the compiled module is cached.
+///
+/// It bump-allocates within the guest's exported memory, starting above the
+/// module's initial memory (which holds all static data) and growing as
+/// needed. `dealloc` is a no-op. This is the 1a proof provider; 1b replaces it
+/// with an in-wasm allocator module (real free) over a shared per-instance
+/// `Memory`.
+pub(crate) fn register_default_alloc<T: 'static>(
+    linker: &mut Linker<T>,
+) -> Result<(), RuntimeError> {
+    let next = std::sync::Arc::new(std::sync::Mutex::new(0usize));
+    linker
+        .func_wrap(
+            "pack:alloc",
+            "alloc",
+            move |mut caller: wasmtime::Caller<'_, T>, size: i32, align: i32| -> i32 {
+                let memory = match caller.get_export("memory").and_then(|e| e.into_memory()) {
+                    Some(m) => m,
+                    None => return 0,
+                };
+                let align = align.max(1) as usize;
+                let size = size.max(0) as usize;
+                let mut next = next.lock().unwrap();
+                // Lazily anchor the heap at the end of the module's initial
+                // memory, which is guaranteed to sit above all static data.
+                if *next == 0 {
+                    *next = memory.data_size(&caller);
+                }
+                let base = (*next + align - 1) & !(align - 1);
+                let end = base + size;
+                let cur = memory.data_size(&caller);
+                if end > cur {
+                    let pages = ((end - cur + 0xffff) >> 16) as u64;
+                    if memory.grow(&mut caller, pages).is_err() {
+                        return 0;
+                    }
+                }
+                *next = end;
+                base as i32
+            },
+        )
+        .map_err(|e| RuntimeError::WasmError(e.to_string()))?;
+    linker
+        .func_wrap(
+            "pack:alloc",
+            "dealloc",
+            move |_caller: wasmtime::Caller<'_, T>, _ptr: i32, _size: i32, _align: i32| {
+                // Bump allocator: no-op. (1b's in-wasm module reclaims memory.)
+            },
+        )
+        .map_err(|e| RuntimeError::WasmError(e.to_string()))?;
+    Ok(())
+}
+
 /// A compiled WASM module for async execution.
 pub struct AsyncCompiledModule<'a> {
     module: Module,
@@ -284,7 +599,8 @@ impl AsyncCompiledModule<'_> {
     /// Instantiate the module with no imports (async).
     pub async fn instantiate_async(&self) -> Result<AsyncInstance<()>, RuntimeError> {
         let mut store = Store::new(self.engine, ());
-        let linker = Linker::<()>::new(self.engine);
+        let mut linker = Linker::<()>::new(self.engine);
+        register_default_alloc(&mut linker)?;
 
         let instance = linker
             .instantiate_async(&mut store, &self.module)
@@ -295,6 +611,7 @@ impl AsyncCompiledModule<'_> {
             store,
             instance,
             interceptor: None,
+            memory: None,
         })
     }
 
@@ -340,25 +657,113 @@ impl AsyncCompiledModule<'_> {
         T: Send + 'static,
         F: FnOnce(&mut HostLinkerBuilder<'_, T>) -> Result<(), LinkerError>,
     {
-        let mut linker = Linker::new(self.engine);
-        let mut builder = HostLinkerBuilder::new(self.engine, &mut linker);
+        let mut store = Store::new(self.engine, state);
 
+        // Per-instance shared memory + table (created at instantiate time, never
+        // at module-cache time — actors stay isolated even when the compiled
+        // module is cached).
+        let mem = Memory::new(&mut store, MemoryType::new(pic::MEM_PAGES, None)).map_err(werr)?;
+        let table = Table::new(
+            &mut store,
+            TableType::new(RefType::FUNCREF, pic::TABLE_MIN, None),
+            Ref::Func(None),
+        )
+        .map_err(werr)?;
+
+        // Instantiate the shared allocator side module (raw link, off the
+        // interceptor) and grab its alloc/dealloc.
+        let alloc_module = Module::new(self.engine, PACK_ALLOC_WASM).map_err(werr)?;
+        let a_membase = const_g(&mut store, pic::ALLOC_BASE);
+        let a_tablebase = const_g(&mut store, 0);
+        let a_heap_base = var_g(&mut store, pic::HEAP_BASE);
+        let a_heap_end = var_g(&mut store, pic::HEAP_END);
+        let mut al = Linker::new(self.engine);
+        al.define(&store, "env", "memory", mem).map_err(werr)?;
+        al.define(&store, "env", "__memory_base", a_membase)
+            .map_err(werr)?;
+        al.define(&store, "env", "__table_base", a_tablebase)
+            .map_err(werr)?;
+        al.define(&store, "GOT.mem", "__heap_base", a_heap_base)
+            .map_err(werr)?;
+        al.define(&store, "GOT.mem", "__heap_end", a_heap_end)
+            .map_err(werr)?;
+        let alloc_inst = al
+            .instantiate_async(&mut store, &alloc_module)
+            .await
+            .map_err(werr)?;
+        let alloc_fn = alloc_inst
+            .get_export(&mut store, "alloc")
+            .ok_or_else(|| RuntimeError::WasmError("allocator module missing `alloc`".into()))?;
+        let dealloc_fn = alloc_inst
+            .get_export(&mut store, "dealloc")
+            .ok_or_else(|| RuntimeError::WasmError("allocator module missing `dealloc`".into()))?;
+
+        // Package linker: PIC dynamic-linking imports + the caller's host
+        // functions (given the host-owned memory for marshalling).
+        let p_membase = const_g(&mut store, pic::PKG_BASE);
+        let p_tablebase = const_g(&mut store, 0);
+        let p_sp = var_g(&mut store, pic::PKG_STACK_TOP);
+        // GOT.mem.__data_end slot — resolved to the real address after
+        // instantiation (see resolve_got_data_end). Real actors import this.
+        let p_data_end = var_g(&mut store, pic::PKG_BASE);
+        let mut linker = Linker::new(self.engine);
+        linker.define(&store, "env", "memory", mem).map_err(werr)?;
+        linker
+            .define(&store, "env", "__indirect_function_table", table)
+            .map_err(werr)?;
+        linker
+            .define(&store, "env", "__stack_pointer", p_sp)
+            .map_err(werr)?;
+        linker
+            .define(&store, "env", "__memory_base", p_membase)
+            .map_err(werr)?;
+        linker
+            .define(&store, "env", "__table_base", p_tablebase)
+            .map_err(werr)?;
+        linker
+            .define(&store, "GOT.mem", "__data_end", p_data_end)
+            .map_err(werr)?;
+        linker
+            .define(&store, "pack:alloc", "alloc", alloc_fn)
+            .map_err(werr)?;
+        linker
+            .define(&store, "pack:alloc", "dealloc", dealloc_fn)
+            .map_err(werr)?;
+
+        let mut builder = HostLinkerBuilder::new(self.engine, &mut linker);
+        builder.with_memory(mem);
         if let Some(ref interceptor) = interceptor {
             builder.set_interceptor(interceptor.clone());
         }
-
         configure(&mut builder).map_err(|e| RuntimeError::WasmError(e.to_string()))?;
 
-        let mut store = Store::new(self.engine, state);
         let instance = linker
             .instantiate_async(&mut store, &self.module)
             .await
-            .map_err(|e| RuntimeError::WasmError(e.to_string()))?;
+            .map_err(werr)?;
+
+        // Resolve GOT.mem.__data_end to __memory_base + the module's exported
+        // offset before relocs/ctors run.
+        resolve_got_data_end(&mut store, &instance, p_data_end)?;
+
+        // PIC init. Relocate stored data pointers to the assigned __memory_base
+        // FIRST (__wasm_call_ctors is empty for side modules and does NOT call
+        // this) — else stored pointers like format!()'s static &str fragments keep
+        // raw offsets and read as blank. Then run ctors.
+        if let Ok(relocs) =
+            instance.get_typed_func::<(), ()>(&mut store, "__wasm_apply_data_relocs")
+        {
+            relocs.call_async(&mut store, ()).await.map_err(werr)?;
+        }
+        if let Ok(ctors) = instance.get_typed_func::<(), ()>(&mut store, "__wasm_call_ctors") {
+            ctors.call_async(&mut store, ()).await.map_err(werr)?;
+        }
 
         Ok(AsyncInstance {
             store,
             instance,
             interceptor,
+            memory: Some(mem),
         })
     }
 
@@ -373,6 +778,9 @@ pub struct AsyncInstance<T> {
     store: Store<T>,
     instance: WasmtimeInstance,
     interceptor: Option<Arc<dyn CallInterceptor>>,
+    /// Host-owned shared memory for PIC packages (which don't export memory).
+    /// `None` for legacy modules that export their own memory.
+    memory: Option<Memory>,
 }
 
 impl<T: Send> AsyncInstance<T> {
@@ -381,8 +789,11 @@ impl<T: Send> AsyncInstance<T> {
         validate_instance_implements_interface(&mut self.store, &self.instance, interface)
     }
 
-    /// Get the exported memory (assumes it's named "memory").
+    /// The guest memory: the host-owned one (PIC), else the exported "memory".
     fn get_memory(&mut self) -> Result<Memory, RuntimeError> {
+        if let Some(mem) = self.memory {
+            return Ok(mem);
+        }
         self.instance
             .get_memory(&mut self.store, "memory")
             .ok_or_else(|| RuntimeError::MemoryError("no exported memory named 'memory'".into()))
@@ -708,7 +1119,8 @@ impl CompiledModule<'_> {
     /// Instantiate the module with no imports
     pub fn instantiate(&self) -> Result<Instance<()>, RuntimeError> {
         let mut store = Store::new(self.engine, ());
-        let linker = Linker::<()>::new(self.engine);
+        let mut linker = Linker::<()>::new(self.engine);
+        register_default_alloc(&mut linker)?;
 
         let instance = linker
             .instantiate(&mut store, &self.module)
@@ -727,6 +1139,7 @@ impl CompiledModule<'_> {
     ) -> Result<InstanceWithHost, RuntimeError> {
         let state = imports.state.clone();
         let mut linker = Linker::<HostState>::new(self.engine);
+        register_default_alloc(&mut linker)?;
 
         // Use the new provider-based registration
         let mut builder = HostLinkerBuilder::new(self.engine, &mut linker);
@@ -800,6 +1213,7 @@ impl CompiledModule<'_> {
         F: FnOnce(&mut HostLinkerBuilder<'_, T>) -> Result<(), LinkerError>,
     {
         let mut linker = Linker::new(self.engine);
+        register_default_alloc(&mut linker)?;
         let mut builder = HostLinkerBuilder::new(self.engine, &mut linker);
         configure(&mut builder).map_err(|e| RuntimeError::WasmError(e.to_string()))?;
 

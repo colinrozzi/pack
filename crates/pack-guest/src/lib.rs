@@ -44,13 +44,42 @@ pub use packr_derive::GraphValue;
 // The derive macro generates code that references composite_abi
 pub use packr_abi as composite_abi;
 
-// Re-export dlmalloc for the setup_guest macro
-#[doc(hidden)]
-pub use dlmalloc::GlobalDlmalloc as __GlobalDlmalloc;
-
 // Re-export alloc for macro use
 #[doc(hidden)]
 pub use alloc as __alloc;
+
+/// Global allocator shim that forwards all allocation to imported functions.
+///
+/// Composable packages do **not** embed an allocator. Instead they import
+/// `pack:alloc.alloc` / `pack:alloc.dealloc` from a provider — either an
+/// in-wasm allocator module or host-supplied functions. This makes the
+/// allocator a swappable dependency and lets multiple packages share one
+/// allocator over a shared linear memory: the foundation for
+/// package-to-package composition (one allocator over one heap, rather than
+/// two embedded allocators colliding).
+///
+/// Installed as the `#[global_allocator]` by [`setup_guest!`].
+pub struct ImportedAllocator;
+
+#[link(wasm_import_module = "pack:alloc")]
+extern "C" {
+    #[link_name = "alloc"]
+    fn __pack_import_alloc(size: usize, align: usize) -> *mut u8;
+    #[link_name = "dealloc"]
+    fn __pack_import_dealloc(ptr: *mut u8, size: usize, align: usize);
+}
+
+unsafe impl core::alloc::GlobalAlloc for ImportedAllocator {
+    #[inline]
+    unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
+        __pack_import_alloc(layout.size(), layout.align())
+    }
+
+    #[inline]
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: core::alloc::Layout) {
+        __pack_import_dealloc(ptr, layout.size(), layout.align());
+    }
+}
 
 /// Internal implementation for the export macro.
 ///
@@ -137,6 +166,25 @@ where
     0 // Success
 }
 
+/// Placeholder symbols for PIC side-module builds (the `pic` feature).
+///
+/// Newer rustc (>1.92) injects `--export=__heap_base` and `--export=__data_end`
+/// into every wasm-cdylib link. Under `-shared` (the PIC recipe) lld does not
+/// synthesize those symbols — the real heap base is supplied by the loader via
+/// the GOT — so the injected exports fail to resolve and the link aborts. These
+/// zero placeholders satisfy the exports; nothing reads them (the package drives
+/// allocation through `pack:alloc`, and the loader owns the heap via GOT globals).
+///
+/// Gated behind `pic` because a NON-PIC (non-`-shared`) build's lld defines these
+/// symbols itself, and a second definition here would be a duplicate-symbol error.
+#[cfg(feature = "pic")]
+#[no_mangle]
+pub static __heap_base: u8 = 0;
+
+#[cfg(feature = "pic")]
+#[no_mangle]
+pub static __data_end: u8 = 0;
+
 /// Allocate a buffer in guest memory.
 ///
 /// The host calls this to allocate space for input data before calling an export.
@@ -189,7 +237,9 @@ pub extern "C" fn __pack_free(ptr: i32, len: i32) {
 ///
 /// Uses the guest-allocates ABI:
 /// - `fn(in_ptr, in_len, out_ptr_ptr, out_len_ptr) -> status`
-/// - status 0 = success, -1 = error
+/// - status `< 0` = error
+/// - status `0` = success, return buffer is host-owned (do not free)
+/// - status `1` = success, return buffer is guest-allocated (we own it, free it)
 /// - The callee writes result ptr/len to the provided slots
 ///
 /// **Do not call this directly** - use the `#[import]` macro instead.
@@ -216,16 +266,33 @@ where
         &mut out_len as *mut i32 as i32,
     );
 
-    if status != 0 {
+    if status < 0 {
         panic!("import function returned error");
     }
 
-    // Read the result from the location the callee specified
-    let output_bytes =
-        unsafe { core::slice::from_raw_parts(out_ptr as *const u8, out_len as usize) };
+    // The status code also signals ownership of the return buffer:
+    //   1 = the host guest-allocated it via `__pack_alloc` (we own it, must free);
+    //   0 = the host wrote it into its own fixed scratch buffer (must NOT free).
+    // Async host fns (theater's large, unbounded returns) take the guest-allocated
+    // path; sync host fns use the host-owned scratch. Freeing the scratch buffer
+    // would hand the allocator a pointer it never allocated, so this guard is
+    // load-bearing. See `write_host_output_async` on the host side.
+    let guest_owned = status == 1;
 
-    // Decode the result
-    match decode(output_bytes) {
+    // Decode the result, scoping the borrow so the buffer is no longer aliased
+    // before we hand it back to the allocator.
+    let decoded = {
+        let output_bytes =
+            unsafe { core::slice::from_raw_parts(out_ptr as *const u8, out_len as usize) };
+        decode(output_bytes)
+    };
+
+    // Release the guest-allocated buffer now that its bytes have been decoded.
+    if guest_owned {
+        __pack_free(out_ptr, out_len);
+    }
+
+    match decoded {
         Ok(v) => v,
         Err(_) => panic!("failed to decode import result"),
     }
@@ -312,10 +379,14 @@ macro_rules! panic_handler {
     };
 }
 
-/// Convenience macro to set up dlmalloc allocator and panic handler.
+/// Convenience macro to set up the imported-allocator shim and panic handler.
 ///
-/// This uses dlmalloc which properly supports deallocation, making it
-/// suitable for long-running packages that allocate and free memory.
+/// The package does **not** embed an allocator; it installs
+/// [`ImportedAllocator`] as its `#[global_allocator]`, forwarding all
+/// allocation to imported `pack:alloc.alloc` / `pack:alloc.dealloc`. A
+/// provider (an in-wasm allocator module or host-supplied functions) must
+/// satisfy those imports at instantiation. This is what lets packages share a
+/// single allocator over shared memory when composed.
 ///
 /// # Example
 ///
@@ -326,7 +397,7 @@ macro_rules! panic_handler {
 macro_rules! setup_guest {
     () => {
         #[global_allocator]
-        static __COMPOSITE_ALLOCATOR: $crate::__GlobalDlmalloc = $crate::__GlobalDlmalloc;
+        static __PACK_ALLOCATOR: $crate::ImportedAllocator = $crate::ImportedAllocator;
         $crate::panic_handler!();
     };
 }

@@ -1,0 +1,17 @@
+[package]
+name = "pack-alloc-module"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# The real free-list allocator. No "global" feature: we drive `Dlmalloc`
+# directly and expose it as `alloc`/`dealloc` exports, we do NOT install it as
+# this module's #[global_allocator].
+dlmalloc = { version = "0.2", default-features = false }
+
+[profile.release]
+opt-level = "s"
+lto = true
