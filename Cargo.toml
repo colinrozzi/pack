@@ -6,6 +6,9 @@ members = [
     "crates/pack-guest-macros",
 ]
 exclude = [
+    "packages/pack-alloc",
+    "packages/echo-pic",
+    "packages/hostcall-pic",
     "packages/adder",
     "packages/doubler",
     "packages/echo",
@@ -75,6 +78,7 @@ packr-abi = { workspace = true, features = ["std", "serde"] }
 
 [dev-dependencies]
 wat = "1.0"  # For writing test modules in WAT
+wasmtime = "27"  # Drive the allocator module directly in the 1b bounded-memory test
 tokio = { version = "1.0", features = ["rt-multi-thread", "macros", "sync", "time"] }
 
 [[example]]

@@ -29,7 +29,7 @@ use std::future::Future;
 use std::marker::PhantomData;
 use std::sync::Arc;
 use thiserror::Error;
-use wasmtime::{Caller, Engine, Linker};
+use wasmtime::{Caller, Engine, Linker, Memory};
 
 /// Drive an interceptor future to completion from a sync host-function bridge.
 ///
@@ -63,18 +63,12 @@ pub const RESULT_LEN_OFFSET: usize = 16 * 1024 + 4;
 /// Default output buffer offset (16KB) - DEPRECATED: use RESULT_PTR_OFFSET
 pub const OUTPUT_BUFFER_OFFSET: usize = 16 * 1024;
 
-/// Default output buffer capacity (32KB) - DEPRECATED: guest now allocates
+/// Max size of a host-function return written to the fixed, host-owned scratch
+/// buffer (`OUTPUT_BUFFER_OFFSET+8`). Only the SYNC host-fn path uses that buffer
+/// and it lives in low memory below the PIC package base, so this stays a
+/// conservative fail-safe. The ASYNC path guest-allocates on the heap and is
+/// UNBOUNDED — that is where theater's large returns ride.
 pub const OUTPUT_BUFFER_CAPACITY: usize = 32 * 1024;
-
-/// Max size of a host-function return written to the fixed reserved buffer.
-///
-/// The return is written at `OUTPUT_BUFFER_OFFSET+8`, which sits in the guest's
-/// shadow stack (grows down from ~1MB). A return of N bytes is safe only while
-/// it doesn't reach the stack pointer at the call. 512KB stays safely below the
-/// shallowest realistic `sp` (actor handlers use well under ~470KB of the 1MB
-/// stack before a large-return host call). Larger returns fail cleanly here;
-/// the real *unbounded* fix is the PIC async-guest-allocate path.
-pub const HOST_RETURN_MAX: usize = 512 * 1024;
 
 // ============================================================================
 // Error Handling Infrastructure
@@ -174,12 +168,35 @@ impl From<RuntimeError> for LinkerError {
 /// Used by typed host functions to access state and perform memory operations.
 pub struct Ctx<'a, T> {
     caller: Caller<'a, T>,
+    /// The host-owned shared memory. PIC packages don't export their memory, so
+    /// the loader provides it here. `None` falls back to the exported "memory".
+    memory: Option<Memory>,
 }
 
 impl<'a, T> Ctx<'a, T> {
-    /// Create a new context from a wasmi Caller
+    /// Create a new context from a Caller (legacy: memory via export).
     pub fn new(caller: Caller<'a, T>) -> Self {
-        Self { caller }
+        Self {
+            caller,
+            memory: None,
+        }
+    }
+
+    /// Create a context with an explicit host-owned memory (the PIC path).
+    pub fn new_with_memory(caller: Caller<'a, T>, memory: Option<Memory>) -> Self {
+        Self { caller, memory }
+    }
+
+    /// Resolve the guest linear memory: the host-owned handle if present,
+    /// otherwise the instance's exported "memory".
+    fn resolve_memory(&mut self) -> Result<Memory, LinkerError> {
+        self.memory
+            .or_else(|| {
+                self.caller
+                    .get_export("memory")
+                    .and_then(|e| e.into_memory())
+            })
+            .ok_or_else(|| LinkerError::MemoryError("no guest memory available".into()))
     }
 
     /// Get a reference to the store data
@@ -204,11 +221,7 @@ impl<'a, T> Ctx<'a, T> {
 
     /// Read a Value from WASM memory using the Graph ABI
     pub fn read_value(&mut self, ptr: i32, len: i32) -> Result<Value, LinkerError> {
-        let memory = self
-            .caller
-            .get_export("memory")
-            .and_then(|e| e.into_memory())
-            .ok_or_else(|| LinkerError::MemoryError("no memory export".into()))?;
+        let memory = self.resolve_memory()?;
 
         let ptr = ptr as usize;
         let len = len as usize;
@@ -241,11 +254,7 @@ impl<'a, T> Ctx<'a, T> {
             )));
         }
 
-        let memory = self
-            .caller
-            .get_export("memory")
-            .and_then(|e| e.into_memory())
-            .ok_or_else(|| LinkerError::MemoryError("no memory export".into()))?;
+        let memory = self.resolve_memory()?;
 
         memory
             .write(&mut self.caller, out_ptr as usize, &bytes)
@@ -268,11 +277,7 @@ impl<'a, T> Ctx<'a, T> {
 
     /// Read a string from WASM memory
     pub fn read_string(&mut self, ptr: i32, len: i32) -> Result<String, LinkerError> {
-        let memory = self
-            .caller
-            .get_export("memory")
-            .and_then(|e| e.into_memory())
-            .ok_or_else(|| LinkerError::MemoryError("no memory export".into()))?;
+        let memory = self.resolve_memory()?;
 
         let ptr = ptr as usize;
         let len = len as usize;
@@ -293,6 +298,8 @@ pub struct HostLinkerBuilder<'a, T> {
     engine: &'a Engine,
     error_handler: Option<ErrorHandler>,
     interceptor: Option<Arc<dyn CallInterceptor>>,
+    /// Host-owned shared memory for PIC packages (they don't export memory).
+    memory: Option<Memory>,
     _marker: PhantomData<T>,
 }
 
@@ -304,8 +311,17 @@ impl<'a, T> HostLinkerBuilder<'a, T> {
             engine,
             error_handler: None,
             interceptor: None,
+            memory: None,
             _marker: PhantomData,
         }
+    }
+
+    /// Provide the host-owned shared memory used for host-function arg/return
+    /// marshalling. Required for PIC packages (which do not export memory);
+    /// applies uniformly to every typed host function registered here.
+    pub fn with_memory(&mut self, memory: Memory) -> &mut Self {
+        self.memory = Some(memory);
+        self
     }
 
     /// Set a call interceptor for recording/replaying host function calls.
@@ -358,11 +374,13 @@ impl<'a, T> HostLinkerBuilder<'a, T> {
     pub fn interface(&mut self, name: &str) -> Result<InterfaceBuilder<'_, 'a, T>, LinkerError> {
         let error_handler = self.error_handler.clone();
         let interceptor = self.interceptor.clone();
+        let memory = self.memory;
         Ok(InterfaceBuilder {
             linker: self,
             module_name: name.to_string(),
             error_handler,
             interceptor,
+            memory,
         })
     }
 
@@ -427,6 +445,125 @@ pub struct InterfaceBuilder<'a, 'b, T> {
     module_name: String,
     error_handler: Option<ErrorHandler>,
     interceptor: Option<Arc<dyn CallInterceptor>>,
+    memory: Option<Memory>,
+}
+
+/// Resolve the guest memory for a host-function call: the host-owned handle if
+/// present (PIC packages don't export memory), else the caller's exported one.
+fn resolve_caller_memory<T>(
+    caller: &mut Caller<'_, T>,
+    provided: Option<Memory>,
+) -> Option<Memory> {
+    provided.or_else(|| caller.get_export("memory").and_then(|e| e.into_memory()))
+}
+
+/// Hand a `Value` back to the guest: encode it into the reserved host-return
+/// buffer and write (ptr, len) into the caller's result slots. The buffer sits
+/// at a fixed low offset that is safe for both legacy modules (their reserved
+/// I/O region) and PIC packages (the guard region *below* the package's
+/// `__memory_base`, so it can't corrupt package or allocator state). Host calls
+/// are sequential — the guest reads each result before its next host call — so
+/// one buffer suffices. Bounded by `OUTPUT_BUFFER_CAPACITY`.
+///
+/// A fixed buffer (rather than a guest `__pack_alloc` call) is required because
+/// a *sync* host function cannot call a guest export in an async store.
+fn write_host_output<T>(
+    caller: &mut Caller<'_, T>,
+    memory: Option<Memory>,
+    out_ptr_ptr: i32,
+    out_len_ptr: i32,
+    value: &Value,
+) -> Result<(), HostFunctionErrorKind> {
+    let bytes = encode(value).map_err(|e| HostFunctionErrorKind::Encode(e.to_string()))?;
+    let memory = resolve_caller_memory(caller, memory)
+        .ok_or_else(|| HostFunctionErrorKind::MemoryWrite("no guest memory available".into()))?;
+    if bytes.len() > OUTPUT_BUFFER_CAPACITY {
+        return Err(HostFunctionErrorKind::MemoryWrite(format!(
+            "host return {} bytes exceeds capacity {}",
+            bytes.len(),
+            OUTPUT_BUFFER_CAPACITY
+        )));
+    }
+    let data_ptr = (OUTPUT_BUFFER_OFFSET + 8) as i32;
+    memory
+        .write(&mut *caller, data_ptr as usize, &bytes)
+        .map_err(|e| HostFunctionErrorKind::MemoryWrite(e.to_string()))?;
+    memory
+        .write(&mut *caller, out_ptr_ptr as usize, &data_ptr.to_le_bytes())
+        .map_err(|e| HostFunctionErrorKind::MemoryWrite(e.to_string()))?;
+    memory
+        .write(
+            &mut *caller,
+            out_len_ptr as usize,
+            &(bytes.len() as i32).to_le_bytes(),
+        )
+        .map_err(|e| HostFunctionErrorKind::MemoryWrite(e.to_string()))?;
+    Ok(())
+}
+
+/// Async variant of [`write_host_output`]: guest-allocates the return buffer by
+/// awaiting the guest's `__pack_alloc`, so it is UNBOUNDED. theater's large
+/// returns (get-chain, wat-to-wasm, store.get, message-server responses) all go
+/// here — they are registered as async host functions, which can re-enter the
+/// guest in an async store to allocate.
+///
+/// Returns `Ok(true)` when the buffer was guest-allocated (the guest owns it and
+/// MUST free it via `__pack_free` after decoding), or `Ok(false)` when it fell
+/// back to the fixed, host-owned scratch buffer (the guest must NOT free it).
+/// The caller relays this ownership bit to the guest through the import status
+/// code so `__import_impl` frees exactly the buffers it owns.
+async fn write_host_output_async<T: Send>(
+    caller: &mut Caller<'_, T>,
+    memory: Option<Memory>,
+    out_ptr_ptr: i32,
+    out_len_ptr: i32,
+    value: &Value,
+) -> Result<bool, HostFunctionErrorKind> {
+    let bytes = encode(value).map_err(|e| HostFunctionErrorKind::Encode(e.to_string()))?;
+    let memory = resolve_caller_memory(caller, memory)
+        .ok_or_else(|| HostFunctionErrorKind::MemoryWrite("no guest memory available".into()))?;
+    // Prefer guest allocation (unbounded — theater's large returns). Fall back
+    // to the fixed reserved buffer for legacy modules that don't export
+    // `__pack_alloc` (bounded by OUTPUT_BUFFER_CAPACITY).
+    let (data_ptr, guest_allocated) = match caller
+        .get_export("__pack_alloc")
+        .and_then(|e| e.into_func())
+    {
+        Some(f) => {
+            let typed = f
+                .typed::<i32, i32>(&*caller)
+                .map_err(|e| HostFunctionErrorKind::MemoryWrite(e.to_string()))?;
+            let ptr = typed
+                .call_async(&mut *caller, bytes.len() as i32)
+                .await
+                .map_err(|e| HostFunctionErrorKind::MemoryWrite(e.to_string()))?;
+            (ptr, true)
+        }
+        None => {
+            if bytes.len() > OUTPUT_BUFFER_CAPACITY {
+                return Err(HostFunctionErrorKind::MemoryWrite(format!(
+                    "host return {} bytes exceeds capacity {}",
+                    bytes.len(),
+                    OUTPUT_BUFFER_CAPACITY
+                )));
+            }
+            ((OUTPUT_BUFFER_OFFSET + 8) as i32, false)
+        }
+    };
+    memory
+        .write(&mut *caller, data_ptr as usize, &bytes)
+        .map_err(|e| HostFunctionErrorKind::MemoryWrite(e.to_string()))?;
+    memory
+        .write(&mut *caller, out_ptr_ptr as usize, &data_ptr.to_le_bytes())
+        .map_err(|e| HostFunctionErrorKind::MemoryWrite(e.to_string()))?;
+    memory
+        .write(
+            &mut *caller,
+            out_len_ptr as usize,
+            &(bytes.len() as i32).to_le_bytes(),
+        )
+        .map_err(|e| HostFunctionErrorKind::MemoryWrite(e.to_string()))?;
+    Ok(guest_allocated)
 }
 
 impl<T: 'static> InterfaceBuilder<'_, '_, T> {
@@ -493,6 +630,7 @@ impl<T: 'static> InterfaceBuilder<'_, '_, T> {
         let interceptor = self.interceptor.clone();
         let interface_name = self.module_name.clone();
         let func_name = name.to_string();
+        let memory = self.memory;
 
         self.linker
             .linker
@@ -525,66 +663,26 @@ impl<T: 'static> InterfaceBuilder<'_, '_, T> {
                         }
                     };
 
-                    // Helper to encode a value and write it to memory
+                    // Encode a Value and hand it back to the guest. PIC-safe:
+                    // guest-allocated buffer, no fixed output-buffer offset.
                     let write_output = |ctx: &mut Ctx<'_, T>, value: &Value| -> i32 {
-                        let bytes = match encode(value) {
-                            Ok(b) => b,
-                            Err(e) => {
-                                report(HostFunctionErrorKind::Encode(e.to_string()));
-                                return -1;
-                            }
-                        };
-
-                        let memory = match ctx
-                            .caller
-                            .get_export("memory")
-                            .and_then(|e| e.into_memory())
-                        {
-                            Some(m) => m,
-                            None => {
-                                report(HostFunctionErrorKind::MemoryWrite(
-                                    "no memory export".to_string(),
-                                ));
-                                return -1;
-                            }
-                        };
-
-                        if bytes.len() > HOST_RETURN_MAX {
-                            report(HostFunctionErrorKind::MemoryWrite(format!(
-                                "host return {} bytes exceeds the host-return cap of {} bytes",
-                                bytes.len(),
-                                HOST_RETURN_MAX
-                            )));
-                            return -1;
-                        }
-                        let data_offset = OUTPUT_BUFFER_OFFSET + 8;
-                        if let Err(e) = memory.write(&mut ctx.caller, data_offset, &bytes) {
-                            report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
-                            return -1;
-                        }
-
-                        if let Err(e) = memory.write(
+                        match write_host_output(
                             &mut ctx.caller,
-                            out_ptr_ptr as usize,
-                            &(data_offset as i32).to_le_bytes(),
+                            memory,
+                            out_ptr_ptr,
+                            out_len_ptr,
+                            value,
                         ) {
-                            report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
-                            return -1;
+                            Ok(()) => 0,
+                            Err(kind) => {
+                                report(kind);
+                                -1
+                            }
                         }
-                        if let Err(e) = memory.write(
-                            &mut ctx.caller,
-                            out_len_ptr as usize,
-                            &(bytes.len() as i32).to_le_bytes(),
-                        ) {
-                            report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
-                            return -1;
-                        }
-
-                        0
                     };
 
                     // Create context - we keep ownership throughout
-                    let mut ctx = Ctx::new(caller);
+                    let mut ctx = Ctx::new_with_memory(caller, memory);
 
                     // Read and decode input
                     let input_value = match ctx.read_value(in_ptr, in_len) {
@@ -683,6 +781,7 @@ impl<T: 'static> InterfaceBuilder<'_, '_, T> {
         let interceptor = self.interceptor.clone();
         let interface_name = self.module_name.clone();
         let func_name = name.to_string();
+        let memory = self.memory;
 
         self.linker
             .linker
@@ -715,65 +814,25 @@ impl<T: 'static> InterfaceBuilder<'_, '_, T> {
                         }
                     };
 
-                    // Helper to encode a value and write it to memory
+                    // Encode a Value and hand it back to the guest. PIC-safe:
+                    // guest-allocated buffer, no fixed output-buffer offset.
                     let write_output = |ctx: &mut Ctx<'_, T>, value: &Value| -> i32 {
-                        let bytes = match encode(value) {
-                            Ok(b) => b,
-                            Err(e) => {
-                                report(HostFunctionErrorKind::Encode(e.to_string()));
-                                return -1;
-                            }
-                        };
-
-                        let memory = match ctx
-                            .caller
-                            .get_export("memory")
-                            .and_then(|e| e.into_memory())
-                        {
-                            Some(m) => m,
-                            None => {
-                                report(HostFunctionErrorKind::MemoryWrite(
-                                    "no memory export".to_string(),
-                                ));
-                                return -1;
-                            }
-                        };
-
-                        if bytes.len() > HOST_RETURN_MAX {
-                            report(HostFunctionErrorKind::MemoryWrite(format!(
-                                "host return {} bytes exceeds the host-return cap of {} bytes",
-                                bytes.len(),
-                                HOST_RETURN_MAX
-                            )));
-                            return -1;
-                        }
-                        let data_offset = OUTPUT_BUFFER_OFFSET + 8;
-                        if let Err(e) = memory.write(&mut ctx.caller, data_offset, &bytes) {
-                            report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
-                            return -1;
-                        }
-
-                        if let Err(e) = memory.write(
+                        match write_host_output(
                             &mut ctx.caller,
-                            out_ptr_ptr as usize,
-                            &(data_offset as i32).to_le_bytes(),
+                            memory,
+                            out_ptr_ptr,
+                            out_len_ptr,
+                            value,
                         ) {
-                            report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
-                            return -1;
+                            Ok(()) => 0,
+                            Err(kind) => {
+                                report(kind);
+                                -1
+                            }
                         }
-                        if let Err(e) = memory.write(
-                            &mut ctx.caller,
-                            out_len_ptr as usize,
-                            &(bytes.len() as i32).to_le_bytes(),
-                        ) {
-                            report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
-                            return -1;
-                        }
-
-                        0
                     };
 
-                    let mut ctx = Ctx::new(caller);
+                    let mut ctx = Ctx::new_with_memory(caller, memory);
 
                     // Read and decode input
                     let input_value = match ctx.read_value(in_ptr, in_len) {
@@ -900,6 +959,7 @@ impl<T: Send + Clone + 'static> InterfaceBuilder<'_, '_, T> {
         let interceptor = self.interceptor.clone();
         let interface_name = self.module_name.clone();
         let func_name = name.to_string();
+        let memory = self.memory;
 
         self.linker
             .linker
@@ -932,22 +992,19 @@ impl<T: Send + Clone + 'static> InterfaceBuilder<'_, '_, T> {
                             }
                         };
 
-                        // Read memory for input
-                        let memory = match caller
-                            .get_export("memory")
-                            .and_then(|e| e.into_memory())
-                        {
+                        // Read + decode input from the shared guest memory.
+                        let mem = match resolve_caller_memory(&mut caller, memory) {
                             Some(m) => m,
                             None => {
                                 report(HostFunctionErrorKind::MemoryRead(
-                                    "no memory export".to_string(),
+                                    "no guest memory available".to_string(),
                                 ));
                                 return -1;
                             }
                         };
 
                         let mut buffer = vec![0u8; in_len as usize];
-                        if let Err(e) = memory.read(&caller, in_ptr as usize, &mut buffer) {
+                        if let Err(e) = mem.read(&caller, in_ptr as usize, &mut buffer) {
                             report(HostFunctionErrorKind::MemoryRead(e.to_string()));
                             return -1;
                         }
@@ -965,36 +1022,24 @@ impl<T: Send + Clone + 'static> InterfaceBuilder<'_, '_, T> {
                         if let Some(ref interceptor) = interceptor {
                             if let Some(recorded_output) = interceptor.before_import(&interface_name, &func_name, &input_value).await {
                                 interceptor.after_import(&interface_name, &func_name, &input_value, &recorded_output).await;
-                                // Encode and write intercepted output to memory
-                                let bytes = match encode(&recorded_output) {
-                                    Ok(b) => b,
-                                    Err(e) => {
-                                        report(HostFunctionErrorKind::Encode(e.to_string()));
+                                // Hand the recorded output back to the guest.
+                                match write_host_output_async(
+                                    &mut caller,
+                                    memory,
+                                    out_ptr_ptr,
+                                    out_len_ptr,
+                                    &recorded_output,
+                                )
+                                .await
+                                {
+                                    // 1 = guest owns the buffer (must free after
+                                    // decode), 0 = host-owned fixed scratch.
+                                    Ok(guest_owned) => return i32::from(guest_owned),
+                                    Err(kind) => {
+                                        report(kind);
                                         return -1;
                                     }
-                                };
-                                if bytes.len() > HOST_RETURN_MAX {
-                            report(HostFunctionErrorKind::MemoryWrite(format!(
-                                "host return {} bytes exceeds the host-return cap of {} bytes",
-                                bytes.len(),
-                                HOST_RETURN_MAX
-                            )));
-                            return -1;
-                        }
-                        let data_offset = OUTPUT_BUFFER_OFFSET + 8;
-                                if let Err(e) = memory.write(&mut caller, data_offset, &bytes) {
-                                    report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
-                                    return -1;
                                 }
-                                if let Err(e) = memory.write(&mut caller, out_ptr_ptr as usize, &(data_offset as i32).to_le_bytes()) {
-                                    report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
-                                    return -1;
-                                }
-                                if let Err(e) = memory.write(&mut caller, out_len_ptr as usize, &(bytes.len() as i32).to_le_bytes()) {
-                                    report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
-                                    return -1;
-                                }
-                                return 0;
                             }
                         }
 
@@ -1025,39 +1070,24 @@ impl<T: Send + Clone + 'static> InterfaceBuilder<'_, '_, T> {
                             }
                         }
 
-                        // Encode and write output to memory
-                        let bytes = match encode(&output_value) {
-                            Ok(b) => b,
-                            Err(e) => {
-                                report(HostFunctionErrorKind::Encode(e.to_string()));
-                                return -1;
+                        // Encode + hand the output back to the guest (PIC-safe).
+                        match write_host_output_async(
+                            &mut caller,
+                            memory,
+                            out_ptr_ptr,
+                            out_len_ptr,
+                            &output_value,
+                        )
+                        .await
+                        {
+                            // 1 = guest owns the buffer (must free after decode),
+                            // 0 = host-owned fixed scratch.
+                            Ok(guest_owned) => i32::from(guest_owned),
+                            Err(kind) => {
+                                report(kind);
+                                -1
                             }
-                        };
-
-                        if bytes.len() > HOST_RETURN_MAX {
-                            report(HostFunctionErrorKind::MemoryWrite(format!(
-                                "host return {} bytes exceeds the host-return cap of {} bytes",
-                                bytes.len(),
-                                HOST_RETURN_MAX
-                            )));
-                            return -1;
                         }
-                        let data_offset = OUTPUT_BUFFER_OFFSET + 8;
-                        if let Err(e) = memory.write(&mut caller, data_offset, &bytes) {
-                            report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
-                            return -1;
-                        }
-
-                        if let Err(e) = memory.write(&mut caller, out_ptr_ptr as usize, &(data_offset as i32).to_le_bytes()) {
-                            report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
-                            return -1;
-                        }
-                        if let Err(e) = memory.write(&mut caller, out_len_ptr as usize, &(bytes.len() as i32).to_le_bytes()) {
-                            report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
-                            return -1;
-                        }
-
-                        0 // Success
                     })
                 },
             )
@@ -1101,6 +1131,7 @@ impl<T: Send + Clone + 'static> InterfaceBuilder<'_, '_, T> {
         let interceptor = self.interceptor.clone();
         let interface_name = self.module_name.clone();
         let func_name = name.to_string();
+        let memory = self.memory;
 
         self.linker
             .linker
@@ -1133,22 +1164,19 @@ impl<T: Send + Clone + 'static> InterfaceBuilder<'_, '_, T> {
                             }
                         };
 
-                        // Read memory for input
-                        let memory = match caller
-                            .get_export("memory")
-                            .and_then(|e| e.into_memory())
-                        {
+                        // Read + decode input from the shared guest memory.
+                        let mem = match resolve_caller_memory(&mut caller, memory) {
                             Some(m) => m,
                             None => {
                                 report(HostFunctionErrorKind::MemoryRead(
-                                    "no memory export".to_string(),
+                                    "no guest memory available".to_string(),
                                 ));
                                 return -1;
                             }
                         };
 
                         let mut buffer = vec![0u8; in_len as usize];
-                        if let Err(e) = memory.read(&caller, in_ptr as usize, &mut buffer) {
+                        if let Err(e) = mem.read(&caller, in_ptr as usize, &mut buffer) {
                             report(HostFunctionErrorKind::MemoryRead(e.to_string()));
                             return -1;
                         }
@@ -1166,36 +1194,24 @@ impl<T: Send + Clone + 'static> InterfaceBuilder<'_, '_, T> {
                         if let Some(ref interceptor) = interceptor {
                             if let Some(recorded_output) = interceptor.before_import(&interface_name, &func_name, &input_value).await {
                                 interceptor.after_import(&interface_name, &func_name, &input_value, &recorded_output).await;
-                                // Encode and write intercepted output to memory
-                                let bytes = match encode(&recorded_output) {
-                                    Ok(b) => b,
-                                    Err(e) => {
-                                        report(HostFunctionErrorKind::Encode(e.to_string()));
+                                // Hand the recorded output back to the guest.
+                                match write_host_output_async(
+                                    &mut caller,
+                                    memory,
+                                    out_ptr_ptr,
+                                    out_len_ptr,
+                                    &recorded_output,
+                                )
+                                .await
+                                {
+                                    // 1 = guest owns the buffer (must free after
+                                    // decode), 0 = host-owned fixed scratch.
+                                    Ok(guest_owned) => return i32::from(guest_owned),
+                                    Err(kind) => {
+                                        report(kind);
                                         return -1;
                                     }
-                                };
-                                if bytes.len() > HOST_RETURN_MAX {
-                            report(HostFunctionErrorKind::MemoryWrite(format!(
-                                "host return {} bytes exceeds the host-return cap of {} bytes",
-                                bytes.len(),
-                                HOST_RETURN_MAX
-                            )));
-                            return -1;
-                        }
-                        let data_offset = OUTPUT_BUFFER_OFFSET + 8;
-                                if let Err(e) = memory.write(&mut caller, data_offset, &bytes) {
-                                    report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
-                                    return -1;
                                 }
-                                if let Err(e) = memory.write(&mut caller, out_ptr_ptr as usize, &(data_offset as i32).to_le_bytes()) {
-                                    report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
-                                    return -1;
-                                }
-                                if let Err(e) = memory.write(&mut caller, out_len_ptr as usize, &(bytes.len() as i32).to_le_bytes()) {
-                                    report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
-                                    return -1;
-                                }
-                                return 0;
                             }
                         }
 
@@ -1238,39 +1254,24 @@ impl<T: Send + Clone + 'static> InterfaceBuilder<'_, '_, T> {
                             }
                         }
 
-                        // Encode and write output to memory
-                        let bytes = match encode(&output_value) {
-                            Ok(b) => b,
-                            Err(e) => {
-                                report(HostFunctionErrorKind::Encode(e.to_string()));
-                                return -1;
+                        // Encode + hand the output back to the guest (PIC-safe).
+                        match write_host_output_async(
+                            &mut caller,
+                            memory,
+                            out_ptr_ptr,
+                            out_len_ptr,
+                            &output_value,
+                        )
+                        .await
+                        {
+                            // 1 = guest owns the buffer (must free after decode),
+                            // 0 = host-owned fixed scratch.
+                            Ok(guest_owned) => i32::from(guest_owned),
+                            Err(kind) => {
+                                report(kind);
+                                -1
                             }
-                        };
-
-                        if bytes.len() > HOST_RETURN_MAX {
-                            report(HostFunctionErrorKind::MemoryWrite(format!(
-                                "host return {} bytes exceeds the host-return cap of {} bytes",
-                                bytes.len(),
-                                HOST_RETURN_MAX
-                            )));
-                            return -1;
                         }
-                        let data_offset = OUTPUT_BUFFER_OFFSET + 8;
-                        if let Err(e) = memory.write(&mut caller, data_offset, &bytes) {
-                            report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
-                            return -1;
-                        }
-
-                        if let Err(e) = memory.write(&mut caller, out_ptr_ptr as usize, &(data_offset as i32).to_le_bytes()) {
-                            report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
-                            return -1;
-                        }
-                        if let Err(e) = memory.write(&mut caller, out_len_ptr as usize, &(bytes.len() as i32).to_le_bytes()) {
-                            report(HostFunctionErrorKind::MemoryWrite(e.to_string()));
-                            return -1;
-                        }
-
-                        0 // Success
                     })
                 },
             )

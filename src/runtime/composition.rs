@@ -226,7 +226,8 @@ impl CompositionBuilder {
                 RuntimeError::ModuleNotFound(format!("Package '{}' not found", pkg.name))
             })?;
 
-            let linker = Linker::<()>::new(&self.engine);
+            let mut linker = Linker::<()>::new(&self.engine);
+            super::register_default_alloc(&mut linker)?;
             let mut store = Store::new(&self.engine, ());
 
             let instance = linker
@@ -249,6 +250,7 @@ impl CompositionBuilder {
             })?;
 
             let mut linker = Linker::<ComposedState>::new(&self.engine);
+            super::register_default_alloc(&mut linker)?;
 
             // Wire host functions first
             for host_fn in &self.host_functions {

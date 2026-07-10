@@ -12,9 +12,16 @@ name = "packr_guest"
 [features]
 default = []
 derive = ["dep:packr-derive"]
+# Building the guest as a PIC side module (relocation-model=pic + -shared, the
+# package-composition recipe). Newer rustc (>1.92) injects
+# `--export=__heap_base` / `--export=__data_end` into the wasm-cdylib link, which
+# lld cannot satisfy under `-shared` (the heap base is provided by the loader via
+# the GOT). This feature defines placeholder symbols so those injected exports
+# resolve. It MUST NOT be enabled for a non-PIC build — there lld defines these
+# itself and the two would collide.
+pic = []
 
 [dependencies]
 packr-abi = { workspace = true, default-features = false }
 packr-guest-macros.workspace = true
 packr-derive = { workspace = true, optional = true }
-dlmalloc = { version = "0.2", features = ["global"] }

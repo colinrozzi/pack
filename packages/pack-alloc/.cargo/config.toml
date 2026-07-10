@@ -1,0 +1,11 @@
+[target.wasm32-unknown-unknown]
+# PIC / dynamic-linking spike: build as a position-independent "side module" so
+# it imports __memory_base (+ __stack_pointer) and can be placed at a runtime-
+# assigned base in a shared linear memory — the mechanism that lets the
+# allocator and a package share one memory without their stacks/data colliding.
+rustflags = [
+    "-C", "relocation-model=pic",
+    "-C", "link-arg=--experimental-pic",
+    "-C", "link-arg=-shared",
+    "-C", "link-arg=--import-memory",
+]

@@ -21,6 +21,18 @@ jobs:
 
       - uses: DeterminateSystems/magic-nix-cache-action@main
 
+      # packr embeds packages/pack-alloc via include_bytes! (the PIC allocator),
+      # so the lib won't compile without it. Build the PIC side-modules from each
+      # package's own dir (for its .cargo/config PIC link flags) before check.
+      - name: Build PIC packages
+        run: |
+          nix develop --command bash -c '
+            set -e
+            for pkg in pack-alloc echo-pic hostcall-pic; do
+              (cd "packages/$pkg" && cargo build --release --target wasm32-unknown-unknown)
+            done
+          '
+
       - name: Check
         run: nix develop --command cargo check --workspace
 
@@ -39,6 +51,19 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@main
 
       - uses: DeterminateSystems/magic-nix-cache-action@main
+
+      # The pic_composition tests load prebuilt PIC side-modules from
+      # packages/*/target (gitignored). Each must be built from its own dir so its
+      # .cargo/config.toml PIC link flags apply — a repo-root --manifest-path build
+      # silently drops them and produces a plain module missing __wasm_call_ctors.
+      - name: Build PIC test packages
+        run: |
+          nix develop --command bash -c '
+            set -e
+            for pkg in pack-alloc echo-pic hostcall-pic; do
+              (cd "packages/$pkg" && cargo build --release --target wasm32-unknown-unknown)
+            done
+          '
 
       - name: Test
         run: nix develop --command cargo test --workspace
