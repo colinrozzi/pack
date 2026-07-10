@@ -182,9 +182,13 @@ impl Default for Runtime {
 /// The default in-wasm allocator module (dlmalloc, real `free`), embedded so
 /// the runtime can instantiate it as the shared allocator for every PIC
 /// package. Built by `packages/pack-alloc`.
+// Committed, packaged runtime asset (NOT a build artifact under target/, which is
+// gitignored and would be absent from the published crate). Regenerate with:
+//   (cd packages/pack-alloc && cargo build --release --target wasm32-unknown-unknown)
+//   cp packages/pack-alloc/target/wasm32-unknown-unknown/release/pack_alloc_module.wasm assets/
 const PACK_ALLOC_WASM: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/packages/pack-alloc/target/wasm32-unknown-unknown/release/pack_alloc_module.wasm"
+    "/assets/pack_alloc_module.wasm"
 ));
 
 /// Per-instance shared-memory layout (byte offsets). Regions are disjoint and
