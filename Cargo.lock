@@ -775,7 +775,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "packr"
-version = "0.7.3"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -794,7 +794,7 @@ dependencies = [
 
 [[package]]
 name = "packr-abi"
-version = "0.7.3"
+version = "0.8.0"
 dependencies = [
  "hashbrown 0.14.5",
  "packr-derive",
@@ -804,7 +804,7 @@ dependencies = [
 
 [[package]]
 name = "packr-derive"
-version = "0.7.3"
+version = "0.8.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -813,7 +813,7 @@ dependencies = [
 
 [[package]]
 name = "packr-guest"
-version = "0.7.3"
+version = "0.8.0"
 dependencies = [
  "packr-abi",
  "packr-derive",
@@ -822,7 +822,7 @@ dependencies = [
 
 [[package]]
 name = "packr-guest-macros"
-version = "0.7.3"
+version = "0.8.0"
 dependencies = [
  "packr-abi",
  "proc-macro2",
