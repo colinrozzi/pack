@@ -24,16 +24,9 @@ const HEAP_BASE: i32 = 0x1_0000; // 64 KiB — safely above the allocator's BSS
 const HEAP_END: i32 = 0x10_0000; // 1 MiB
 
 fn alloc_module_wasm() -> Vec<u8> {
-    let p = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("packages/pack-alloc/target/wasm32-unknown-unknown/release/pack_alloc_module.wasm");
-    std::fs::read(&p).unwrap_or_else(|e| {
-        panic!(
-            "read alloc module {}: {} — build it: \
-             cd packages/pack-alloc && cargo build --target wasm32-unknown-unknown --release",
-            p.display(),
-            e
-        )
-    })
+    // Committed runtime asset (same one the runtime embeds via include_bytes!).
+    let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/pack_alloc_module.wasm");
+    std::fs::read(&p).unwrap_or_else(|e| panic!("read alloc module {}: {}", p.display(), e))
 }
 
 /// Minimal in-process dynamic loader for the PIC allocator side module.

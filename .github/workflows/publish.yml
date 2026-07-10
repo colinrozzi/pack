@@ -51,6 +51,18 @@ jobs:
 
       - uses: DeterminateSystems/magic-nix-cache-action@main
 
+      # pic_composition tests load the PIC test fixtures (gitignored under
+      # packages/*/target); build them from each package's own dir for the PIC
+      # link flags. (The embedded allocator is the committed assets/ file.)
+      - name: Build PIC test packages
+        run: |
+          nix develop --command bash -c '
+            set -e
+            for pkg in echo-pic hostcall-pic; do
+              (cd "packages/$pkg" && cargo build --release --target wasm32-unknown-unknown)
+            done
+          '
+
       - name: Test
         run: |
           nix develop --command cargo test --workspace

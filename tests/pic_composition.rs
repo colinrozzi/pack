@@ -51,13 +51,8 @@ fn var_i32(store: &mut Store<()>, v: i32) -> Global {
 /// Play the dynamic loader: instantiate allocator + package sharing one memory
 /// and table, and return the package instance + the shared memory + table.
 fn load_group(store: &mut Store<()>, engine: &Engine) -> (Instance, Memory, Table) {
-    let alloc_mod = Module::new(
-        engine,
-        read_wasm(
-            "packages/pack-alloc/target/wasm32-unknown-unknown/release/pack_alloc_module.wasm",
-        ),
-    )
-    .expect("compile allocator");
+    let alloc_mod =
+        Module::new(engine, read_wasm("assets/pack_alloc_module.wasm")).expect("compile allocator");
     let pkg_mod = Module::new(
         engine,
         read_wasm("packages/echo-pic/target/wasm32-unknown-unknown/release/echo_pic_package.wasm"),
