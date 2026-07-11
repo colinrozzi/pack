@@ -327,6 +327,7 @@ async fn test_func_async_registration() {
     let module_wat = r#"
     (module
         (import "test" "async_double" (func $async_double (param i32 i32 i32 i32) (result i32)))
+        (import "env" "__memory_base" (global i32))
         (memory (export "memory") 1)
 
         ;; Reserve space for result slots
@@ -414,6 +415,7 @@ async fn test_async_ctx_state_access() {
     let module_wat = r#"
     (module
         (import "math" "multiply" (func $multiply (param i32 i32 i32 i32) (result i32)))
+        (import "env" "__memory_base" (global i32))
         (memory (export "memory") 1)
 
         ;; Reserve space for result slots
@@ -759,6 +761,7 @@ async fn test_func_async_result_encodes_as_value_result_ok() {
     let module_wat = r#"
     (module
         (import "test" "async_maybe_double" (func $async_maybe_double (param i32 i32 i32 i32) (result i32)))
+        (import "env" "__memory_base" (global i32))
         (memory (export "memory") 1)
 
         (global $result_ptr_offset i32 (i32.const 16384))
@@ -854,6 +857,7 @@ async fn test_func_async_result_encodes_as_value_result_err() {
     let module_wat = r#"
     (module
         (import "test" "async_maybe_double" (func $async_maybe_double (param i32 i32 i32 i32) (result i32)))
+        (import "env" "__memory_base" (global i32))
         (memory (export "memory") 1)
 
         (global $result_ptr_offset i32 (i32.const 16384))

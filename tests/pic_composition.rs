@@ -548,3 +548,25 @@ async fn async_host_fn_large_returns_do_not_leak() {
          return, so host-returned buffers are leaking instead of being freed"
     );
 }
+
+/// Hardening (0.8.1): the PIC loader rejects a NON-PIC guest AT INSTANTIATE with a
+/// legible error, instead of instantiating and trapping on the first host call.
+/// A forgotten-to-rebuild (non-PIC) actor thus fails at boot, not on first use —
+/// the fail-loud property the fleet-lockstep rollout wants (esp. the mail spine).
+#[test]
+fn pic_loader_rejects_nonpic_guest_at_instantiate() {
+    // A non-PIC module: own exported memory, no `env.__memory_base` import — the
+    // shape of an actor not rebuilt with the 0.8.x PIC recipe.
+    let wat = r#"(module (memory (export "memory") 1) (func (export "run")))"#;
+    let wasm = wat::parse_str(wat).expect("parse WAT");
+    let runtime = packr::Runtime::new();
+    let module = runtime.load_module(&wasm).expect("compile non-PIC module");
+    let msg = match module.instantiate_pic() {
+        Ok(_) => panic!("a non-PIC guest must be rejected at instantiate, not instantiate + trap"),
+        Err(e) => e.to_string(),
+    };
+    assert!(
+        msg.contains("not a PIC side module"),
+        "expected a legible not-a-PIC error, got: {msg}"
+    );
+}

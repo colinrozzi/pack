@@ -208,6 +208,30 @@ fn werr<E: std::fmt::Display>(e: E) -> RuntimeError {
     RuntimeError::WasmError(e.to_string())
 }
 
+/// Reject a non-PIC module before instantiating it on a PIC loader path.
+///
+/// A PIC side module imports `env.__memory_base` (the loader assigns its base); a
+/// non-PIC guest (own exported memory, e.g. an actor NOT rebuilt with the 0.8.x
+/// PIC recipe) does not. Without this check such a guest INSTANTIATES fine and
+/// then traps on the first host-fn call (it reads/writes its own memory while the
+/// host marshals through the shared one) — a silent-until-first-call failure. This
+/// turns that into a legible failure at instantiate, which matters most for the
+/// fleet lockstep (a forgotten-to-rebuild actor fails at boot, not on first use).
+fn assert_pic_module(module: &Module) -> Result<(), RuntimeError> {
+    let is_pic = module
+        .imports()
+        .any(|i| i.module() == "env" && i.name() == "__memory_base");
+    if is_pic {
+        return Ok(());
+    }
+    Err(RuntimeError::WasmError(
+        "not a PIC side module (no `env.__memory_base` import): this actor must be rebuilt \
+         with the 0.8.x PIC recipe (relocation-model=pic + -shared + the packr-guest `pic` \
+         feature). A non-PIC/pre-0.8 guest would instantiate but trap on the first host call."
+            .to_string(),
+    ))
+}
+
 fn const_g<T>(store: &mut Store<T>, v: i32) -> Global {
     Global::new(
         store,
@@ -315,6 +339,7 @@ fn pic_link(
         .map_err(werr)?;
     pl.define(&*store, "pack:alloc", "dealloc", dealloc_fn)
         .map_err(werr)?;
+    assert_pic_module(package)?;
     let pkg = pl.instantiate(&mut *store, package).map_err(werr)?;
 
     // Resolve GOT.mem.__data_end to the runtime address of __data_end
@@ -741,6 +766,7 @@ impl AsyncCompiledModule<'_> {
         }
         configure(&mut builder).map_err(|e| RuntimeError::WasmError(e.to_string()))?;
 
+        assert_pic_module(&self.module)?;
         let instance = linker
             .instantiate_async(&mut store, &self.module)
             .await
