@@ -58,7 +58,7 @@ jobs:
         run: |
           nix develop --command bash -c '
             set -e
-            for pkg in echo-pic hostcall-pic; do
+            for pkg in echo-pic hostcall-pic doubler-pic adder-pic; do
               (cd "packages/$pkg" && cargo build --release --target wasm32-unknown-unknown)
             done
           '

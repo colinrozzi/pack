@@ -8,10 +8,11 @@
 //! GOT globals, and `pack:alloc` wired to the allocator's exports.
 
 use packr::abi::{decode, encode, Value, ValueType};
+use packr::runtime::PicCompositionBuilder;
 use std::path::Path;
 use wasmtime::{
-    Engine, Global, GlobalType, Instance, Linker, Memory, MemoryType, Module, Mutability, Ref,
-    RefType, Store, Table, TableType, Val, ValType,
+    Engine, Extern, Global, GlobalType, Instance, Linker, Memory, MemoryType, Module, Mutability,
+    Ref, RefType, Store, Table, TableType, Val, ValType,
 };
 
 // Shared-memory layout (bytes):
@@ -569,4 +570,303 @@ fn pic_loader_rejects_nonpic_guest_at_instantiate() {
         msg.contains("not a PIC side module"),
         "expected a legible not-a-PIC error, got: {msg}"
     );
+}
+
+// ============================================================================
+// Level-2 PIC composition: two PACKAGES sharing one memory
+//
+// adder-pic imports `math.double`, wired DIRECTLY to doubler-pic's `double`
+// export — no cross-memory bridge. Both are PIC side modules at disjoint bases in
+// ONE shared memory, on ONE shared in-wasm allocator (the level-2 story from
+// docs/pic-composition.md). This hand-rolls what a PIC CompositionBuilder will do.
+// ============================================================================
+
+// Two-package shared-memory layout (128 pages = 8 MiB):
+//   [0x1_0000, 0x9_0000)   doubler: data (low) + stack (down from 0x9_0000)
+//   [0x9_0000, 0x11_0000)  adder:   data (low) + stack (down from 0x11_0000)
+//   0x11_8000              allocator BSS (protected gap)
+//   [0x12_0000, 0x80_0000) shared heap (one allocator serves both packages)
+const C_MEM_PAGES: u32 = 128;
+const D_BASE: i32 = 0x1_0000;
+const D_STACK: i32 = 0x9_0000;
+const A_BASE: i32 = 0x9_0000;
+const A_STACK: i32 = 0x11_0000;
+const C_ALLOC_BASE: i32 = 0x11_8000;
+const C_HEAP_BASE: i32 = 0x12_0000;
+const C_HEAP_END: i32 = 0x80_0000;
+
+/// Instantiate a PIC package as a side module sharing `mem` + `table`, at the
+/// given `mem_base`/`stack_top`/`table_base`, wired to the shared allocator plus
+/// any extra imports (e.g. a cross-package function). Mirrors the runtime loader:
+/// resolve GOT.mem.__data_end, apply data relocs, run ctors.
+#[allow(clippy::too_many_arguments)]
+fn instantiate_side_pkg(
+    store: &mut Store<()>,
+    engine: &Engine,
+    module: &Module,
+    mem: Memory,
+    table: Table,
+    mem_base: i32,
+    stack_top: i32,
+    table_base: i32,
+    alloc_fn: &Extern,
+    dealloc_fn: &Extern,
+    extra: &[(&str, &str, Extern)],
+) -> Instance {
+    let p_membase = const_i32(&mut *store, mem_base);
+    let p_tablebase = const_i32(&mut *store, table_base);
+    let p_sp = var_i32(&mut *store, stack_top);
+    let p_data_end = var_i32(&mut *store, mem_base);
+    let mut pl = Linker::new(engine);
+    pl.define(&*store, "env", "memory", mem).unwrap();
+    pl.define(&*store, "env", "__indirect_function_table", table)
+        .unwrap();
+    pl.define(&*store, "env", "__stack_pointer", p_sp).unwrap();
+    pl.define(&*store, "env", "__memory_base", p_membase)
+        .unwrap();
+    pl.define(&*store, "env", "__table_base", p_tablebase)
+        .unwrap();
+    pl.define(&*store, "GOT.mem", "__data_end", p_data_end)
+        .unwrap();
+    pl.define(&*store, "pack:alloc", "alloc", alloc_fn.clone())
+        .unwrap();
+    pl.define(&*store, "pack:alloc", "dealloc", dealloc_fn.clone())
+        .unwrap();
+    for (m, n, f) in extra {
+        pl.define(&*store, *m, *n, f.clone()).unwrap();
+    }
+    let inst = pl
+        .instantiate(&mut *store, module)
+        .expect("instantiate side package");
+    // GOT.mem.__data_end := __memory_base + the module's exported offset.
+    if let Some(g) = inst.get_global(&mut *store, "__data_end") {
+        if let Val::I32(off) = g.get(&mut *store) {
+            p_data_end
+                .set(&mut *store, Val::I32(mem_base + off))
+                .unwrap();
+        }
+    }
+    if let Ok(relocs) = inst.get_typed_func::<(), ()>(&mut *store, "__wasm_apply_data_relocs") {
+        relocs.call(&mut *store, ()).unwrap();
+    }
+    inst.get_typed_func::<(), ()>(&mut *store, "__wasm_call_ctors")
+        .expect("__wasm_call_ctors")
+        .call(&mut *store, ())
+        .unwrap();
+    inst
+}
+
+/// Call `name(input)` on a package via the packr ABI, marshalling through the
+/// SHARED memory + allocator (input + result slots allocated via the package's
+/// own `__pack_alloc`, which is the shared allocator).
+fn call_pkg(
+    store: &mut Store<()>,
+    inst: &Instance,
+    mem: Memory,
+    name: &str,
+    input: &Value,
+) -> Value {
+    let bytes = encode(input).unwrap();
+    let pack_alloc = inst
+        .get_typed_func::<i32, i32>(&mut *store, "__pack_alloc")
+        .unwrap();
+    let in_ptr = pack_alloc.call(&mut *store, bytes.len() as i32).unwrap();
+    mem.write(&mut *store, in_ptr as usize, &bytes).unwrap();
+    let slots = pack_alloc.call(&mut *store, 8).unwrap(); // out_ptr (4) + out_len (4)
+    let func = inst
+        .get_typed_func::<(i32, i32, i32, i32), i32>(&mut *store, name)
+        .unwrap();
+    let status = func
+        .call(&mut *store, (in_ptr, bytes.len() as i32, slots, slots + 4))
+        .unwrap();
+    assert_eq!(status, 0, "export {name} returned error status");
+    let mut slot_bytes = [0u8; 8];
+    mem.read(&*store, slots as usize, &mut slot_bytes).unwrap();
+    let out_ptr = i32::from_le_bytes(slot_bytes[0..4].try_into().unwrap());
+    let out_len = i32::from_le_bytes(slot_bytes[4..8].try_into().unwrap());
+    let mut out = vec![0u8; out_len as usize];
+    mem.read(&*store, out_ptr as usize, &mut out).unwrap();
+    decode(&out).unwrap()
+}
+
+/// The level-2 proof: `adder-pic` calls `doubler-pic` across the PIC boundary,
+/// both sharing one memory + one allocator, adder's import wired straight to
+/// doubler's export (no cross-memory copy).
+#[test]
+fn pic_two_package_composition_adder_calls_doubler() {
+    let engine = Engine::default();
+    let mut store = Store::new(&engine, ());
+    let mem = Memory::new(&mut store, MemoryType::new(C_MEM_PAGES, None)).expect("shared memory");
+    let table = Table::new(
+        &mut store,
+        TableType::new(RefType::FUNCREF, 256, None),
+        Ref::Func(None),
+    )
+    .expect("shared table");
+
+    let alloc_mod =
+        Module::new(&engine, read_wasm("assets/pack_alloc_module.wasm")).expect("alloc module");
+    let doubler_mod = Module::new(
+        &engine,
+        read_wasm(
+            "packages/doubler-pic/target/wasm32-unknown-unknown/release/doubler_pic_package.wasm",
+        ),
+    )
+    .expect("doubler-pic");
+    let adder_mod = Module::new(
+        &engine,
+        read_wasm(
+            "packages/adder-pic/target/wasm32-unknown-unknown/release/adder_pic_package.wasm",
+        ),
+    )
+    .expect("adder-pic");
+
+    // One shared allocator, serving BOTH packages' heaps.
+    let a_membase = const_i32(&mut store, C_ALLOC_BASE);
+    let a_tablebase = const_i32(&mut store, 0);
+    let heap_base = var_i32(&mut store, C_HEAP_BASE);
+    let heap_end = var_i32(&mut store, C_HEAP_END);
+    let mut al = Linker::new(&engine);
+    al.define(&store, "env", "memory", mem).unwrap();
+    al.define(&store, "env", "__memory_base", a_membase)
+        .unwrap();
+    al.define(&store, "env", "__table_base", a_tablebase)
+        .unwrap();
+    al.define(&store, "GOT.mem", "__heap_base", heap_base)
+        .unwrap();
+    al.define(&store, "GOT.mem", "__heap_end", heap_end)
+        .unwrap();
+    let alloc_inst = al.instantiate(&mut store, &alloc_mod).expect("alloc inst");
+    let alloc_fn = alloc_inst.get_export(&mut store, "alloc").unwrap();
+    let dealloc_fn = alloc_inst.get_export(&mut store, "dealloc").unwrap();
+
+    // Provider first: doubler at table_base 0.
+    let doubler = instantiate_side_pkg(
+        &mut store,
+        &engine,
+        &doubler_mod,
+        mem,
+        table,
+        D_BASE,
+        D_STACK,
+        0,
+        &alloc_fn,
+        &dealloc_fn,
+        &[],
+    );
+    let doubler_double = doubler
+        .get_export(&mut store, "double")
+        .expect("doubler exports double");
+    let doubler_big = doubler
+        .get_export(&mut store, "big")
+        .expect("doubler exports big");
+
+    // Consumer: adder at a disjoint base + table_base, its `math.*` imports wired
+    // DIRECTLY to doubler's exports.
+    let adder = instantiate_side_pkg(
+        &mut store,
+        &engine,
+        &adder_mod,
+        mem,
+        table,
+        A_BASE,
+        A_STACK,
+        64,
+        &alloc_fn,
+        &dealloc_fn,
+        &[
+            ("math", "double", doubler_double),
+            ("math", "big", doubler_big),
+        ],
+    );
+
+    // adder.process(5) = (double(5)=10) + 1 = 11 — a real cross-package call in
+    // one shared memory. Nested stacks (adder's process frame in the adder region,
+    // doubler's double frame in the doubler region) coexist by disjoint bases.
+    for (input, expected) in [(5, 11), (0, 1), (7, 15), (-5, -9), (100, 201)] {
+        let out = call_pkg(&mut store, &adder, mem, "process", &Value::S64(input));
+        assert_eq!(
+            out,
+            Value::S64(expected),
+            "adder-pic.process({input}) via doubler-pic across the shared PIC boundary"
+        );
+    }
+
+    // Sanity: doubler is also directly callable in the same composition.
+    let d = call_pkg(&mut store, &doubler, mem, "double", &Value::S64(21));
+    assert_eq!(d, Value::S64(42));
+}
+
+/// The PIC CompositionBuilder API: same adder+doubler composition as the
+/// hand-rolled proof, but through the real `PicCompositionBuilder` (N-package
+/// shared-memory loader). Cross-package returns are freed via the shim.
+#[test]
+fn pic_composition_builder_adder_calls_doubler() {
+    let engine = Engine::default();
+    let doubler = read_wasm(
+        "packages/doubler-pic/target/wasm32-unknown-unknown/release/doubler_pic_package.wasm",
+    );
+    let adder = read_wasm(
+        "packages/adder-pic/target/wasm32-unknown-unknown/release/adder_pic_package.wasm",
+    );
+
+    let mut comp = PicCompositionBuilder::new(&engine)
+        .add_package("doubler", doubler)
+        .add_package("adder", adder)
+        .wire("adder", "math", "double", "doubler", "double")
+        .wire("adder", "math", "big", "doubler", "big")
+        .build()
+        .expect("build PIC composition");
+
+    for (input, expected) in [(5, 11), (0, 1), (7, 15), (-5, -9), (100, 201)] {
+        let out = comp
+            .call("adder", "process", &Value::S64(input))
+            .expect("call adder.process");
+        assert_eq!(
+            out,
+            Value::S64(expected),
+            "adder.process({input}) via doubler"
+        );
+    }
+    // doubler is directly callable too.
+    let d = comp.call("doubler", "double", &Value::S64(21)).unwrap();
+    assert_eq!(d, Value::S64(42));
+
+    let mut pkgs = comp.packages();
+    pkgs.sort();
+    assert_eq!(pkgs, vec!["adder".to_string(), "doubler".to_string()]);
+}
+
+/// Cross-package returns must be FREED, not leaked. `adder.relay_big(N)` makes
+/// `doubler.big(N)` return a large List across the boundary; the composition's
+/// 4 MiB shared heap would exhaust within ~15 calls (~256 KiB each) if the
+/// provider's result buffer weren't freed (the shim re-labels status→1 so adder's
+/// __import_impl frees it; `call` frees its own buffers). Freed → all 40 pass.
+#[test]
+fn pic_composition_cross_package_returns_do_not_leak() {
+    let engine = Engine::default();
+    let doubler = read_wasm(
+        "packages/doubler-pic/target/wasm32-unknown-unknown/release/doubler_pic_package.wasm",
+    );
+    let adder = read_wasm(
+        "packages/adder-pic/target/wasm32-unknown-unknown/release/adder_pic_package.wasm",
+    );
+    let mut comp = PicCompositionBuilder::new(&engine)
+        .add_package("doubler", doubler)
+        .add_package("adder", adder)
+        .wire("adder", "math", "double", "doubler", "double")
+        .wire("adder", "math", "big", "doubler", "big")
+        .build()
+        .expect("build composition");
+
+    const N: i64 = 32768;
+    for i in 0..40 {
+        let out = comp
+            .call("adder", "relay_big", &Value::S64(N))
+            .unwrap_or_else(|e| panic!("call {i} failed — heap exhausted by a leak? {e:?}"));
+        match &out {
+            Value::List { items, .. } => assert_eq!(items.len(), N as usize, "call {i} wrong len"),
+            other => panic!("call {i}: expected List, got {other:?}"),
+        }
+    }
 }

@@ -6,6 +6,7 @@ mod composition;
 mod host;
 pub mod interceptor;
 mod interface_check;
+mod pic_composition;
 
 pub use composition::{BuiltComposition, CompositionBuilder, HostFn};
 pub use host::{
@@ -17,6 +18,7 @@ pub use interceptor::CallInterceptor;
 pub use interface_check::{
     validate_instance_implements_interface, ExpectedSignature, InterfaceError,
 };
+pub use pic_composition::{PicComposition, PicCompositionBuilder};
 // Re-export the wasmtime types that appear in this module's public API
 // (AsyncRuntime::engine / wrap_module, AsyncCompiledModule::module) so
 // callers can name them without a direct wasmtime dependency.
@@ -186,7 +188,7 @@ impl Default for Runtime {
 // gitignored and would be absent from the published crate). Regenerate with:
 //   (cd packages/pack-alloc && cargo build --release --target wasm32-unknown-unknown)
 //   cp packages/pack-alloc/target/wasm32-unknown-unknown/release/pack_alloc_module.wasm assets/
-const PACK_ALLOC_WASM: &[u8] = include_bytes!(concat!(
+pub(crate) const PACK_ALLOC_WASM: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/assets/pack_alloc_module.wasm"
 ));
@@ -204,7 +206,7 @@ mod pic {
     pub const HEAP_END: i32 = 0x40_0000;
 }
 
-fn werr<E: std::fmt::Display>(e: E) -> RuntimeError {
+pub(crate) fn werr<E: std::fmt::Display>(e: E) -> RuntimeError {
     RuntimeError::WasmError(e.to_string())
 }
 
@@ -217,7 +219,7 @@ fn werr<E: std::fmt::Display>(e: E) -> RuntimeError {
 /// host marshals through the shared one) — a silent-until-first-call failure. This
 /// turns that into a legible failure at instantiate, which matters most for the
 /// fleet lockstep (a forgotten-to-rebuild actor fails at boot, not on first use).
-fn assert_pic_module(module: &Module) -> Result<(), RuntimeError> {
+pub(crate) fn assert_pic_module(module: &Module) -> Result<(), RuntimeError> {
     let is_pic = module
         .imports()
         .any(|i| i.module() == "env" && i.name() == "__memory_base");
@@ -232,7 +234,7 @@ fn assert_pic_module(module: &Module) -> Result<(), RuntimeError> {
     ))
 }
 
-fn const_g<T>(store: &mut Store<T>, v: i32) -> Global {
+pub(crate) fn const_g<T>(store: &mut Store<T>, v: i32) -> Global {
     Global::new(
         store,
         GlobalType::new(ValType::I32, Mutability::Const),
@@ -240,7 +242,7 @@ fn const_g<T>(store: &mut Store<T>, v: i32) -> Global {
     )
     .expect("const i32 global")
 }
-fn var_g<T>(store: &mut Store<T>, v: i32) -> Global {
+pub(crate) fn var_g<T>(store: &mut Store<T>, v: i32) -> Global {
     Global::new(
         store,
         GlobalType::new(ValType::I32, Mutability::Var),
@@ -255,7 +257,7 @@ fn var_g<T>(store: &mut Store<T>, v: i32) -> Global {
 /// which real actors do via their dependency trees, even though the guest never
 /// uses it for allocation (the loader owns the heap). No-op if the module doesn't
 /// export `__data_end`.
-fn resolve_got_data_end<T>(
+pub(crate) fn resolve_got_data_end<T>(
     store: &mut Store<T>,
     pkg: &WasmtimeInstance,
     got_data_end: Global,
