@@ -243,7 +243,10 @@ pack/
 - [x] Host Imports — packages can call back to host
 - [x] Interface Enforcement — validate WASM modules implement WIT interfaces
 - [x] Interface Hashing — Merkle-tree hashes for O(1) compatibility checking
-- [x] Static Composition — compose multiple packages into one module
+- [x] Runtime Composition — package A imports & calls package B (separate memories, wired at load)
+- [x] PIC Dynamic Linking — a package + the in-wasm allocator share one memory (the shared-memory substrate)
+- [ ] PIC Composition — N packages share one memory (specced: [`docs/pic-composition.md`](docs/pic-composition.md))
+- [ ] Static Composition — merge composed packages into a single passable `.wasm`
 
 ## Related Projects
 
