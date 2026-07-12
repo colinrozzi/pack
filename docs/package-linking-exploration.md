@@ -1,5 +1,10 @@
 # Package Linking Design Exploration
 
+> **Note (2026-07-12):** this is the level-1 design — *runtime* composition with a
+> cross-memory bridge (each package its own memory), which shipped as
+> `CompositionBuilder`. The shared-memory (PIC) evolution is specced in
+> [`pic-composition.md`](./pic-composition.md); read that for the current direction.
+
 This document captures a design discussion about implementing package-to-package linking in Composite.
 
 ## Current State
