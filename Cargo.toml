@@ -9,6 +9,8 @@ exclude = [
     "packages/pack-alloc",
     "packages/echo-pic",
     "packages/hostcall-pic",
+    "packages/doubler-pic",
+    "packages/adder-pic",
     "packages/adder",
     "packages/doubler",
     "packages/echo",
