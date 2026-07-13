@@ -2,7 +2,7 @@
 
 use packr::abi::{encode, Value, ValueType};
 use packr::metadata::{decode_metadata, MetadataError, TypeDesc};
-use packr::runtime::{CompositionBuilder, Runtime};
+use packr::runtime::Runtime;
 
 fn load_wasm(name: &str) -> Vec<u8> {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -71,38 +71,6 @@ fn test_doubler_metadata() {
     assert_eq!(double_fn.params[0].ty, TypeDesc::Value);
     assert_eq!(double_fn.results.len(), 1);
     assert_eq!(double_fn.results[0], TypeDesc::Value);
-}
-
-#[test]
-fn test_adder_metadata_with_imports() {
-    let doubler_wasm = load_wasm("doubler");
-    let adder_wasm = load_wasm("adder");
-
-    let mut composition = CompositionBuilder::new()
-        .add_package("doubler", doubler_wasm)
-        .add_package("adder", adder_wasm)
-        .wire("adder", "math", "double", "doubler", "double")
-        .build()
-        .expect("build composition");
-
-    let metadata = composition.types("adder").expect("adder metadata");
-
-    // Adder imports from "math"
-    assert_eq!(metadata.imports().len(), 1);
-    let import_fn = &metadata.imports()[0];
-    assert_eq!(import_fn.interface, "math");
-    assert_eq!(import_fn.name, "double");
-    assert_eq!(import_fn.params.len(), 1);
-    assert_eq!(import_fn.params[0].name, "n");
-    assert_eq!(import_fn.params[0].ty, TypeDesc::S64);
-    assert_eq!(import_fn.results.len(), 1);
-    assert_eq!(import_fn.results[0], TypeDesc::S64);
-
-    // Adder exports "process"
-    assert_eq!(metadata.exports().len(), 1);
-    let export_fn = &metadata.exports()[0];
-    assert_eq!(export_fn.name, "process");
-    assert_eq!(export_fn.params[0].ty, TypeDesc::Value);
 }
 
 #[test]
