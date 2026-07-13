@@ -87,4 +87,4 @@ pub use transform::{InterfaceTransform, RpcTransform, TransformRegistry};
 pub use types::{Arena, Case, Field, Function, Param, Type, TypePath};
 
 pub use codegen::generate_rust;
-pub use compose::{ComposeError, ParsedModule, StaticComposer};
+pub use compose::{compose, ComposeError, ComposeSpec, Layout, PackageSpec, ParsedModule};

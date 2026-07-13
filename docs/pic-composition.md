@@ -190,18 +190,47 @@ substrate, and the smallest useful validation of §3.
 
 ---
 
-## 6. Level 3 (future): static merge → one `.wasm`
+## 6. Level 3 (shipped): static merge → one `.wasm` — `pack compose`
 
-The PIC side modules (allocator + A + B) are relocatable objects. A wasm linker
-step (`wasm-ld -r`, or a purpose-built merge) can combine them into a single
-relocatable module with one fixed memory layout, finalized into **one passable
-`.wasm`** — the original "package it up and pass it around" goal. This is a
-larger, separate effort; §3 (runtime PIC composition) is its prerequisite and its
-input.
+Implemented as the **`pack compose`** command. It merges the packages (allocator
++ A + B + …) into a **single self-contained `.wasm` with zero imports** —
+the original "package it up and pass it around" goal — that runs on any stock
+runtime with no harness (`wasm-tools validate` clean).
+
+**Pipeline** (`src/compose/static_compose.rs`):
+1. **`wasm-merge`** (binaryen) fuses the modules and internalizes the
+   cross-package imports: `(import "math" "double")` → a direct call to the
+   provider's `double`; `(import "pack:alloc" …)` → a call to the merged-in
+   allocator. Each package is named by the import-module-name its consumers use.
+2. A **`walrus`** pass does what `wasm-merge` can't: unify the several
+   `env.memory` imports into one internal memory, bake the allocator's
+   `__memory_base` / `__heap_base` / `__heap_end` imports into constants, and
+   export the memory.
+
+**Build recipe** — packages are compiled at disjoint **fixed bases** (non-PIC, so
+data lands at absolute addresses needing no relocation):
+
+```
+RUSTFLAGS="-Clink-arg=--import-memory -Clink-arg=--initial-memory=8388608 \
+  -Clink-arg=--stack-first -Clink-arg=-zstack-size=262144 \
+  -Clink-arg=--global-base=<BASE> -Clink-arg=--no-entry"
+```
+
+**CLI** — `packr compose <manifest.toml> [-o out.wasm]`, where the manifest lists
+`[[package]]` entries (providers before consumers) with `name` = the consumer's
+import module-name, plus an optional `[layout]`. Requires `wasm-merge` (binaryen)
+on `PATH`.
+
+> **Packaging, not performance.** The merge internalizes the *call*, but the packr
+> ABI marshalling (encode/decode/alloc per cross-call) is fossilized into the
+> compiled packages, so it remains. `pack compose` gives one portable artifact; it
+> does not make the boundary cheaper. A by-reference shared-memory ABI would be the
+> separate perf lever.
 
 Keep **both**: runtime PIC composition (level 2) stays valuable for loading /
-swapping packages at runtime; the static merge (level 3) is for shipping a frozen
-bundle. They share the same PIC side-module format.
+swapping packages at runtime; the static merge (`pack compose`) is for shipping a
+frozen, self-contained bundle. They share the same PIC/fixed-base side-module
+substrate.
 
 ---
 

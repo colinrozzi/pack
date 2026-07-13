@@ -2,13 +2,11 @@
 //!
 //! Handles package instantiation, linking, and execution.
 
-mod composition;
 mod host;
 pub mod interceptor;
 mod interface_check;
 mod pic_composition;
 
-pub use composition::{BuiltComposition, CompositionBuilder, HostFn};
 pub use host::{
     AsyncCtx, Ctx, DefaultHostProvider, ErrorHandler, HostFunctionError, HostFunctionErrorKind,
     HostFunctionProvider, HostLinkerBuilder, InterfaceBuilder, LinkerError, INPUT_BUFFER_OFFSET,

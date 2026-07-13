@@ -33,6 +33,16 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+
+    /// Statically compose packages into one self-contained `.wasm` (zero imports)
+    Compose {
+        /// Path to the compose manifest (TOML)
+        manifest: PathBuf,
+
+        /// Output path (overrides `output` in the manifest)
+        #[arg(long, short = 'o')]
+        output: Option<PathBuf>,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -44,7 +54,115 @@ fn main() -> anyhow::Result<()> {
             hashes,
             json,
         } => inspect_command(&wasm_file, hashes, json),
+        Commands::Compose { manifest, output } => compose_command(&manifest, output),
     }
+}
+
+/// A `pack compose` manifest.
+///
+/// ```toml
+/// output = "composed.wasm"
+///
+/// [[package]]            # providers before consumers
+/// name = "pack:alloc"    # the wasm-merge module name = the import module-name
+/// wasm = "pack_alloc.wasm"
+///
+/// [[package]]
+/// name = "math"          # adder does (import "math" "double")
+/// wasm = "doubler.wasm"
+///
+/// [[package]]
+/// name = "adder"
+/// wasm = "adder.wasm"
+///
+/// [layout]               # optional; hex ok
+/// memory_pages = 128
+/// alloc_base = 0xE0000
+/// heap_base  = 0xF0000
+/// heap_end   = 0x800000
+/// ```
+#[derive(serde::Deserialize)]
+struct Manifest {
+    output: Option<String>,
+    #[serde(default)]
+    package: Vec<ManifestPackage>,
+    layout: Option<ManifestLayout>,
+}
+
+#[derive(serde::Deserialize)]
+struct ManifestPackage {
+    name: String,
+    wasm: String,
+}
+
+#[derive(serde::Deserialize)]
+struct ManifestLayout {
+    memory_pages: Option<u32>,
+    alloc_base: Option<u32>,
+    heap_base: Option<u32>,
+    heap_end: Option<u32>,
+}
+
+fn compose_command(
+    manifest_path: &PathBuf,
+    output_override: Option<PathBuf>,
+) -> anyhow::Result<()> {
+    use packr::{compose, ComposeSpec, Layout, PackageSpec};
+
+    let text = std::fs::read_to_string(manifest_path)
+        .map_err(|e| anyhow::anyhow!("failed to read manifest {}: {e}", manifest_path.display()))?;
+    let manifest: Manifest = toml::from_str(&text).map_err(|e| {
+        anyhow::anyhow!("failed to parse manifest {}: {e}", manifest_path.display())
+    })?;
+    anyhow::ensure!(
+        !manifest.package.is_empty(),
+        "manifest lists no [[package]] entries"
+    );
+
+    // Paths in the manifest are relative to the manifest's directory.
+    let base_dir = manifest_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+
+    let mut packages = Vec::new();
+    for p in &manifest.package {
+        let wpath = base_dir.join(&p.wasm);
+        let bytes = std::fs::read(&wpath)
+            .map_err(|e| anyhow::anyhow!("failed to read package {}: {e}", wpath.display()))?;
+        packages.push(PackageSpec::new(p.name.clone(), bytes));
+    }
+
+    let mut layout = Layout::default();
+    if let Some(l) = &manifest.layout {
+        if let Some(v) = l.memory_pages {
+            layout.memory_pages = v;
+        }
+        if let Some(v) = l.alloc_base {
+            layout.alloc_base = v;
+        }
+        if let Some(v) = l.heap_base {
+            layout.heap_base = v;
+        }
+        if let Some(v) = l.heap_end {
+            layout.heap_end = v;
+        }
+    }
+
+    let composed = compose(&ComposeSpec { packages, layout })?;
+
+    let out = output_override
+        .or_else(|| manifest.output.as_ref().map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from("composed.wasm"));
+    std::fs::write(&out, &composed)
+        .map_err(|e| anyhow::anyhow!("failed to write {}: {e}", out.display()))?;
+
+    println!(
+        "composed {} package(s) -> {} ({} bytes, zero imports)",
+        manifest.package.len(),
+        out.display(),
+        composed.len()
+    );
+    Ok(())
 }
 
 fn inspect_command(wasm_file: &PathBuf, show_hashes: bool, json: bool) -> anyhow::Result<()> {
