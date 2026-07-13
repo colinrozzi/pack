@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.9.0 (2026-07-13)
+
+### Added
+- **`pack compose`**: static composition of compiled packages into a single self-contained `.wasm` with **zero imports**, runnable on any stock runtime. `packr compose <manifest.toml>` merges packages (binaryen `wasm-merge`) and internalizes cross-package imports into direct calls; a `walrus` pass unifies the memory imports into one internal memory and bakes the allocator's base/heap globals into constants. Requires `wasm-merge` (binaryen) at compose time. Public API: `packr::{compose, ComposeSpec, PackageSpec, Layout}`.
+
+### Removed
+- **`compose::StaticComposer`** and **`runtime::CompositionBuilder`** (with `BuiltComposition`, `HostFn`) — superseded composers. Runtime composition is now `runtime::PicCompositionBuilder` (shared-memory PIC, v0.8.x); static composition is `pack compose`. `ParsedModule` is retained.
+
 ## v0.2.0 (2026-04-26)
 
 ### Added
