@@ -89,4 +89,6 @@ pub use types::{Arena, Case, Field, Function, Param, Type, TypePath};
 
 pub use codegen::generate_rust;
 pub use compose::{compose, ComposeError, ComposeSpec, Layout, PackageSpec, ParsedModule};
-pub use link::{check_interface_link, read_surface, LinkError};
+pub use link::{
+    check_interface_link, check_link, read_surface, resolve_links, LinkBinary, LinkEdge, LinkError,
+};
