@@ -139,21 +139,35 @@ ships it fused in.
 export `core.handle-*`, `mode = "hosted"`. One actor artifact; theater loads it
 unchanged.
 
-## 7. Build plan
+## 7. Build plan & status
 
 `pack compose` already does fuse + full-internalize + the memory/allocator
 substrate. The linker adds, in order:
 
 1. **Surface parsing + explicit link resolution + hash checks** — read
-   `__pack_types`, validate the spec.
+   `__pack_types`, validate the spec. **✅ landed** (`abi::decode_prefix` static
+   reader #42; `link::{read_surface, check_link, resolve_links}` #44/#45).
 2. **Partial internalization** (linked-only; residual imports preserved) + the
-   `hosted` mode.
-3. **Metadata regeneration** — the composite's `__pack_types`.
-4. **CLI + spec format** — `packr link <spec.toml>`; `pack compose` becomes the
-   zero-link / `standalone` convenience case.
+   `hosted` mode. **⏳ TODO** — the `hosted` contract (what imports the composite
+   keeps, how theater's PIC loader ingests it) is a theater-dev design call (§10).
+3. **Metadata regeneration** — the composite's `__pack_types`. **⏳ TODO** — the
+   load-bearing piece for closure (re-linkable results).
+4. **CLI + spec format** — `packr link <spec.toml>`; `pack compose` is the
+   zero-link / `standalone` convenience case. **✅ landed** (#45).
 
-**First proof:** the mock-testing case — the smallest slice that exercises partial
-linking + hash check + residual imports + metadata regen.
+**Interfaces on both sides (landed, #43).** A package *provides* and *requires*
+interfaces symmetrically — `exports { math { double: func.. } }` is now valid,
+and a provider's `math` export-interface hash equals a consumer's `math`
+import-interface hash. Matching is **interface-to-interface** by structural hash,
+not per-function name mapping. The flat/grouped split was only ever missing
+export-side sugar; the metadata/hashing model was always symmetric.
+
+**Mock proof (landed, #44).** The smallest slice that exercises matching + hash
+check + fuse-and-run: `adder` requires `math`; `math-real`/`math-mock` provide it
+(accepted, hashes equal); `doubler` (`value->value`, no `math`) is **rejected** —
+the type-unsafe link raw composition silently fuses. Swapping in `math-mock`
+makes the mock take effect. Remaining for the *full* proof: residual imports +
+metadata regen (items 2–3).
 
 ## 8. Format: TOML now, a DSL next
 
