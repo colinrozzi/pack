@@ -116,7 +116,7 @@ struct LinkEntry {
 }
 
 fn link_command(manifest_path: &PathBuf, output_override: Option<PathBuf>) -> anyhow::Result<()> {
-    use packr::{compose, ComposeSpec, Layout, LinkBinary, LinkEdge};
+    use packr::{Layout, LinkBinary, LinkEdge};
 
     let text = std::fs::read_to_string(manifest_path)
         .map_err(|e| anyhow::anyhow!("failed to read manifest {}: {e}", manifest_path.display()))?;
@@ -163,9 +163,6 @@ fn link_command(manifest_path: &PathBuf, output_override: Option<PathBuf>) -> an
         });
     }
 
-    // Validate every link (hash-checked) and resolve to compose packages.
-    let packages = packr::resolve_links(binaries, &links)?;
-
     let mut layout = Layout::default();
     if let Some(cfg) = &manifest.layout {
         if let Some(v) = cfg.memory_pages {
@@ -182,7 +179,9 @@ fn link_command(manifest_path: &PathBuf, output_override: Option<PathBuf>) -> an
         }
     }
 
-    let linked = compose(&ComposeSpec { packages, layout })?;
+    // Validate every link (hash-checked), fuse, and regenerate the composite's
+    // `__pack_types` surface.
+    let linked = packr::link(binaries, &links, layout)?;
 
     let out = output_override
         .or_else(|| manifest.output.as_ref().map(PathBuf::from))
