@@ -14,7 +14,7 @@
 //!
 //! This enables O(1) compatibility checking: if hashes match, interfaces are compatible.
 
-use crate::abi::{decode, encode, Value};
+use crate::abi::{decode_prefix, encode, Value};
 use crate::types::{Arena, Case, Field, Function, Param, Type, TypeDef, TypePath};
 
 // ============================================================================
@@ -616,7 +616,9 @@ const TAG_UNIT: u32 = 21;
 /// each containing function signatures. This is converted to an Arena
 /// with two child arenas: one for imports, one for exports.
 pub fn decode_metadata(bytes: &[u8]) -> Result<Arena, MetadataError> {
-    let value = decode(bytes).map_err(|e| MetadataError::DecodeFailed(format!("{:?}", e)))?;
+    let value = decode_prefix(bytes)
+        .map(|(v, _)| v)
+        .map_err(|e| MetadataError::DecodeFailed(format!("{:?}", e)))?;
 
     match value {
         Value::Record { fields, .. } => {
@@ -682,7 +684,9 @@ pub fn decode_metadata(bytes: &[u8]) -> Result<Arena, MetadataError> {
 /// This is the preferred decoding function as it includes Merkle-tree hashes
 /// for O(1) interface compatibility checking.
 pub fn decode_metadata_with_hashes(bytes: &[u8]) -> Result<MetadataWithHashes, MetadataError> {
-    let value = decode(bytes).map_err(|e| MetadataError::DecodeFailed(format!("{:?}", e)))?;
+    let value = decode_prefix(bytes)
+        .map(|(v, _)| v)
+        .map_err(|e| MetadataError::DecodeFailed(format!("{:?}", e)))?;
 
     match value {
         Value::Record { fields, .. } => {

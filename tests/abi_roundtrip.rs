@@ -1,4 +1,36 @@
-use packr::abi::{decode, encode, GraphBuffer, Node, NodeKind, Value, ValueType};
+use packr::abi::{decode, decode_prefix, encode, GraphBuffer, Node, NodeKind, Value, ValueType};
+
+#[test]
+fn decode_prefix_tolerates_trailing_bytes() {
+    // A value embedded at the start of a larger buffer (e.g. `__pack_types`
+    // metadata inside a data segment) must decode, and report how many bytes it
+    // consumed — while plain `decode` rejects the trailing bytes.
+    let value = Value::Record {
+        type_name: "sig".into(),
+        fields: vec![
+            ("name".into(), Value::String("double".into())),
+            ("arity".into(), Value::S64(1)),
+        ],
+    };
+    let mut buf = encode(&value).expect("encode");
+    let exact_len = buf.len();
+    buf.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01]); // trailing junk
+
+    let (decoded, consumed) = decode_prefix(&buf).expect("decode_prefix");
+    assert_eq!(decoded, value);
+    assert_eq!(
+        consumed, exact_len,
+        "should consume exactly the value's bytes"
+    );
+
+    assert!(
+        decode(&buf).is_err(),
+        "plain decode must reject trailing bytes"
+    );
+    // ...and with no trailing bytes, both agree.
+    let clean = encode(&value).unwrap();
+    assert_eq!(decode_prefix(&clean).unwrap().0, decode(&clean).unwrap());
+}
 
 #[test]
 fn roundtrip_primitives() {
