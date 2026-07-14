@@ -43,6 +43,16 @@ enum Commands {
         #[arg(long, short = 'o')]
         output: Option<PathBuf>,
     },
+
+    /// Link packages via explicit, hash-checked interface links into one `.wasm`
+    Link {
+        /// Path to the link manifest (TOML)
+        manifest: PathBuf,
+
+        /// Output path (overrides `output` in the manifest)
+        #[arg(long, short = 'o')]
+        output: Option<PathBuf>,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -55,7 +65,139 @@ fn main() -> anyhow::Result<()> {
             json,
         } => inspect_command(&wasm_file, hashes, json),
         Commands::Compose { manifest, output } => compose_command(&manifest, output),
+        Commands::Link { manifest, output } => link_command(&manifest, output),
     }
+}
+
+/// A `pack link` manifest — explicit, hash-checked interface links.
+///
+/// ```toml
+/// output = "user-actor-test.wasm"
+///
+/// [[binary]]
+/// alias = "alloc"
+/// wasm  = "pack_alloc.wasm"
+/// allocator = true
+///
+/// [[binary]]
+/// alias = "mathreal"
+/// wasm  = "math_real.wasm"
+///
+/// [[binary]]
+/// alias = "adder"
+/// wasm  = "adder.wasm"
+///
+/// [[link]]              # <from-alias>.<interface>  <-  <to-alias>.<interface>
+/// from = "adder.math"
+/// to   = "mathreal.math"
+/// ```
+#[derive(serde::Deserialize)]
+struct LinkManifest {
+    output: Option<String>,
+    #[serde(default)]
+    binary: Vec<LinkBinaryEntry>,
+    #[serde(default)]
+    link: Vec<LinkEntry>,
+    layout: Option<ManifestLayout>,
+}
+
+#[derive(serde::Deserialize)]
+struct LinkBinaryEntry {
+    alias: String,
+    wasm: String,
+    #[serde(default)]
+    allocator: bool,
+}
+
+#[derive(serde::Deserialize)]
+struct LinkEntry {
+    from: String,
+    to: String,
+}
+
+fn link_command(manifest_path: &PathBuf, output_override: Option<PathBuf>) -> anyhow::Result<()> {
+    use packr::{compose, ComposeSpec, Layout, LinkBinary, LinkEdge};
+
+    let text = std::fs::read_to_string(manifest_path)
+        .map_err(|e| anyhow::anyhow!("failed to read manifest {}: {e}", manifest_path.display()))?;
+    let manifest: LinkManifest = toml::from_str(&text).map_err(|e| {
+        anyhow::anyhow!("failed to parse manifest {}: {e}", manifest_path.display())
+    })?;
+    anyhow::ensure!(
+        !manifest.binary.is_empty(),
+        "manifest lists no [[binary]] entries"
+    );
+
+    let base_dir = manifest_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+
+    let mut binaries = Vec::new();
+    for b in &manifest.binary {
+        let wpath = base_dir.join(&b.wasm);
+        let wasm = std::fs::read(&wpath)
+            .map_err(|e| anyhow::anyhow!("failed to read binary {}: {e}", wpath.display()))?;
+        binaries.push(LinkBinary {
+            alias: b.alias.clone(),
+            wasm,
+            allocator: b.allocator,
+        });
+    }
+
+    // `<alias>.<interface>` — split on the first dot (aliases are simple idents;
+    // interface paths like `theater:simple/runtime` may follow).
+    let split = |s: &str, side: &str| -> anyhow::Result<(String, String)> {
+        s.split_once('.')
+            .map(|(a, i)| (a.to_string(), i.to_string()))
+            .ok_or_else(|| anyhow::anyhow!("{side} `{s}` must be `<alias>.<interface>`"))
+    };
+    let mut links = Vec::new();
+    for l in &manifest.link {
+        let (from_alias, from_interface) = split(&l.from, "link.from")?;
+        let (to_alias, to_interface) = split(&l.to, "link.to")?;
+        links.push(LinkEdge {
+            from_alias,
+            from_interface,
+            to_alias,
+            to_interface,
+        });
+    }
+
+    // Validate every link (hash-checked) and resolve to compose packages.
+    let packages = packr::resolve_links(binaries, &links)?;
+
+    let mut layout = Layout::default();
+    if let Some(cfg) = &manifest.layout {
+        if let Some(v) = cfg.memory_pages {
+            layout.memory_pages = v;
+        }
+        if let Some(v) = cfg.alloc_base {
+            layout.alloc_base = v;
+        }
+        if let Some(v) = cfg.heap_base {
+            layout.heap_base = v;
+        }
+        if let Some(v) = cfg.heap_end {
+            layout.heap_end = v;
+        }
+    }
+
+    let linked = compose(&ComposeSpec { packages, layout })?;
+
+    let out = output_override
+        .or_else(|| manifest.output.as_ref().map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from("linked.wasm"));
+    std::fs::write(&out, &linked)
+        .map_err(|e| anyhow::anyhow!("failed to write {}: {e}", out.display()))?;
+
+    println!(
+        "linked {} binaries with {} verified link(s) -> {} ({} bytes)",
+        manifest.binary.len(),
+        manifest.link.len(),
+        out.display(),
+        linked.len()
+    );
+    Ok(())
 }
 
 /// A `pack compose` manifest.

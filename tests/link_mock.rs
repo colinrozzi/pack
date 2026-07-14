@@ -68,6 +68,52 @@ fn linking_against_the_mock_makes_the_mock_take_effect() {
     );
 }
 
+#[test]
+fn resolve_links_validates_and_names_providers() {
+    use packr::{resolve_links, LinkBinary, LinkEdge};
+
+    let bins = || {
+        vec![
+            LinkBinary {
+                alias: "alloc".into(),
+                wasm: asset("pack_alloc_module.wasm"),
+                allocator: true,
+            },
+            LinkBinary {
+                alias: "provider".into(),
+                wasm: asset("math_real_fixedbase.wasm"),
+                allocator: false,
+            },
+            LinkBinary {
+                alias: "adder".into(),
+                wasm: asset("adder_fixedbase.wasm"),
+                allocator: false,
+            },
+        ]
+    };
+    let link = |to: &str| LinkEdge {
+        from_alias: "adder".into(),
+        from_interface: "math".into(),
+        to_alias: "provider".into(),
+        to_interface: to.into(),
+    };
+
+    // Valid link resolves to a wasm-merge-ordered package list: allocator named
+    // `pack:alloc` first, the provider named by the interface (`math`), consumer last.
+    let pkgs = resolve_links(bins(), &[link("math")]).expect("valid link resolves");
+    assert_eq!(pkgs[0].name, "pack:alloc");
+    assert!(pkgs.iter().any(|p| p.name == "math"));
+    assert!(pkgs.iter().any(|p| p.name == "adder"));
+
+    // A provider that exports no `math` interface is rejected.
+    let mut doubler_bins = bins();
+    doubler_bins[1].wasm = asset("doubler_fixedbase.wasm");
+    assert!(
+        resolve_links(doubler_bins, &[link("math")]).is_err(),
+        "type-mismatched provider must be rejected"
+    );
+}
+
 /// The linker in miniature: type-safe gate, then fuse adder + provider and run.
 fn link_and_process(provider_asset: &str, input: i64) -> Value {
     let adder = asset("adder_fixedbase.wasm");
