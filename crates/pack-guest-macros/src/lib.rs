@@ -1757,6 +1757,21 @@ fn parse_func_sigs_into(
         }
 
         let (iface, name) = parse_function_path(parser, interface)?;
+
+        // Interface group: `iface { func: ..., ... }`. Symmetric with imports, so
+        // exports can declare whole interfaces (and a provider can be recognized as
+        // *providing* the same interface an actor *requires*). `parse_function_path`
+        // has already collected the full interface path; a following `{` means this
+        // was a group name, not a function.
+        if parser.peek_is_symbol('{') {
+            parser.expect_symbol('{').map_err(|e| e.to_string())?;
+            parse_func_sigs_into(parser, &name, sigs, &local_types)?;
+            parser.expect_symbol('}').map_err(|e| e.to_string())?;
+            parser.accept_symbol(',');
+            parser.accept_symbol(';');
+            continue;
+        }
+
         parser.expect_symbol(':').map_err(|e| e.to_string())?;
         parser.accept_ident("func");
 
@@ -1842,6 +1857,52 @@ mod tests {
         assert_eq!(iface_hashes.len(), 1);
         assert_eq!(iface_hashes[0].name, "theater:simple/podman");
         assert_eq!(iface_hashes[0].hash, expected_iface_hash);
+    }
+
+    /// Exports accept the same interface-grouping grammar as imports, and a
+    /// grouped export produces the *same* interface hash as the matching grouped
+    /// import — the symmetry that makes interface-to-interface linking work.
+    #[test]
+    fn parses_grouped_exports_symmetric_with_imports() {
+        let export_src = "exports { math { double: func(n: s64) -> s64, } }";
+        let import_src = "imports { math { double: func(n: s64) -> s64, } }";
+
+        // Grouped exports parse (previously: `expected ':', got '{'`).
+        assert!(!parse_and_encode_metadata(export_src)
+            .expect("grouped exports should parse")
+            .is_empty());
+
+        let sigs = |src: &str, kw: &str, grouped: bool| {
+            let tokens = wit_parser::tokenize(src).expect("tokenize");
+            let mut p = wit_parser::make_parser(tokens);
+            p.accept_ident(kw);
+            p.expect_symbol('{').unwrap();
+            let mut out = Vec::new();
+            if grouped {
+                parse_import_sigs(&mut p, &mut out, &[]).unwrap();
+            } else {
+                parse_func_sigs_into(&mut p, "", &mut out, &[]).unwrap();
+            }
+            out
+        };
+
+        let export_sigs = sigs(export_src, "exports", false);
+        let import_sigs = sigs(import_src, "imports", true);
+
+        // The grouped export is recorded under the `math` interface.
+        assert_eq!(export_sigs.len(), 1);
+        assert_eq!(export_sigs[0].interface, "math");
+        assert_eq!(export_sigs[0].name, "double");
+
+        // Export and import interface hashes agree.
+        let ex = metadata::compute_interface_hashes(&export_sigs);
+        let im = metadata::compute_interface_hashes(&import_sigs);
+        assert_eq!(ex.len(), 1);
+        assert_eq!(ex[0].name, "math");
+        assert_eq!(
+            ex[0].hash, im[0].hash,
+            "grouped export/import hashes must match"
+        );
     }
 
     /// Records declared inside one interface block do not leak into a sibling
