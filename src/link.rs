@@ -229,7 +229,15 @@ pub fn link(
     match entry {
         Some((wasm, satisfied)) => {
             let meta = composite_metadata(&wasm, &satisfied)?;
-            embed_pack_types(&fused, &meta, layout.metadata_base)
+            // The composite's public lifecycle = the entry's pact exports; every
+            // other leaked member export is trimmed to a clean contract.
+            let lifecycle: Vec<String> = read_surface(&wasm)?
+                .arena
+                .exports()
+                .iter()
+                .map(|f| f.name.clone())
+                .collect();
+            embed_pack_types(&fused, &meta, layout.metadata_base, &lifecycle)
         }
         None => Ok(fused),
     }
@@ -280,7 +288,13 @@ fn retain_records_without(list: &mut Value, field: &str, drop: &[String]) {
 /// `meta_base` and synthesize a `__pack_types` export returning `(meta_base, len)`,
 /// replacing any merged-in `__pack_types*` exports so the composite has exactly one
 /// coherent surface.
-fn embed_pack_types(wasm: &[u8], meta: &[u8], meta_base: u32) -> anyhow::Result<Vec<u8>> {
+fn embed_pack_types(
+    wasm: &[u8],
+    meta: &[u8],
+    meta_base: u32,
+    lifecycle: &[String],
+) -> anyhow::Result<Vec<u8>> {
+    use std::collections::HashSet;
     use walrus::ir::{MemArg, StoreKind, Value as IrValue};
     use walrus::{ConstExpr, DataKind, FunctionBuilder, Module, ValType};
 
@@ -344,6 +358,38 @@ fn embed_pack_types(wasm: &[u8], meta: &[u8], meta_base: u32) -> anyhow::Result<
         m.exports.delete(id);
     }
     m.exports.add("__pack_types", f);
+
+    // Trim the export surface to exactly the self-contained contract: memory +
+    // one __pack_alloc/__pack_free + __pack_types (+ ctors) + the lifecycle. This
+    // drops the merge's leaked/ambiguous exports — the redundant __pack_alloc_10,
+    // the members' raw alloc/dealloc/double, and the vestigial __heap_base/
+    // __data_end globals — so a host sees one unambiguous allocator + heap.
+    let mut keep: HashSet<&str> = ["memory", "__pack_alloc", "__pack_free", "__pack_types"]
+        .into_iter()
+        .collect();
+    let lifecycle: HashSet<&str> = lifecycle.iter().map(String::as_str).collect();
+    keep.extend(&lifecycle);
+    let trim: Vec<_> = m
+        .exports
+        .iter()
+        .filter(|e| !keep.contains(e.name.as_str()) && e.name != "__wasm_call_ctors")
+        .map(|e| e.id())
+        .collect();
+    for id in trim {
+        m.exports.delete(id);
+    }
+
+    // A self-contained object is not a side module — drop the dynamic-linking
+    // section (theater treats its presence as a "this is a PIC side-module" signal).
+    let dylink: Vec<_> = m
+        .customs
+        .iter()
+        .filter(|(_, c)| c.name() == "dylink.0")
+        .map(|(id, _)| id)
+        .collect();
+    for id in dylink {
+        m.customs.delete(id);
+    }
 
     Ok(m.emit_wasm())
 }

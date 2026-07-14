@@ -237,5 +237,20 @@ fn internalize(merged: &[u8], layout: &Layout) -> anyhow::Result<Vec<u8>> {
         "expected zero imports after internalize, got {remaining}"
     );
 
+    // Stamp the self-contained-composite marker: a forward-compat ABI-version tag
+    // (v1 = exported memory + __pack_alloc/__pack_free + lifecycle). Not a
+    // discriminator — with the universal self-contained contract, fail-loud is
+    // intrinsic (an unprovided import fails at instantiate) — just a handle for a
+    // host to read which export contract to validate.
+    m.customs.add(walrus::RawCustomSection {
+        name: "pack.composite".to_string(),
+        data: {
+            let mut d = Vec::with_capacity(8);
+            d.extend_from_slice(&1u32.to_le_bytes()); // version
+            d.extend_from_slice(&0u32.to_le_bytes()); // flags
+            d
+        },
+    });
+
     Ok(m.emit_wasm())
 }

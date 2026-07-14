@@ -6,3 +6,4 @@ packages/*/Cargo.lock
 result
 result-*
 .direnv
+examples/composites/
