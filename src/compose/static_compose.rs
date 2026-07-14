@@ -58,6 +58,10 @@ pub struct Layout {
     pub heap_base: u32,
     /// dlmalloc heap end.
     pub heap_end: u32,
+    /// Where a regenerated `__pack_types` blob is placed. Must be a free region
+    /// (default sits in the gap between the first package's data and the second's
+    /// stack, `[0x51400, 0x90000)`).
+    pub metadata_base: u32,
 }
 
 impl Default for Layout {
@@ -69,6 +73,7 @@ impl Default for Layout {
             alloc_base: 0xE_0000,
             heap_base: 0xF_0000,
             heap_end: 0x80_0000,
+            metadata_base: 0x6_0000,
         }
     }
 }
@@ -98,7 +103,16 @@ pub fn compose(spec: &ComposeSpec) -> anyhow::Result<Vec<u8>> {
 
 /// Shell out to binaryen's `wasm-merge` to fuse modules + wire cross-imports.
 fn wasm_merge(packages: &[PackageSpec]) -> anyhow::Result<Vec<u8>> {
-    let dir = std::env::temp_dir().join(format!("pack-compose-{}", std::process::id()));
+    // Unique per call (pid + a process-wide counter) so concurrent compositions —
+    // e.g. parallel tests — don't clobber each other's scratch files.
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let token = format!(
+        "{}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    );
+    let dir = std::env::temp_dir().join(format!("pack-compose-{token}"));
     std::fs::create_dir_all(&dir)?;
 
     let mut cmd = Command::new("wasm-merge");

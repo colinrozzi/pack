@@ -114,6 +114,60 @@ fn resolve_links_validates_and_names_providers() {
     );
 }
 
+#[test]
+fn link_regenerates_the_composite_surface() {
+    if !wasm_merge_available() {
+        eprintln!("SKIP: wasm-merge (binaryen) not on PATH");
+        return;
+    }
+    use packr::{link, read_surface, Layout, LinkBinary, LinkEdge};
+
+    let composite = link(
+        vec![
+            LinkBinary {
+                alias: "alloc".into(),
+                wasm: asset("pack_alloc_module.wasm"),
+                allocator: true,
+            },
+            LinkBinary {
+                alias: "mathreal".into(),
+                wasm: asset("math_real_fixedbase.wasm"),
+                allocator: false,
+            },
+            LinkBinary {
+                alias: "adder".into(),
+                wasm: asset("adder_fixedbase.wasm"),
+                allocator: false,
+            },
+        ],
+        &[LinkEdge {
+            from_alias: "adder".into(),
+            from_interface: "math".into(),
+            to_alias: "mathreal".into(),
+            to_interface: "math".into(),
+        }],
+        Layout::default(),
+    )
+    .expect("link");
+
+    // The composite carries ONE coherent, regenerated `__pack_types`: it exports
+    // `process`, and the `math` import is GONE (satisfied internally) — which makes
+    // the result first-class and re-linkable.
+    let surface = read_surface(&composite).expect("composite has one coherent __pack_types");
+    assert!(
+        surface.arena.exports().iter().any(|f| f.name == "process"),
+        "composite must export process"
+    );
+    assert!(
+        surface.import_hashes.is_empty(),
+        "math is satisfied internally — expected no residual imports, got {:?}",
+        surface.import_hashes
+    );
+
+    // ...and it still runs after the regen surgery.
+    assert_eq!(run_process(&composite, 5), Value::S64(11));
+}
+
 /// The linker in miniature: type-safe gate, then fuse adder + provider and run.
 fn link_and_process(provider_asset: &str, input: i64) -> Value {
     let adder = asset("adder_fixedbase.wasm");
