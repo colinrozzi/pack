@@ -52,8 +52,8 @@ import/export metadata (`__pack_types`); per-interface structural hashes
 ```toml
 name   = "user-actor-test"
 output = "user-actor-test.wasm"
-mode   = "hosted"              # "hosted": memory/allocator stay imports (default)
-                              # "standalone": memory/allocator internalized
+memory = "import"             # "import": PIC side-module, host provides memory (theater)
+                             # "own": internal memory, bare-runnable (default)
 
 [[binary]]
 alias = "actor"               # imports: db, theater:runtime ; exports: handle-send
@@ -78,7 +78,7 @@ handle-send = "actor.handle-send"
 
 Fields:
 
-- `name`, `output`, `mode`.
+- `name`, `output`, `memory` (`own` | `import`; see §5.5).
 - `[[binary]]` — `alias` (local handle) + `wasm` (path, relative to the spec file).
 - `[[link]]` — `from = "<importer-alias>.<interface>"`, `to = "<exporter-alias>.<interface>"`.
 - `[exports]` — what the result exposes.
@@ -107,15 +107,36 @@ Fields:
 4. **Partial internalization** — only *linked* imports are internalized; residual
    imports stay as imports. (Today's `pack compose` internalizes everything → the
    zero-residual special case; this generalizes it.)
-5. **Memory / allocator substrate** — the fused packages share one linear memory +
-   one allocator (disjoint fixed bases per package, as `pack compose` does).
-   `mode` decides the boundary:
-   - `hosted` (default) — memory + allocator stay imports; theater (or a later
-     link step) provides them. The composite is a PIC-style side-module; theater
-     loads it like any actor, unchanged.
-   - `standalone` — memory + allocator internalized (as `pack compose` does
-     today); the composite runs on a bare runtime. Good for self-contained test
-     binaries.
+5. **Resolve the residual surface (no "mode").** There is *no* hosted/standalone
+   flag — that was a false dichotomy. A composite is defined by what it *doesn't*
+   link. Every import is a requirement you either **satisfy** (link a provider →
+   internalized) or **leave residual**, uniformly — pact interfaces, host imports,
+   and even the allocator (`pack:alloc` is just a provider you link or don't).
+
+   The one genuinely special axis is the **linear memory**: a module has exactly
+   one memory, either **owned** (defined + exported) or **imported**. That single
+   choice is what makes a composite bare-runnable vs host-loaded, and it is
+   independent of the rest:
+   - **own memory** — internalize the PIC linkage globals (`__memory_base` etc.) to
+     constants + define the memory internally + export it. Zero-substrate,
+     bare-runnable (what `pack compose` emits today). For self-contained binaries.
+   - **import memory (PIC)** — keep the PIC linkage as imports so a host places the
+     composite. For **theater**, this is a hard contract (confirmed with
+     theater-dev): the composite must be a proper **PIC side-module** whose import
+     surface equals a *lone PIC actor's*, unified to one of each — `env.memory`,
+     `env.__memory_base`, `env.__table_base`, `env.__indirect_function_table`,
+     `env.__stack_pointer`, `GOT.mem.*`/`GOT.func.*` — plus residual `pack:alloc` +
+     `theater:simple/*` + the lifecycle exports. It then rides theater's existing
+     single-actor loader unchanged (one `__memory_base = 0x10000` into a fresh
+     per-instance memory; data laid from offset 0). *Not* fixed-base — theater
+     rejects a fixed-base module at instantiate (the 0.8.1 PIC assert), by design.
+
+   **Build implication:** build members **PIC** and the two corners fall out of one
+   fuse — own memory = internalize the linkage, import memory = keep it. The
+   fixed-base recipe stays a shortcut for the bare-runnable corner only. One
+   constraint for host-loaded composites: the fused static data + heap must fit
+   under `MEM_PAGES` from `0x10000` (a multi-package composite is larger than a
+   lone actor — make it configurable).
 6. **Regenerate metadata** — strip the inputs' `__pack_types`, compute the
    composite's surface (`imports = ∪ inputs.imports − linked`, `exports = the
    [exports] table`, carrying interface identity + hashes from the sources), and
@@ -128,7 +149,7 @@ Fields:
 **Mocks** (the driving case; spec in §3) — actor imports `db` + `theater:runtime`,
 exports `handle-send`. Link `actor.db ← mockdb.db`. Result: an actor with `db`
 mocked, `theater:runtime` residual, `handle-send` exported. Run it in a test
-harness, or `standalone` for a bare test binary.
+harness, or `memory = "own"` for a bare, self-contained test binary.
 
 **Shared code** — library `strfmt.wasm` exports `format`; two actors import
 `format`. Link each actor against `strfmt`. `format` is authored once; each actor
@@ -136,7 +157,7 @@ ships it fused in.
 
 **Actor assembly** — `core.wasm` (exports the actor `handle-*` interface, imports
 `math`) + `math-impl.wasm` (exports `math`). Link `core.math ← math-impl.math`,
-export `core.handle-*`, `mode = "hosted"`. One actor artifact; theater loads it
+export `core.handle-*`, `memory = "import"`. One actor artifact; theater loads it
 unchanged.
 
 ## 7. Build plan & status
@@ -148,8 +169,11 @@ substrate. The linker adds, in order:
    `__pack_types`, validate the spec. **✅ landed** (`abi::decode_prefix` static
    reader #42; `link::{read_surface, check_link, resolve_links}` #44/#45).
 2. **Partial internalization** (linked-only; residual imports preserved) + the
-   `hosted` mode. **⏳ TODO** — the `hosted` contract (what imports the composite
-   keeps, how theater's PIC loader ingests it) is a theater-dev design call (§10).
+   `memory = "import"` corner. **⏳ TODO — contract resolved** (theater-dev,
+   2026-07-14): host-loaded composites must be **PIC side-modules** with an import
+   surface equal to a lone PIC actor's (see §5.5); build members PIC so both
+   memory corners fall out of one fuse. Remaining work is the PIC fuse + linkage
+   unification, not a design question.
 3. **Metadata regeneration** — the composite's `__pack_types`. **⏳ TODO** — the
    load-bearing piece for closure (re-linkable results).
 4. **CLI + spec format** — `packr link <spec.toml>`; `pack compose` is the
