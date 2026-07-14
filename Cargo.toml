@@ -12,6 +12,8 @@ exclude = [
     "packages/doubler-pic",
     "packages/adder-pic",
     "packages/adder",
+    "packages/math-real",
+    "packages/math-mock",
     "packages/doubler",
     "packages/echo",
     "packages/logger",
