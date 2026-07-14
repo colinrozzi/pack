@@ -152,6 +152,21 @@ pub fn decode(bytes: &[u8]) -> Result<Value, AbiError> {
     Value::decode_graph(&decoder, buffer.root)
 }
 
+/// Decode a value from the *prefix* of `bytes`, returning the value and the
+/// number of bytes consumed.
+///
+/// Unlike [`decode`], this tolerates trailing bytes — useful when the value is
+/// embedded in a larger buffer, e.g. package `__pack_types` metadata that sits at
+/// the start of a data segment followed by other static data.
+pub fn decode_prefix(bytes: &[u8]) -> Result<(Value, usize), AbiError> {
+    let limits = Limits::default();
+    let (buffer, consumed) = GraphBuffer::from_bytes_prefix_with_limits(bytes, &limits)?;
+    buffer.validate_basic_with_limits(&limits)?;
+    let decoder = Decoder::new(&buffer);
+    let value = Value::decode_graph(&decoder, buffer.root)?;
+    Ok((value, consumed))
+}
+
 impl GraphBuffer {
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
@@ -179,6 +194,19 @@ impl GraphBuffer {
     }
 
     pub fn from_bytes_with_limits(bytes: &[u8], limits: &Limits) -> Result<Self, AbiError> {
+        let (buffer, consumed) = Self::from_bytes_prefix_with_limits(bytes, limits)?;
+        if consumed != bytes.len() {
+            return Err(AbiError::InvalidEncoding("Trailing bytes".to_string()));
+        }
+        Ok(buffer)
+    }
+
+    /// Parse a graph buffer from the prefix of `bytes`, returning it and the
+    /// number of bytes consumed. Does not reject trailing bytes.
+    pub fn from_bytes_prefix_with_limits(
+        bytes: &[u8],
+        limits: &Limits,
+    ) -> Result<(Self, usize), AbiError> {
         if bytes.len() > limits.max_buffer_size {
             return Err(AbiError::InvalidEncoding("Buffer too large".to_string()));
         }
@@ -222,11 +250,7 @@ impl GraphBuffer {
             ));
         }
 
-        if !cursor.is_eof() {
-            return Err(AbiError::InvalidEncoding("Trailing bytes".to_string()));
-        }
-
-        Ok(Self { nodes, root })
+        Ok((Self { nodes, root }, cursor.pos))
     }
 
     pub fn validate_basic(&self) -> Result<(), AbiError> {
