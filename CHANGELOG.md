@@ -1,5 +1,48 @@
 # Changelog
 
+## v0.10.0 (2026-07-15)
+
+The **universal self-contained actor** cutover. An actor is now a single
+self-contained `.wasm` that **owns its memory** (exports it), keeps data at
+absolute addresses (no relocation), and imports only host functions.
+**PIC side-module loading is removed** — this is a fleet-lockstep event: actors
+must be built self-contained (via `pack compose`/`link`) and hosts (theater) must
+bump to 0.10.0 together.
+
+### Changed
+- **BREAKING (loader): self-contained runtime loader replaces PIC.** The runtime
+  no longer creates a shared memory/table, instantiates an allocator side module,
+  or wires PIC linkage globals (`env.__memory_base`/`__table_base`/`__stack_pointer`/
+  `GOT.mem.*`). `instantiate_with_host_and_interceptor_async` (signature unchanged)
+  now wires only host functions, instantiates the actor, and grabs the actor's
+  **exported** memory. The load-time guard inverts: `assert_self_contained` rejects
+  a module that imports `env.memory`/`env.__memory_base` and requires an exported
+  memory — a mis-flipped PIC/pre-0.10 actor fails legibly at boot. Host-agnostic
+  (no host-interface allowlist); memory-ownership is the single axis it gates on.
+
+### Added
+- **Host-agnostic residual surface in `pack compose`.** `internalize` gates only on
+  memory-ownership (a composite must own its memory); any import no link satisfied
+  survives as legitimate *residual surface* for the eventual host to provide — no
+  module-name allowlist. (#50)
+- **`host-actor` fixture + `tests/link_actor.rs`** — the first composite with a
+  non-empty residual surface, proving a host import survives while a helper import
+  internalizes, end-to-end. (#51)
+
+### Fixed
+- **`.rodata` blanked in composites.** `embed_pack_types` deleted whole data
+  segments beginning with the CGRF magic to strip stale `__pack_types` blobs, but
+  that metadata is the prefix of a `.rodata` segment that also holds live string
+  literals at fixed absolute addresses — blanking them. Now the magic is zeroed in
+  place, preserving every string. Any composed actor reading static strings/tables
+  was affected. (#51)
+
+### Removed
+- PIC runtime machinery: `PicComposition`/`PicCompositionBuilder`,
+  `PicInstance`/`instantiate_pic`, and the internal `pic_link`/`resolve_got_data_end`/
+  allocator-side-module path. Static composition (`pack compose`) and the
+  self-contained loader supersede it. (#52)
+
 ## v0.9.0 (2026-07-13)
 
 ### Added
