@@ -306,17 +306,24 @@ fn embed_pack_types(
         .map(|mem| mem.id())
         .ok_or_else(|| anyhow::anyhow!("composite has no memory to hold metadata"))?;
 
-    // Strip the members' original `__pack_types` blobs (data segments beginning
-    // with the CGRF magic) so the composite carries exactly one — ours. Their
-    // now-unexported getter functions are dead.
-    let stale_data: Vec<_> = m
+    // Neutralize the members' original `__pack_types` blobs so the composite is
+    // discoverable as carrying exactly one — ours. A member's CGRF metadata is
+    // the PREFIX of its `.rodata` segment, which also holds live string literals;
+    // the packages are fixed-base, so those literals sit at absolute addresses the
+    // code reads directly with no relocation. Deleting the whole segment would
+    // blank the strings (numeric fixtures never noticed — they read no rodata);
+    // splicing out just the prefix would shift every following literal's address.
+    // So we zero the magic IN PLACE: the metadata scanner (which keys on a
+    // segment's leading CGRF) no longer matches it, its now-unexported getter is
+    // dead, and every static string keeps its exact address.
+    let stale: Vec<_> = m
         .data
         .iter()
         .filter(|d| d.value.len() >= 4 && d.value[0..4] == CGRF_MAGIC)
         .map(|d| d.id())
         .collect();
-    for id in stale_data {
-        m.data.delete(id);
+    for id in stale {
+        m.data.get_mut(id).value[0..4].fill(0);
     }
 
     // The metadata blob, as an active data segment.
