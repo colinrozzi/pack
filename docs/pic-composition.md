@@ -213,8 +213,19 @@ data lands at absolute addresses needing no relocation):
 ```
 RUSTFLAGS="-Clink-arg=--import-memory -Clink-arg=--initial-memory=8388608 \
   -Clink-arg=--stack-first -Clink-arg=-zstack-size=262144 \
-  -Clink-arg=--global-base=<BASE> -Clink-arg=--no-entry"
+  -Clink-arg=--global-base=<BASE> -Clink-arg=--no-entry \
+  -Clink-arg=--no-merge-data-segments"
 ```
+
+> **`--no-merge-data-segments` is load-bearing, not optional.** The linker knows
+> where a member's `__pack_types` metadata is by scanning for a data segment whose
+> first bytes are the CGRF magic (`link.rs` `read_surface`). By default wasm-ld
+> **merges** data segments, so the metadata static gets buried inside a combined
+> `.rodata` that starts with other bytes → `no __pack_types metadata (CGRF segment)
+> found`. Small actors survive by luck (their CGRF happens to sort first); any
+> actor with substantial `.rodata` (Unicode tables pulled in by `format!`, many
+> string literals) buries it. Keeping segments unmerged leaves the metadata as its
+> own CGRF-prefixed segment — robust regardless of `.rodata` size.
 
 **CLI** — `packr compose <manifest.toml> [-o out.wasm]`, where the manifest lists
 `[[package]]` entries (providers before consumers) with `name` = the consumer's
