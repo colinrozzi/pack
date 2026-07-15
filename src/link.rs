@@ -379,8 +379,9 @@ fn embed_pack_types(
         m.exports.delete(id);
     }
 
-    // A self-contained object is not a side module — drop the dynamic-linking
-    // section (theater treats its presence as a "this is a PIC side-module" signal).
+    // `dylink.0` means "I am a dynamic-linking side module." A self-contained
+    // object is not one, so the section is simply wrong here and we drop it —
+    // true for any host (theater, for one, reads its presence as a PIC signal).
     let dylink: Vec<_> = m
         .customs
         .iter()

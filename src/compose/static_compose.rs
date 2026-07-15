@@ -11,7 +11,11 @@
 //!    `__memory_base` / `__heap_base` / `__heap_end` imports into baked-in
 //!    constants, and export the memory.
 //!
-//! The result has ZERO imports and validates on any stock runtime.
+//! The result OWNS its memory and validates on any stock runtime. Any code import
+//! that no link satisfied survives as the composite's *residual surface* — the
+//! eventual host provides it at instantiate. Composition is host-agnostic: it does
+//! not know or care whether a residual import is `theater:simple/*` or anything
+//! else. Memory is the only axis it forces (a composite must own, not import, it).
 //!
 //! Requires `wasm-merge` (binaryen) on `PATH` at compose time.
 
@@ -150,7 +154,8 @@ impl VisitorMut for MemRemap {
 }
 
 /// The `walrus` pass: unify memories, internalize the allocator's base/heap
-/// globals into constants, export the memory. Yields a zero-import module.
+/// globals into constants, export the memory. Yields a module that owns its
+/// memory; unsatisfied code imports survive as residual surface.
 fn internalize(merged: &[u8], layout: &Layout) -> anyhow::Result<Vec<u8>> {
     let mut m = Module::from_buffer(merged)?;
 
@@ -230,11 +235,18 @@ fn internalize(merged: &[u8], layout: &Layout) -> anyhow::Result<Vec<u8>> {
         m.exports.add("memory", canonical);
     }
 
-    // 4. It must now stand alone.
-    let remaining = m.imports.iter().count();
+    // 4. Memory is the one axis this pass owns: after unification the composite
+    //    must OWN its memory, never import it. Everything else — any code import
+    //    a link didn't satisfy — is legitimate *residual surface*: the eventual
+    //    host (theater or anything else) provides it at instantiate. We are
+    //    host-agnostic; we do not gate on import module names.
+    let residual_mem = m
+        .imports
+        .iter()
+        .any(|i| matches!(i.kind, ImportKind::Memory(_)));
     anyhow::ensure!(
-        remaining == 0,
-        "expected zero imports after internalize, got {remaining}"
+        !residual_mem,
+        "internalize left a residual memory import — a composite must own its memory"
     );
 
     // Stamp the self-contained-composite marker: a forward-compat ABI-version tag
