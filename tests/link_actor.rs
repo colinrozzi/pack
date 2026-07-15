@@ -205,3 +205,49 @@ fn run_process_with_host_log(wasm: &[u8], input: i64) -> Value {
     mem.read(&store, op, &mut out).unwrap();
     decode(&out).unwrap()
 }
+
+/// The bundled `DEFAULT_ALLOCATOR_WASM` (no vendored blob) links a single actor
+/// into a self-contained composite exactly like the on-disk allocator asset —
+/// this is the version-locked allocator theater's fixture build uses.
+#[test]
+fn bundled_allocator_produces_a_self_contained_composite() {
+    if !wasm_merge_available() {
+        eprintln!("SKIP: wasm-merge (binaryen) not on PATH");
+        return;
+    }
+    use packr::{link, read_surface, Layout, LinkBinary};
+
+    // Single actor + the BUNDLED allocator, zero link edges — the no-helper
+    // self-contained recipe. (host-actor's `math` import stays residual here
+    // since it's unlinked; a real no-helper actor imports only host interfaces.)
+    let composite = link(
+        vec![
+            LinkBinary {
+                alias: "alloc".into(),
+                wasm: packr::DEFAULT_ALLOCATOR_WASM.to_vec(),
+                allocator: true,
+            },
+            LinkBinary {
+                alias: "actor".into(),
+                wasm: asset("host_actor_fixedbase.wasm"),
+                allocator: false,
+            },
+        ],
+        &[],
+        Layout::default(),
+    )
+    .expect("link with the bundled allocator");
+
+    // Self-contained: owns its memory, exports the marshalling ABI, and the
+    // allocator is internalized (pack:alloc is NOT a residual import).
+    let surface = read_surface(&composite).expect("composite metadata");
+    let residual: Vec<&str> = surface
+        .import_hashes
+        .iter()
+        .map(|h| h.name.as_str())
+        .collect();
+    assert!(
+        !residual.iter().any(|n| n.contains("alloc")),
+        "the bundled allocator must be internalized, got residual {residual:?}"
+    );
+}
