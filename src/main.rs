@@ -76,8 +76,7 @@ fn main() -> anyhow::Result<()> {
 ///
 /// [[binary]]
 /// alias = "alloc"
-/// wasm  = "pack_alloc.wasm"
-/// allocator = true
+/// allocator = true          # no `wasm` → packr's bundled default allocator
 ///
 /// [[binary]]
 /// alias = "mathreal"
@@ -104,7 +103,10 @@ struct LinkManifest {
 #[derive(serde::Deserialize)]
 struct LinkBinaryEntry {
     alias: String,
-    wasm: String,
+    /// Path to the package wasm. Optional ONLY for the allocator: an
+    /// `allocator = true` entry with no `wasm` uses packr's bundled, crate-
+    /// version-locked default allocator (`packr::DEFAULT_ALLOCATOR_WASM`).
+    wasm: Option<String>,
     #[serde(default)]
     allocator: bool,
 }
@@ -134,9 +136,21 @@ fn link_command(manifest_path: &PathBuf, output_override: Option<PathBuf>) -> an
 
     let mut binaries = Vec::new();
     for b in &manifest.binary {
-        let wpath = base_dir.join(&b.wasm);
-        let wasm = std::fs::read(&wpath)
-            .map_err(|e| anyhow::anyhow!("failed to read binary {}: {e}", wpath.display()))?;
+        let wasm = match &b.wasm {
+            Some(p) => {
+                let wpath = base_dir.join(p);
+                std::fs::read(&wpath).map_err(|e| {
+                    anyhow::anyhow!("failed to read binary {}: {e}", wpath.display())
+                })?
+            }
+            // The allocator may omit `wasm` to use packr's bundled default
+            // (version-locked to the crate — no vendored blob to skew).
+            None if b.allocator => packr::DEFAULT_ALLOCATOR_WASM.to_vec(),
+            None => anyhow::bail!(
+                "binary `{}` has no `wasm` path (only an `allocator = true` entry may omit it)",
+                b.alias
+            ),
+        };
         binaries.push(LinkBinary {
             alias: b.alias.clone(),
             wasm,

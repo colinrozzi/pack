@@ -27,4 +27,4 @@ mod static_compose;
 
 pub use error::ComposeError;
 pub use parser::ParsedModule;
-pub use static_compose::{compose, ComposeSpec, Layout, PackageSpec};
+pub use static_compose::{compose, ComposeSpec, Layout, PackageSpec, DEFAULT_ALLOCATOR_WASM};

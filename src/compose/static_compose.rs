@@ -25,6 +25,18 @@ use std::process::Command;
 use walrus::ir::VisitorMut;
 use walrus::{ConstExpr, DataKind, GlobalKind, ImportKind, MemoryId, Module};
 
+/// The default `pack:alloc` allocator module (dlmalloc, real `free`), bundled so
+/// compose/link consumers get a version-locked allocator without vendoring the
+/// blob. Use it as the `allocator = true` package when building a self-contained
+/// composite: its version is pinned to the packr crate you depend on, so it can
+/// never silently skew from the ABI. Built by `packages/pack-alloc`; regenerate
+/// with `(cd packages/pack-alloc && cargo build --release --target
+/// wasm32-unknown-unknown)` then copy the artifact into `assets/`.
+pub const DEFAULT_ALLOCATOR_WASM: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/assets/pack_alloc_module.wasm"
+));
+
 /// One package in a static composition.
 pub struct PackageSpec {
     /// The `wasm-merge` module name — the import module-name that *consumers* use
