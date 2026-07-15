@@ -327,7 +327,6 @@ async fn test_func_async_registration() {
     let module_wat = r#"
     (module
         (import "test" "async_double" (func $async_double (param i32 i32 i32 i32) (result i32)))
-        (import "env" "__memory_base" (global i32))
         (memory (export "memory") 1)
 
         ;; Reserve space for result slots
@@ -415,7 +414,6 @@ async fn test_async_ctx_state_access() {
     let module_wat = r#"
     (module
         (import "math" "multiply" (func $multiply (param i32 i32 i32 i32) (result i32)))
-        (import "env" "__memory_base" (global i32))
         (memory (export "memory") 1)
 
         ;; Reserve space for result slots
@@ -761,7 +759,6 @@ async fn test_func_async_result_encodes_as_value_result_ok() {
     let module_wat = r#"
     (module
         (import "test" "async_maybe_double" (func $async_maybe_double (param i32 i32 i32 i32) (result i32)))
-        (import "env" "__memory_base" (global i32))
         (memory (export "memory") 1)
 
         (global $result_ptr_offset i32 (i32.const 16384))
@@ -857,7 +854,6 @@ async fn test_func_async_result_encodes_as_value_result_err() {
     let module_wat = r#"
     (module
         (import "test" "async_maybe_double" (func $async_maybe_double (param i32 i32 i32 i32) (result i32)))
-        (import "env" "__memory_base" (global i32))
         (memory (export "memory") 1)
 
         (global $result_ptr_offset i32 (i32.const 16384))
@@ -1136,4 +1132,36 @@ fn test_func_typed_result_preserves_err_type_on_ok() {
             panic!("Expected Value::Result with Ok, got {:?}", other);
         }
     }
+}
+
+/// The self-contained loader must REJECT a PIC / pre-0.10 module (one that
+/// imports `env.__memory_base`) at load, with a legible error — the fleet-safety
+/// property: a not-yet-rebuilt actor fails at boot, not silently on first call.
+/// (Inverse of the old `pic_non_pic_module_fails_gracefully`.)
+#[tokio::test]
+async fn self_contained_loader_rejects_a_pic_module() {
+    use packr::AsyncRuntime;
+
+    // A PIC-shaped module: imports env.__memory_base and does NOT own its memory.
+    let module_wat = r#"
+    (module
+        (import "env" "__memory_base" (global i32))
+        (import "env" "memory" (memory 1))
+        (func (export "noop"))
+    )
+    "#;
+    let wasm_bytes = wat::parse_str(module_wat).expect("parse WAT");
+    let runtime = AsyncRuntime::new();
+    let module = runtime.load_module(&wasm_bytes).expect("load module");
+
+    let result = module.instantiate_with_host_async((), |_| Ok(())).await;
+
+    let err = result
+        .err()
+        .expect("a PIC module must be rejected by the self-contained loader");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("self-contained") && msg.contains("__memory_base"),
+        "error should name the memory-model mismatch, got: {msg}"
+    );
 }
