@@ -47,7 +47,6 @@ async fn after_import_back_pressure_blocks_next_host_call() {
     let module_wat = r#"
     (module
         (import "test" "tick" (func $tick (param i32 i32 i32 i32) (result i32)))
-        (import "env" "__memory_base" (global i32))
         (memory (export "memory") 1)
 
         (global $r_ptr i32 (i32.const 16384))

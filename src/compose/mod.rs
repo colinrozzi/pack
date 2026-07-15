@@ -1,9 +1,8 @@
 //! Static composition of WASM packages into a single self-contained binary.
 //!
 //! Produces one merged `.wasm` where each package's cross-package imports are
-//! resolved to direct internal calls — no runtime cross-module dispatch, and
-//! (unlike a runtime [`crate::runtime::PicCompositionBuilder`]) no host harness:
-//! the output has zero imports and runs on any stock runtime.
+//! resolved to direct internal calls — no runtime cross-module dispatch and no
+//! host harness: the output owns its memory and runs on any stock runtime.
 //!
 //! See [`compose`] for the pipeline (binaryen `wasm-merge` + a `walrus`
 //! internalize pass). [`ParsedModule`] is a lightweight reusable WASM parser
