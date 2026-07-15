@@ -89,7 +89,7 @@ fn test_func_typed_with_value() {
                     (global.get $result_len_offset)))
 
             ;; If error, propagate
-            (if (i32.ne (local.get $status) (i32.const 0))
+            (if (i32.lt_s (local.get $status) (i32.const 0))
                 (then (return (local.get $status))))
 
             ;; Read result ptr/len from slots
@@ -327,7 +327,19 @@ async fn test_func_async_registration() {
     let module_wat = r#"
     (module
         (import "test" "async_double" (func $async_double (param i32 i32 i32 i32) (result i32)))
-        (memory (export "memory") 1)
+        (memory (export "memory") 4)
+
+        ;; Self-contained marshalling ABI: a trivial bump allocator above the
+        ;; fixed scratch buffers. __pack_free is a no-op (bump never reclaims).
+        (global $__pab (mut i32) (i32.const 0x10000))
+        (func (export "__pack_alloc") (param $n i32) (result i32)
+            (local $p i32)
+            (local.set $p (global.get $__pab))
+            (global.set $__pab
+                (i32.add (global.get $__pab)
+                    (i32.and (i32.add (local.get $n) (i32.const 15)) (i32.const 0xfffffff0))))
+            (local.get $p))
+        (func (export "__pack_free") (param i32 i32))
 
         ;; Reserve space for result slots
         (global $result_ptr_offset i32 (i32.const 16384))
@@ -348,7 +360,7 @@ async fn test_func_async_registration() {
                     (global.get $result_ptr_offset)
                     (global.get $result_len_offset)))
 
-            (if (i32.ne (local.get $status) (i32.const 0))
+            (if (i32.lt_s (local.get $status) (i32.const 0))
                 (then (return (local.get $status))))
 
             ;; Read result
@@ -414,7 +426,19 @@ async fn test_async_ctx_state_access() {
     let module_wat = r#"
     (module
         (import "math" "multiply" (func $multiply (param i32 i32 i32 i32) (result i32)))
-        (memory (export "memory") 1)
+        (memory (export "memory") 4)
+
+        ;; Self-contained marshalling ABI: a trivial bump allocator above the
+        ;; fixed scratch buffers. __pack_free is a no-op (bump never reclaims).
+        (global $__pab (mut i32) (i32.const 0x10000))
+        (func (export "__pack_alloc") (param $n i32) (result i32)
+            (local $p i32)
+            (local.set $p (global.get $__pab))
+            (global.set $__pab
+                (i32.add (global.get $__pab)
+                    (i32.and (i32.add (local.get $n) (i32.const 15)) (i32.const 0xfffffff0))))
+            (local.get $p))
+        (func (export "__pack_free") (param i32 i32))
 
         ;; Reserve space for result slots
         (global $result_ptr_offset i32 (i32.const 16384))
@@ -434,7 +458,7 @@ async fn test_async_ctx_state_access() {
                     (global.get $result_ptr_offset)
                     (global.get $result_len_offset)))
 
-            (if (i32.ne (local.get $status) (i32.const 0))
+            (if (i32.lt_s (local.get $status) (i32.const 0))
                 (then (return (local.get $status))))
 
             ;; Read result
@@ -591,7 +615,7 @@ fn test_func_typed_result_encodes_as_value_result_ok() {
                     (global.get $result_ptr_offset)
                     (global.get $result_len_offset)))
 
-            (if (i32.ne (local.get $status) (i32.const 0))
+            (if (i32.lt_s (local.get $status) (i32.const 0))
                 (then (return (local.get $status))))
 
             (local.set $result_ptr (i32.load (global.get $result_ptr_offset)))
@@ -681,7 +705,7 @@ fn test_func_typed_result_encodes_as_value_result_err() {
                     (global.get $result_ptr_offset)
                     (global.get $result_len_offset)))
 
-            (if (i32.ne (local.get $status) (i32.const 0))
+            (if (i32.lt_s (local.get $status) (i32.const 0))
                 (then (return (local.get $status))))
 
             (local.set $result_ptr (i32.load (global.get $result_ptr_offset)))
@@ -759,7 +783,19 @@ async fn test_func_async_result_encodes_as_value_result_ok() {
     let module_wat = r#"
     (module
         (import "test" "async_maybe_double" (func $async_maybe_double (param i32 i32 i32 i32) (result i32)))
-        (memory (export "memory") 1)
+        (memory (export "memory") 4)
+
+        ;; Self-contained marshalling ABI: a trivial bump allocator above the
+        ;; fixed scratch buffers. __pack_free is a no-op (bump never reclaims).
+        (global $__pab (mut i32) (i32.const 0x10000))
+        (func (export "__pack_alloc") (param $n i32) (result i32)
+            (local $p i32)
+            (local.set $p (global.get $__pab))
+            (global.set $__pab
+                (i32.add (global.get $__pab)
+                    (i32.and (i32.add (local.get $n) (i32.const 15)) (i32.const 0xfffffff0))))
+            (local.get $p))
+        (func (export "__pack_free") (param i32 i32))
 
         (global $result_ptr_offset i32 (i32.const 16384))
         (global $result_len_offset i32 (i32.const 16388))
@@ -777,7 +813,7 @@ async fn test_func_async_result_encodes_as_value_result_ok() {
                     (global.get $result_ptr_offset)
                     (global.get $result_len_offset)))
 
-            (if (i32.ne (local.get $status) (i32.const 0))
+            (if (i32.lt_s (local.get $status) (i32.const 0))
                 (then (return (local.get $status))))
 
             (local.set $result_ptr (i32.load (global.get $result_ptr_offset)))
@@ -854,7 +890,19 @@ async fn test_func_async_result_encodes_as_value_result_err() {
     let module_wat = r#"
     (module
         (import "test" "async_maybe_double" (func $async_maybe_double (param i32 i32 i32 i32) (result i32)))
-        (memory (export "memory") 1)
+        (memory (export "memory") 4)
+
+        ;; Self-contained marshalling ABI: a trivial bump allocator above the
+        ;; fixed scratch buffers. __pack_free is a no-op (bump never reclaims).
+        (global $__pab (mut i32) (i32.const 0x10000))
+        (func (export "__pack_alloc") (param $n i32) (result i32)
+            (local $p i32)
+            (local.set $p (global.get $__pab))
+            (global.set $__pab
+                (i32.add (global.get $__pab)
+                    (i32.and (i32.add (local.get $n) (i32.const 15)) (i32.const 0xfffffff0))))
+            (local.get $p))
+        (func (export "__pack_free") (param i32 i32))
 
         (global $result_ptr_offset i32 (i32.const 16384))
         (global $result_len_offset i32 (i32.const 16388))
@@ -872,7 +920,7 @@ async fn test_func_async_result_encodes_as_value_result_err() {
                     (global.get $result_ptr_offset)
                     (global.get $result_len_offset)))
 
-            (if (i32.ne (local.get $status) (i32.const 0))
+            (if (i32.lt_s (local.get $status) (i32.const 0))
                 (then (return (local.get $status))))
 
             (local.set $result_ptr (i32.load (global.get $result_ptr_offset)))
@@ -979,7 +1027,7 @@ fn test_func_typed_result_preserves_ok_type_on_err() {
                     (global.get $result_ptr_offset)
                     (global.get $result_len_offset)))
 
-            (if (i32.ne (local.get $status) (i32.const 0))
+            (if (i32.lt_s (local.get $status) (i32.const 0))
                 (then (return (local.get $status))))
 
             (local.set $result_ptr (i32.load (global.get $result_ptr_offset)))
@@ -1070,7 +1118,7 @@ fn test_func_typed_result_preserves_err_type_on_ok() {
                     (global.get $result_ptr_offset)
                     (global.get $result_len_offset)))
 
-            (if (i32.ne (local.get $status) (i32.const 0))
+            (if (i32.lt_s (local.get $status) (i32.const 0))
                 (then (return (local.get $status))))
 
             (local.set $result_ptr (i32.load (global.get $result_ptr_offset)))
@@ -1163,5 +1211,34 @@ async fn self_contained_loader_rejects_a_pic_module() {
     assert!(
         msg.contains("self-contained") && msg.contains("__memory_base"),
         "error should name the memory-model mismatch, got: {msg}"
+    );
+}
+
+/// A module that owns its memory but does NOT export packr's marshalling ABI
+/// (`__pack_alloc`/`__pack_free`) must be rejected at boot — it would otherwise
+/// limp on bounded fallback buffers and fail at first marshal. (packr's own
+/// contract, validated at load; distinct from the host's lifecycle contract.)
+#[tokio::test]
+async fn self_contained_loader_rejects_a_module_without_pack_alloc() {
+    use packr::AsyncRuntime;
+
+    let module_wat = r#"
+    (module
+        (memory (export "memory") 1)
+        (func (export "noop"))
+    )
+    "#;
+    let wasm_bytes = wat::parse_str(module_wat).expect("parse WAT");
+    let runtime = AsyncRuntime::new();
+    let module = runtime.load_module(&wasm_bytes).expect("load module");
+
+    let err = module
+        .instantiate_with_host_async((), |_| Ok(()))
+        .await
+        .err()
+        .expect("a module missing __pack_alloc must be rejected");
+    assert!(
+        format!("{err}").contains("__pack_alloc"),
+        "error should name the missing marshalling ABI, got: {err}"
     );
 }

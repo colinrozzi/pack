@@ -185,11 +185,18 @@ pub(crate) fn werr<E: std::fmt::Display>(e: E) -> RuntimeError {
 /// on first use). Host-agnostic: it does NOT care WHICH host interfaces are
 /// imported, only that the actor owns its own memory.
 ///
-/// Memory-ownership is the ONE axis this gate enforces — the same axis the
-/// compose-side `internalize` enforces. Other contract facets (`__pack_alloc`,
-/// lifecycle exports, `pack.composite`) fail loudly at their point of use; the
-/// silent-until-first-call failure mode is specifically the memory-model
-/// mismatch, so that is what we catch at load.
+/// This gate enforces packr's OWN contract — nothing of the host's — on two axes.
+/// **Memory-ownership** (the same axis compose-side `internalize` enforces): no
+/// `env.memory`/`env.__memory_base` import, and an exported `memory`. **The
+/// marshalling ABI**: exported `__pack_alloc`/`__pack_free`, through which every
+/// arg/result/host-return flows.
+/// Both are packr exports, so validating them here is coherent and stays
+/// host-agnostic. Lifecycle exports (`handle-send`/`init`) and `pack.composite`
+/// are the HOST's contract — validated by the host at spawn, not here. Gating at
+/// boot turns two otherwise-degraded-or-late failures (a mismatched memory model
+/// mis-marshalling on first call; a missing allocator silently limping on bounded
+/// fallback buffers) into one legible failure at load, which matters most for the
+/// fleet cutover: a not-yet-rebuilt actor fails at boot, not on first use.
 pub(crate) fn assert_self_contained(module: &Module) -> Result<(), RuntimeError> {
     for imp in module.imports() {
         if imp.module() == "env" && (imp.name() == "memory" || imp.name() == "__memory_base") {
@@ -208,6 +215,13 @@ pub(crate) fn assert_self_contained(module: &Module) -> Result<(), RuntimeError>
         return Err(RuntimeError::WasmError(
             "not a self-contained actor: must export its own `memory`".into(),
         ));
+    }
+    for f in ["__pack_alloc", "__pack_free"] {
+        if !module.exports().any(|e| e.name() == f) {
+            return Err(RuntimeError::WasmError(format!(
+                "not a self-contained actor: must export `{f}` (packr's marshalling ABI)"
+            )));
+        }
     }
     Ok(())
 }

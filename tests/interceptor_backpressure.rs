@@ -47,7 +47,19 @@ async fn after_import_back_pressure_blocks_next_host_call() {
     let module_wat = r#"
     (module
         (import "test" "tick" (func $tick (param i32 i32 i32 i32) (result i32)))
-        (memory (export "memory") 1)
+        (memory (export "memory") 4)
+
+        ;; Self-contained marshalling ABI: a trivial bump allocator above the
+        ;; fixed scratch buffers. __pack_free is a no-op (bump never reclaims).
+        (global $__pab (mut i32) (i32.const 0x10000))
+        (func (export "__pack_alloc") (param $n i32) (result i32)
+            (local $p i32)
+            (local.set $p (global.get $__pab))
+            (global.set $__pab
+                (i32.add (global.get $__pab)
+                    (i32.and (i32.add (local.get $n) (i32.const 15)) (i32.const 0xfffffff0))))
+            (local.get $p))
+        (func (export "__pack_free") (param i32 i32))
 
         (global $r_ptr i32 (i32.const 16384))
         (global $r_len i32 (i32.const 16388))
@@ -64,7 +76,9 @@ async fn after_import_back_pressure_blocks_next_host_call() {
                 (call $tick
                     (local.get $in_ptr) (local.get $in_len)
                     (global.get $r_ptr) (global.get $r_len)))
-            (if (i32.ne (local.get $st) (i32.const 0))
+            ;; success = status >= 0; the guest-allocated host-return path
+            ;; returns 1 (the buffer-ownership bit), which is NOT an error.
+            (if (i32.lt_s (local.get $st) (i32.const 0))
                 (then (return (local.get $st))))
 
             ;; second call (reuse same input)
@@ -72,7 +86,9 @@ async fn after_import_back_pressure_blocks_next_host_call() {
                 (call $tick
                     (local.get $in_ptr) (local.get $in_len)
                     (global.get $r_ptr) (global.get $r_len)))
-            (if (i32.ne (local.get $st) (i32.const 0))
+            ;; success = status >= 0; the guest-allocated host-return path
+            ;; returns 1 (the buffer-ownership bit), which is NOT an error.
+            (if (i32.lt_s (local.get $st) (i32.const 0))
                 (then (return (local.get $st))))
 
             ;; copy second result into our own output area so we control the pointer
