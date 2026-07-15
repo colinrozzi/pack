@@ -47,7 +47,10 @@ pub struct PackageSpec {
     pub name: String,
     /// Compiled package bytes, built with the fixed-base composition recipe
     /// (`--global-base=<BASE> --stack-first -zstack-size=... --import-memory
-    /// --no-entry`), with disjoint bases per package.
+    /// --no-entry --no-merge-data-segments`), with disjoint bases per package.
+    /// `--no-merge-data-segments` is load-bearing: it keeps each package's
+    /// `__pack_types` metadata as its own CGRF-prefixed data segment so
+    /// `read_surface` finds it regardless of `.rodata` size (see docs).
     pub wasm: Vec<u8>,
 }
 
