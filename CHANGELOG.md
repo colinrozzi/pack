@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.10.2 (2026-07-15)
+
+Follow-ups to the 0.10.0 self-contained cutover, tightening the loader's boot
+contract and closing the allocator-provenance gap. (0.10.1 was folded in — its
+boot check ships here.)
+
+### Added
+- **`packr::DEFAULT_ALLOCATOR_WASM`** — the `pack:alloc` allocator module, bundled
+  into the crate and version-locked to it. Removing the PIC loader in 0.10.0 had
+  dropped the runtime's embedded allocator, leaving `compose`/`link` consumers with
+  no allocator to build a self-contained actor. A `link` manifest `[[binary]]` with
+  `allocator = true` and **no `wasm` path** now uses the bundled default — a
+  self-contained actor build needs no vendored allocator blob. (#55)
+
+### Changed
+- **Loader boot check now also requires `__pack_alloc`/`__pack_free`.**
+  `assert_self_contained` validates packr's full marshalling ABI at load, not just
+  memory-ownership. An actor missing the allocator exports would otherwise
+  instantiate and silently limp on bounded fallback buffers; it now fails legibly
+  at boot. Still host-agnostic (these are packr's own exports; lifecycle exports
+  remain the host's contract, validated host-side). (#54)
+
 ## v0.10.0 (2026-07-15)
 
 The **universal self-contained actor** cutover. An actor is now a single
