@@ -1,7 +1,10 @@
 //! Pack CLI - tools for working with Pack packages
 //!
 //! Commands:
-//!   pack inspect <wasm>  - Display metadata from a WASM package
+//!   packr inspect <wasm>       - Display a package's metadata
+//!   packr compose <manifest>   - Statically fuse packages into one `.wasm`
+//!   packr link <manifest>      - Hash-checked interface linking into one `.wasm`
+//!   packr build [crate]        - Actor crate → theater-loadable composite
 
 use clap::{Parser, Subcommand};
 use packr::{decode_metadata_with_hashes, Arena, Function, Param, ParsedModule, Type};
@@ -53,6 +56,24 @@ enum Commands {
         #[arg(long, short = 'o')]
         output: Option<PathBuf>,
     },
+
+    /// Build an actor crate into a theater-loadable self-contained composite.
+    ///
+    /// One command in place of the hand-authored fixed-base recipe + separate
+    /// link step: runs `cargo build` for `wasm32-unknown-unknown` with the recipe
+    /// injected (no `.cargo/config` needed), then links the member against packr's
+    /// bundled allocator into one self-contained `.wasm`. Requires the
+    /// `wasm32-unknown-unknown` target and `wasm-merge` (binaryen) on `PATH`.
+    Build {
+        /// Path to the actor crate (default: current directory)
+        #[arg(default_value = ".")]
+        path: PathBuf,
+
+        /// Output composite path (default: `<name>.composite.wasm` beside the
+        /// cargo artifact)
+        #[arg(long, short = 'o')]
+        output: Option<PathBuf>,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -66,7 +87,120 @@ fn main() -> anyhow::Result<()> {
         } => inspect_command(&wasm_file, hashes, json),
         Commands::Compose { manifest, output } => compose_command(&manifest, output),
         Commands::Link { manifest, output } => link_command(&manifest, output),
+        Commands::Build { path, output } => build_command(&path, output),
     }
+}
+
+/// `packr build` — a normal `packr-guest` crate → one theater-loadable composite.
+///
+/// The fixed-base recipe and the compose step become implementation details of
+/// the toolchain (versioned with packr) instead of a hand-copied `.cargo/config`
+/// + link manifest that drifts out of sync with the linker across releases.
+fn build_command(crate_path: &std::path::Path, output: Option<PathBuf>) -> anyhow::Result<()> {
+    use packr::{Layout, LinkBinary};
+
+    // The actor's data sits low, just above the 256 KiB shadow stack; the
+    // allocator, regenerated metadata, and heap are placed high, leaving generous
+    // static-data room (`ACTOR_BASE..metadata_base`, ~3.75 MiB). The author never
+    // sees or reasons about any of these numbers.
+    const ACTOR_BASE: u32 = 0x4_0000;
+    let rustflags = [
+        "-C link-arg=--import-memory",
+        "-C link-arg=--initial-memory=8388608",
+        "-C link-arg=--stack-first",
+        "-C link-arg=-zstack-size=262144",
+        &format!("-C link-arg=--global-base={ACTOR_BASE}"),
+        "-C link-arg=--no-entry",
+        // Load-bearing: keeps `__pack_types` its own CGRF-prefixed segment so
+        // `read_surface` finds it regardless of `.rodata` size.
+        "-C link-arg=--no-merge-data-segments",
+    ]
+    .join(" ");
+
+    eprintln!("packr build: cargo build (wasm32-unknown-unknown, release, fixed-base recipe)…");
+    let out = std::process::Command::new("cargo")
+        .current_dir(crate_path)
+        .args([
+            "build",
+            "--target",
+            "wasm32-unknown-unknown",
+            "--release",
+            "--message-format=json-render-diagnostics",
+        ])
+        .env("RUSTFLAGS", &rustflags)
+        .stderr(std::process::Stdio::inherit())
+        .output()
+        .map_err(|e| anyhow::anyhow!("failed to run `cargo` (is it on PATH?): {e}"))?;
+    anyhow::ensure!(out.status.success(), "cargo build failed");
+
+    let wasm_path = find_cdylib_wasm(&out.stdout).ok_or_else(|| {
+        anyhow::anyhow!(
+            "cargo produced no cdylib `.wasm` — is this an actor crate? It needs \
+             `[lib] crate-type = [\"cdylib\"]` and the `wasm32-unknown-unknown` target \
+             (`rustup target add wasm32-unknown-unknown`)."
+        )
+    })?;
+    let member = std::fs::read(&wasm_path)
+        .map_err(|e| anyhow::anyhow!("reading built wasm {}: {e}", wasm_path.display()))?;
+
+    // Single-actor layout: allocator + metadata + heap up high, above the actor.
+    let layout = Layout {
+        memory_pages: 256,
+        metadata_base: 0x40_0000,
+        alloc_base: 0x41_0000,
+        heap_base: 0x42_0000,
+        heap_end: 0x100_0000,
+    };
+    let composite = packr::link(
+        vec![
+            LinkBinary {
+                alias: "alloc".into(),
+                wasm: packr::DEFAULT_ALLOCATOR_WASM.to_vec(),
+                allocator: true,
+            },
+            LinkBinary {
+                alias: "actor".into(),
+                wasm: member,
+                allocator: false,
+            },
+        ],
+        &[],
+        layout,
+    )?;
+
+    let out_path = output.unwrap_or_else(|| wasm_path.with_extension("composite.wasm"));
+    std::fs::write(&out_path, &composite)
+        .map_err(|e| anyhow::anyhow!("writing {}: {e}", out_path.display()))?;
+    println!(
+        "built self-contained composite → {} ({} bytes)",
+        out_path.display(),
+        composite.len()
+    );
+    Ok(())
+}
+
+/// Find the cdylib `.wasm` cargo emitted, from its `--message-format=json`
+/// artifact stream (robust to `[lib]` name overrides, workspaces, target dirs).
+fn find_cdylib_wasm(cargo_stdout: &[u8]) -> Option<PathBuf> {
+    let text = String::from_utf8_lossy(cargo_stdout);
+    let mut found = None;
+    for line in text.lines() {
+        let v: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if v.get("reason").and_then(|r| r.as_str()) != Some("compiler-artifact") {
+            continue;
+        }
+        if let Some(files) = v.get("filenames").and_then(|f| f.as_array()) {
+            for f in files.iter().filter_map(|f| f.as_str()) {
+                if f.ends_with(".wasm") {
+                    found = Some(PathBuf::from(f)); // last wins = the final cdylib
+                }
+            }
+        }
+    }
+    found
 }
 
 /// A `pack link` manifest — explicit, hash-checked interface links.
@@ -543,4 +677,38 @@ fn func_to_json(func: &Function) -> serde_json::Value {
         })).collect::<Vec<_>>(),
         "results": func.results.iter().map(format_type).collect::<Vec<_>>(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::find_cdylib_wasm;
+
+    #[test]
+    fn finds_the_final_cdylib_wasm_in_cargo_json() {
+        // A realistic slice of `cargo build --message-format=json` output: a dep
+        // artifact (rlib), then the actor's cdylib (.wasm), then build-finished.
+        let stream = concat!(
+            r#"{"reason":"compiler-artifact","target":{"kind":["lib"],"name":"serde"},"filenames":["/t/libserde.rlib"]}"#,
+            "\n",
+            r#"{"reason":"compiler-artifact","target":{"kind":["cdylib"],"name":"mesh"},"filenames":["/t/wasm32-unknown-unknown/release/mesh.wasm"]}"#,
+            "\n",
+            r#"{"reason":"build-finished","success":true}"#,
+            "\n",
+        );
+        let found = find_cdylib_wasm(stream.as_bytes()).expect("should find the cdylib wasm");
+        assert_eq!(
+            found,
+            std::path::PathBuf::from("/t/wasm32-unknown-unknown/release/mesh.wasm")
+        );
+    }
+
+    #[test]
+    fn returns_none_when_no_wasm_artifact() {
+        let stream = concat!(
+            r#"{"reason":"compiler-artifact","target":{"kind":["lib"],"name":"serde"},"filenames":["/t/libserde.rlib"]}"#,
+            "\n",
+            r#"{"reason":"build-finished","success":true}"#,
+        );
+        assert!(find_cdylib_wasm(stream.as_bytes()).is_none());
+    }
 }
