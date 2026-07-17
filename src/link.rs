@@ -230,12 +230,24 @@ pub fn link(
         Some((wasm, satisfied)) => {
             let meta = composite_metadata(&wasm, &satisfied)?;
             // The composite's public lifecycle = the entry's pact exports; every
-            // other leaked member export is trimmed to a clean contract.
+            // other leaked member export is trimmed to a clean contract. Match the
+            // RAW wasm export symbol, which the guest macro names
+            // `<interface>.<fn>` (e.g. `theater:simple/actor.init`) — NOT the bare
+            // arena fn name. Using the bare name deletes every interface-qualified
+            // lifecycle export (a real theater actor's init/handle-send/…); a
+            // bare-export fixture like `host-actor`'s `.process` hides it because
+            // there the qualified and bare names coincide.
             let lifecycle: Vec<String> = read_surface(&wasm)?
                 .arena
                 .exports()
                 .iter()
-                .map(|f| f.name.clone())
+                .map(|f| {
+                    if f.interface.is_empty() {
+                        f.name.clone()
+                    } else {
+                        format!("{}.{}", f.interface, f.name)
+                    }
+                })
                 .collect();
             embed_pack_types(&fused, &meta, layout.metadata_base, &lifecycle)
         }

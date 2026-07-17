@@ -251,3 +251,64 @@ fn bundled_allocator_produces_a_self_contained_composite() {
         "the bundled allocator must be internalized, got residual {residual:?}"
     );
 }
+
+/// Regression: the composite lifecycle-export trim must preserve an
+/// INTERFACE-QUALIFIED lifecycle export (`theater:simple/actor.init`) — the shape
+/// every real theater actor has. The trim keys on the RAW wasm export symbol
+/// (`<interface>.<fn>`); building the allow-list from the bare arena fn name
+/// (`init`) deleted it, so theater failed "Function not found" at spawn.
+///
+/// The trim runs only when the actor is a link *entry* — i.e. it links against a
+/// provider (`[[link]]` edge), which is exactly the "actor imports a library"
+/// case the bug was reported for. So this MUST link `lifecycle-actor` against a
+/// `math` provider, not zero-edge (which skips the trim). `host-actor`'s bare
+/// `.process` can't catch it either (qualified == bare there).
+#[test]
+fn link_preserves_interface_qualified_lifecycle_exports() {
+    if !wasm_merge_available() {
+        eprintln!("SKIP: wasm-merge (binaryen) not on PATH");
+        return;
+    }
+    use packr::{link, Layout, LinkBinary, LinkEdge};
+
+    // Actor links `math` → math-real: this makes the actor the entry, so the
+    // lifecycle-export trim actually runs (the path that over-deleted the export).
+    let composite = link(
+        vec![
+            LinkBinary {
+                alias: "alloc".into(),
+                wasm: packr::DEFAULT_ALLOCATOR_WASM.to_vec(),
+                allocator: true,
+            },
+            LinkBinary {
+                alias: "mathreal".into(),
+                wasm: asset("math_real_fixedbase.wasm"),
+                allocator: false,
+            },
+            LinkBinary {
+                alias: "actor".into(),
+                wasm: asset("lifecycle_actor_fixedbase.wasm"),
+                allocator: false,
+            },
+        ],
+        &[LinkEdge {
+            from_alias: "actor".into(),
+            from_interface: "math".into(),
+            to_alias: "mathreal".into(),
+            to_interface: "math".into(),
+        }],
+        Layout::default(),
+    )
+    .expect("link lifecycle-actor against math-real");
+
+    // theater finds the entry by its RAW wasm export symbol, so assert at that
+    // level (the regenerated metadata still lists it — only the raw export is
+    // wrongly deleted). Module::exports() reads them without instantiating.
+    let engine = Engine::default();
+    let module = Module::new(&engine, &composite).expect("valid composite");
+    let exports: Vec<String> = module.exports().map(|e| e.name().to_string()).collect();
+    assert!(
+        exports.iter().any(|e| e == "theater:simple/actor.init"),
+        "composite must retain the interface-qualified lifecycle export, got {exports:?}"
+    );
+}

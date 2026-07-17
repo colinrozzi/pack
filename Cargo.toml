@@ -13,6 +13,7 @@ exclude = [
     "packages/adder-pic",
     "packages/adder",
     "packages/host-actor",
+    "packages/lifecycle-actor",
     "packages/math-real",
     "packages/math-mock",
     "packages/doubler",
