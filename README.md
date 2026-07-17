@@ -209,6 +209,27 @@ opt-level = "s"
 lto = true
 ```
 
+### Building an actor: `packr build`
+
+A theater-loadable actor is a **self-contained composite** — it owns its memory,
+exports its allocator, and imports only host functions. `packr build` produces one
+from a normal `packr-guest` crate in a single step:
+
+```sh
+packr build                 # in an actor crate; or: packr build path/to/crate
+# → path/to/crate/target/wasm32-unknown-unknown/release/<name>.composite.wasm
+```
+
+It runs `cargo build` for `wasm32-unknown-unknown` with the fixed-base link recipe
+injected (no `.cargo/config` to hand-author) and links the result against packr's
+bundled allocator into one `.wasm`. Point your theater manifest at the
+`.composite.wasm`. Requires the `wasm32-unknown-unknown` target and `wasm-merge`
+(binaryen) on `PATH`.
+
+The recipe (base addresses, stack layout, `--no-merge-data-segments`, the compose
+step) is an implementation detail of the toolchain, versioned with packr — not a
+copy-pasted config that drifts out of sync with the linker across releases.
+
 ## Project Structure
 
 ```
