@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.10.3 (2026-07-19)
+
+### Fixed
+- **Composite layout overrun corrupting the bundled allocator (prod hang).** A
+  member whose `.rodata` exceeds the fixed `alloc_base` (default `0xE0000`)
+  overwrote the bundled allocator's dlmalloc control structures, so the first
+  allocation trapped or spun forever — the mail-spine 0.10.2 hang on big-surface /
+  crypto actors (e.g. an actor with DKIM RSA). The Value decoder is O(n) and the
+  allocator is clean; the root was purely the layout. `link()`/`compose` now
+  **auto-raise** `alloc_base`/`heap_base`/`metadata_base` above every member
+  (`fit_layout`), so a fixed default layout works for any actor with no per-actor
+  change. Host-ABI unchanged (compose-side only). (#60)
+
+### Added
+- **`packr build` multi-member.** A build manifest (`[[member]]` crates +
+  `[[link]]` edges) assigns each member a **disjoint memory region**
+  automatically, builds it, and links — the fix for the multi-member same-base
+  collision (two members at one base corrupt each other's static data and trap).
+  (#60)
+- **`packr::read_data_end` / `member_region`** — a member's `[base, __data_end)`
+  static-data extent. `packr link` now **rejects pre-built members whose regions
+  overlap** up front instead of emitting a silently-trapping composite. (#60)
+
 ## v0.10.2 (2026-07-15)
 
 Follow-ups to the 0.10.0 self-contained cutover, tightening the loader's boot
