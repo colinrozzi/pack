@@ -29,6 +29,130 @@ pub fn read_surface(wasm: &[u8]) -> anyhow::Result<MetadataWithHashes> {
     decode_metadata_with_hashes(&seg.data).map_err(|e| anyhow::anyhow!("decode metadata: {e}"))
 }
 
+/// A member's exclusive static-data region `[lo, hi)` in the composite's shared
+/// memory: `lo` = its lowest data-segment address (its `--global-base`), `hi` =
+/// its `__data_end` global (the top of data + bss). Two members whose regions
+/// overlap silently corrupt each other's static data and trap at runtime; the
+/// build side places each member's base above the previous one's `hi`, and the
+/// link side rejects overlaps up front.
+pub fn member_region(wasm: &[u8]) -> anyhow::Result<(u32, u32)> {
+    let m = walrus::Module::from_buffer(wasm)?;
+    let gid = m
+        .exports
+        .iter()
+        .find(|e| e.name == "__data_end")
+        .and_then(|e| match e.item {
+            walrus::ExportItem::Global(gid) => Some(gid),
+            _ => None,
+        })
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "member does not export `__data_end` (built with the fixed-base recipe?)"
+            )
+        })?;
+    let hi = match m.globals.get(gid).kind {
+        walrus::GlobalKind::Local(walrus::ConstExpr::Value(walrus::ir::Value::I32(v))) => v as u32,
+        _ => anyhow::bail!("`__data_end` is not an i32 const global"),
+    };
+    let lo = m
+        .data
+        .iter()
+        .filter_map(|d| match &d.kind {
+            walrus::DataKind::Active {
+                offset: walrus::ConstExpr::Value(walrus::ir::Value::I32(o)),
+                ..
+            } => Some(*o as u32),
+            _ => None,
+        })
+        .min()
+        .unwrap_or(hi);
+    Ok((lo, hi))
+}
+
+/// A member's `__data_end` — the top of its static-data region. See
+/// [`member_region`].
+pub fn read_data_end(wasm: &[u8]) -> anyhow::Result<u32> {
+    member_region(wasm).map(|(_, hi)| hi)
+}
+
+/// Reject a set of members whose fixed-base static-data regions overlap in the
+/// composite's shared memory — otherwise the composite links "successfully" and
+/// silently traps at runtime when one member reads the other's corrupted data.
+/// The allocator is excluded (the `Layout` places it, not its compiled base).
+fn assert_members_disjoint(binaries: &[LinkBinary]) -> anyhow::Result<()> {
+    let mut regions: Vec<(&str, u32, u32)> = Vec::new();
+    for b in binaries {
+        if b.allocator {
+            continue;
+        }
+        let (lo, hi) =
+            member_region(&b.wasm).map_err(|e| anyhow::anyhow!("member `{}`: {e}", b.alias))?;
+        regions.push((b.alias.as_str(), lo, hi));
+    }
+    regions.sort_by_key(|r| r.1);
+    for w in regions.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        if a.2 > b.1 {
+            anyhow::bail!(
+                "members `{}` [0x{:x}, 0x{:x}) and `{}` [0x{:x}, 0x{:x}) overlap in the \
+                 composite's shared memory — rebuild them at disjoint `--global-base`s, or use \
+                 `packr build` (which assigns disjoint member regions automatically)",
+                a.0,
+                a.1,
+                a.2,
+                b.0,
+                b.1,
+                b.2
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Raise the composite `Layout`'s allocator / heap / metadata regions above every
+/// member's static data. A member whose `.rodata` overruns `alloc_base` overwrites
+/// the bundled allocator's dlmalloc structures, corrupting them so the first
+/// allocation traps or spins. `packr build` computes a fitting layout already;
+/// this protects callers (e.g. `theater compose`) that pass a fixed default
+/// layout, so a big-`.rodata` actor still composes correctly. Only RAISES (never
+/// shrinks a caller's generous layout).
+fn fit_layout_above_members(
+    layout: crate::Layout,
+    binaries: &[LinkBinary],
+) -> anyhow::Result<crate::Layout> {
+    const MARGIN: u32 = 0x1_0000;
+    let max_end = binaries
+        .iter()
+        .filter(|b| !b.allocator)
+        .map(|b| read_data_end(&b.wasm))
+        .collect::<anyhow::Result<Vec<_>>>()?
+        .into_iter()
+        .max()
+        .unwrap_or(0);
+
+    // If any managed region sits at/below the members, the actor data would
+    // overrun it — re-place all three above the highest member, preserving the
+    // caller's heap size.
+    if layout.metadata_base > max_end && layout.alloc_base > max_end && layout.heap_base > max_end {
+        return Ok(layout);
+    }
+    let base = max_end
+        .checked_add(MARGIN)
+        .ok_or_else(|| anyhow::anyhow!("member data too large to place the allocator"))?
+        .next_multiple_of(MARGIN);
+    let heap_size = layout
+        .heap_end
+        .saturating_sub(layout.heap_base)
+        .max(0x100_0000);
+    let mut fitted = layout;
+    fitted.metadata_base = base;
+    fitted.alloc_base = base + MARGIN;
+    fitted.heap_base = base + 2 * MARGIN;
+    fitted.heap_end = fitted.heap_base + heap_size;
+    fitted.memory_pages = fitted.memory_pages.max(fitted.heap_end.div_ceil(65536) + 1);
+    Ok(fitted)
+}
+
 /// Why a proposed link is not type-safe.
 #[derive(Debug, thiserror::Error)]
 pub enum LinkError {
@@ -222,6 +346,18 @@ pub fn link(
             .collect();
         Some((wasm, satisfied))
     });
+
+    // Fail loud on overlapping member regions instead of emitting a composite that
+    // silently traps at runtime.
+    assert_members_disjoint(&binaries)?;
+
+    // Ensure the allocator / heap / regenerated metadata sit ABOVE every member's
+    // static data. A member whose `.rodata` overruns `alloc_base` overwrites the
+    // bundled allocator's dlmalloc control structures — corrupting them so the
+    // first allocation traps or spins forever (a silent runtime hang, seen in the
+    // fleet on big-surface/crypto actors). No-op when the layout already clears
+    // every member (e.g. a `packr build`-computed layout).
+    let layout = fit_layout_above_members(layout, &binaries)?;
 
     let packages = resolve_links(binaries, links)?;
     let fused = crate::compose(&crate::ComposeSpec { packages, layout })?;

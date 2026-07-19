@@ -312,3 +312,91 @@ fn link_preserves_interface_qualified_lifecycle_exports() {
         "composite must retain the interface-qualified lifecycle export, got {exports:?}"
     );
 }
+
+/// The link-time safety net: two members whose fixed-base data regions overlap
+/// must be rejected up front, not emitted as a composite that silently traps at
+/// runtime. `host-actor` and `lifecycle-actor` are both built at --global-base
+/// 0xD0000, so their regions collide. (Fires before compose — no wasm-merge.)
+#[test]
+fn link_rejects_overlapping_member_regions() {
+    use packr::{link, Layout, LinkBinary};
+    let err = link(
+        vec![
+            LinkBinary {
+                alias: "alloc".into(),
+                wasm: packr::DEFAULT_ALLOCATOR_WASM.to_vec(),
+                allocator: true,
+            },
+            LinkBinary {
+                alias: "a".into(),
+                wasm: asset("host_actor_fixedbase.wasm"),
+                allocator: false,
+            },
+            LinkBinary {
+                alias: "b".into(),
+                wasm: asset("lifecycle_actor_fixedbase.wasm"),
+                allocator: false,
+            },
+        ],
+        &[],
+        Layout::default(),
+    )
+    .err()
+    .expect("overlapping members must be rejected at link time");
+    assert!(
+        format!("{err}").contains("overlap"),
+        "error should name the region overlap, got: {err}"
+    );
+}
+
+/// Regression for the prod mail-spine hang (0.10.2): a member whose `.rodata`
+/// overruns the default `alloc_base` overwrites the bundled allocator's dlmalloc
+/// structures, so the first allocation traps or spins forever. `link()` must
+/// auto-fit the layout above the member so it composes AND allocates cleanly.
+/// `bigrodata`'s `__data_end` (~0xFC756) exceeds the default `alloc_base`
+/// (0xE0000); without the fit its first `__pack_alloc` traps.
+#[test]
+fn link_fits_layout_above_a_big_rodata_member() {
+    if !wasm_merge_available() {
+        eprintln!("SKIP: wasm-merge (binaryen) not on PATH");
+        return;
+    }
+    use packr::{link, Layout, LinkBinary};
+
+    let composite = link(
+        vec![
+            LinkBinary {
+                alias: "alloc".into(),
+                wasm: packr::DEFAULT_ALLOCATOR_WASM.to_vec(),
+                allocator: true,
+            },
+            LinkBinary {
+                alias: "actor".into(),
+                wasm: asset("bigrodata_fixedbase.wasm"),
+                allocator: false,
+            },
+        ],
+        &[],
+        Layout::default(), // would overrun without fit_layout
+    )
+    .expect("link big-rodata actor");
+
+    // Instantiate (bigrodata has no residual host imports) and allocate — the
+    // allocator is uncorrupted only because fit_layout raised it above the member.
+    let engine = Engine::default();
+    let module = Module::new(&engine, &composite).expect("valid composite");
+    let mut store = Store::new(&engine, ());
+    let inst = wasmtime::Linker::new(&engine)
+        .instantiate(&mut store, &module)
+        .expect("instantiate");
+    if let Ok(c) = inst.get_typed_func::<(), ()>(&mut store, "__wasm_call_ctors") {
+        c.call(&mut store, ()).unwrap();
+    }
+    let pa = inst
+        .get_typed_func::<i32, i32>(&mut store, "__pack_alloc")
+        .unwrap();
+    let ptr = pa
+        .call(&mut store, 64)
+        .expect("first __pack_alloc must not trap on a fitted composite");
+    assert!(ptr > 0, "allocator returned null on the fitted composite");
+}

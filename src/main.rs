@@ -65,12 +65,13 @@ enum Commands {
     /// bundled allocator into one self-contained `.wasm`. Requires the
     /// `wasm32-unknown-unknown` target and `wasm-merge` (binaryen) on `PATH`.
     Build {
-        /// Path to the actor crate (default: current directory)
+        /// Actor crate directory (single actor), OR a multi-member build manifest
+        /// (`.toml`: member crates + link edges). Default: current directory.
         #[arg(default_value = ".")]
         path: PathBuf,
 
         /// Output composite path (default: `<name>.composite.wasm` beside the
-        /// cargo artifact)
+        /// cargo artifact, or the manifest's `output`)
         #[arg(long, short = 'o')]
         output: Option<PathBuf>,
     },
@@ -91,35 +92,221 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
-/// `packr build` — a normal `packr-guest` crate → one theater-loadable composite.
+/// A `packr build` MULTI-MEMBER manifest: member crates + explicit link edges.
+/// packr assigns each member a disjoint memory region, builds it, and links —
+/// the author never types a base address or a Layout.
 ///
-/// The fixed-base recipe and the compose step become implementation details of
-/// the toolchain (versioned with packr) instead of a hand-copied `.cargo/config`
-/// + link manifest that drifts out of sync with the linker across releases.
-fn build_command(crate_path: &std::path::Path, output: Option<PathBuf>) -> anyhow::Result<()> {
-    use packr::{Layout, LinkBinary};
+/// ```toml
+/// [[member]]
+/// name  = "example-app"
+/// crate = "./example-app"
+///
+/// [[member]]
+/// name  = "mesh-client"
+/// crate = "./mesh-client"
+///
+/// [[link]]                 # <member>.<interface>  <-  <member>.<interface>
+/// from = "example-app.mesh:client/protocol"
+/// to   = "mesh-client.mesh:client/protocol"
+///
+/// output = "app.composite.wasm"   # optional
+/// ```
+#[derive(serde::Deserialize)]
+struct BuildManifest {
+    #[serde(default)]
+    member: Vec<BuildMember>,
+    #[serde(default)]
+    link: Vec<LinkEntry>,
+    output: Option<String>,
+}
 
-    // The actor's data sits low, just above the 256 KiB shadow stack; the
-    // allocator, regenerated metadata, and heap are placed high, leaving generous
-    // static-data room (`ACTOR_BASE..metadata_base`, ~3.75 MiB). The author never
-    // sees or reasons about any of these numbers.
-    const ACTOR_BASE: u32 = 0x4_0000;
+#[derive(serde::Deserialize)]
+struct BuildMember {
+    /// Member alias, used in `[[link]]` edges.
+    name: String,
+    /// Path to the member crate (relative to the manifest).
+    #[serde(rename = "crate")]
+    crate_path: String,
+}
+
+/// The member set + edges resolved from a `packr build` argument (a crate dir or
+/// a multi-member manifest).
+struct BuildInputs {
+    /// (member alias, crate path).
+    members: Vec<(String, String)>,
+    links: Vec<LinkEntry>,
+    output: Option<String>,
+    /// Directory the member crate paths are relative to.
+    base_dir: PathBuf,
+}
+
+/// A `.toml` argument is a multi-member manifest; a directory is a single-actor
+/// crate (one implicit member, no edges).
+fn resolve_build_inputs(path: &std::path::Path) -> anyhow::Result<BuildInputs> {
+    let is_manifest = path.is_file() && path.extension().map(|e| e == "toml").unwrap_or(false);
+    if is_manifest {
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("read manifest {}: {e}", path.display()))?;
+        let m: BuildManifest = toml::from_str(&text)
+            .map_err(|e| anyhow::anyhow!("parse manifest {}: {e}", path.display()))?;
+        anyhow::ensure!(!m.member.is_empty(), "manifest lists no [[member]] entries");
+        Ok(BuildInputs {
+            members: m
+                .member
+                .into_iter()
+                .map(|b| (b.name, b.crate_path))
+                .collect(),
+            links: m.link,
+            output: m.output,
+            base_dir: path
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .to_path_buf(),
+        })
+    } else {
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("actor")
+            .to_string();
+        Ok(BuildInputs {
+            members: vec![(name, ".".to_string())],
+            links: vec![],
+            output: None,
+            base_dir: path.to_path_buf(),
+        })
+    }
+}
+
+/// `packr build` — normal `packr-guest` crate(s) → one theater-loadable composite.
+///
+/// The fixed-base recipe, **disjoint base assignment across members**, and the
+/// compose step all become implementation details of the toolchain (versioned
+/// with packr) instead of hand-copied config + address math that drift out of sync
+/// with the linker across releases.
+///
+/// `packr build <crate-dir>` builds a single actor. `packr build <manifest.toml>`
+/// builds + links a member set (an actor that links a library package), assigning
+/// each member a disjoint memory region automatically — the fix for the
+/// multi-member same-base collision (two members at one base silently corrupt each
+/// other's static data and trap at runtime).
+fn build_command(path: &std::path::Path, output: Option<PathBuf>) -> anyhow::Result<()> {
+    use packr::{Layout, LinkBinary, LinkEdge};
+
+    let BuildInputs {
+        members,
+        links: link_entries,
+        output: manifest_output,
+        base_dir,
+    } = resolve_build_inputs(path)?;
+
+    // Sequential base assignment: build member i at `base`, read its `__data_end`,
+    // place member i+1 immediately above (aligned). Tight-packed, disjoint, no
+    // author-visible addresses. Members start just above the 256 KiB shadow stack
+    // (which they share — a single coherent stack; only static data must be
+    // disjoint).
+    const FIRST_BASE: u32 = 0x4_0000;
+    const ALIGN: u32 = 0x1_0000;
+    let mut base = FIRST_BASE;
+    let mut binaries = vec![LinkBinary {
+        alias: "alloc".into(),
+        wasm: packr::DEFAULT_ALLOCATOR_WASM.to_vec(),
+        allocator: true,
+    }];
+    let mut first_wasm_path: Option<PathBuf> = None;
+    for (name, crate_rel) in &members {
+        let crate_dir = base_dir.join(crate_rel);
+        let (wasm, wasm_path) = build_member(&crate_dir, base)?;
+        let data_end =
+            packr::read_data_end(&wasm).map_err(|e| anyhow::anyhow!("member `{name}`: {e}"))?;
+        anyhow::ensure!(
+            data_end > base,
+            "member `{name}` has an empty/invalid data region"
+        );
+        if first_wasm_path.is_none() {
+            first_wasm_path = Some(wasm_path);
+        }
+        binaries.push(LinkBinary {
+            alias: name.clone(),
+            wasm,
+            allocator: false,
+        });
+        base = data_end.next_multiple_of(ALIGN);
+    }
+
+    // Allocator + regenerated metadata + heap sit ABOVE every member's region.
+    let metadata_base = base;
+    let alloc_base = metadata_base + ALIGN;
+    let heap_base = alloc_base + ALIGN;
+    let heap_end = heap_base + 0x100_0000; // 16 MiB heap
+    let layout = Layout {
+        memory_pages: heap_end.div_ceil(65536) + 1,
+        alloc_base,
+        heap_base,
+        heap_end,
+        metadata_base,
+    };
+
+    // Edges: `<member>.<interface>` on each side (split on the first dot).
+    let split = |s: &str, side: &str| -> anyhow::Result<(String, String)> {
+        s.split_once('.')
+            .map(|(a, i)| (a.to_string(), i.to_string()))
+            .ok_or_else(|| anyhow::anyhow!("{side} `{s}` must be `<member>.<interface>`"))
+    };
+    let mut edges = Vec::new();
+    for l in &link_entries {
+        let (from_alias, from_interface) = split(&l.from, "link.from")?;
+        let (to_alias, to_interface) = split(&l.to, "link.to")?;
+        edges.push(LinkEdge {
+            from_alias,
+            from_interface,
+            to_alias,
+            to_interface,
+        });
+    }
+
+    let composite = packr::link(binaries, &edges, layout)?;
+
+    let out_path = output
+        .or_else(|| manifest_output.map(PathBuf::from))
+        .or_else(|| {
+            first_wasm_path
+                .as_ref()
+                .map(|p| p.with_extension("composite.wasm"))
+        })
+        .unwrap_or_else(|| PathBuf::from("composite.wasm"));
+    std::fs::write(&out_path, &composite)
+        .map_err(|e| anyhow::anyhow!("writing {}: {e}", out_path.display()))?;
+    println!(
+        "built self-contained composite ({} member{}) → {} ({} bytes)",
+        members.len(),
+        if members.len() == 1 { "" } else { "s" },
+        out_path.display(),
+        composite.len()
+    );
+    Ok(())
+}
+
+/// cargo-build one member crate for `wasm32-unknown-unknown` at a fixed `base`,
+/// returning its wasm bytes + the artifact path.
+fn build_member(crate_dir: &std::path::Path, base: u32) -> anyhow::Result<(Vec<u8>, PathBuf)> {
     let rustflags = [
         "-C link-arg=--import-memory",
-        "-C link-arg=--initial-memory=8388608",
         "-C link-arg=--stack-first",
         "-C link-arg=-zstack-size=262144",
-        &format!("-C link-arg=--global-base={ACTOR_BASE}"),
+        &format!("-C link-arg=--global-base={base}"),
         "-C link-arg=--no-entry",
         // Load-bearing: keeps `__pack_types` its own CGRF-prefixed segment so
         // `read_surface` finds it regardless of `.rodata` size.
         "-C link-arg=--no-merge-data-segments",
     ]
     .join(" ");
-
-    eprintln!("packr build: cargo build (wasm32-unknown-unknown, release, fixed-base recipe)…");
+    eprintln!(
+        "packr build: cargo build {} @ base {base} (0x{base:x})…",
+        crate_dir.display()
+    );
     let out = std::process::Command::new("cargo")
-        .current_dir(crate_path)
+        .current_dir(crate_dir)
         .args([
             "build",
             "--target",
@@ -131,52 +318,21 @@ fn build_command(crate_path: &std::path::Path, output: Option<PathBuf>) -> anyho
         .stderr(std::process::Stdio::inherit())
         .output()
         .map_err(|e| anyhow::anyhow!("failed to run `cargo` (is it on PATH?): {e}"))?;
-    anyhow::ensure!(out.status.success(), "cargo build failed");
-
+    anyhow::ensure!(
+        out.status.success(),
+        "cargo build failed for {}",
+        crate_dir.display()
+    );
     let wasm_path = find_cdylib_wasm(&out.stdout).ok_or_else(|| {
         anyhow::anyhow!(
-            "cargo produced no cdylib `.wasm` — is this an actor crate? It needs \
-             `[lib] crate-type = [\"cdylib\"]` and the `wasm32-unknown-unknown` target \
-             (`rustup target add wasm32-unknown-unknown`)."
+            "no cdylib `.wasm` from {} — needs `[lib] crate-type = [\"cdylib\"]` and the \
+             `wasm32-unknown-unknown` target (`rustup target add wasm32-unknown-unknown`)",
+            crate_dir.display()
         )
     })?;
-    let member = std::fs::read(&wasm_path)
+    let wasm = std::fs::read(&wasm_path)
         .map_err(|e| anyhow::anyhow!("reading built wasm {}: {e}", wasm_path.display()))?;
-
-    // Single-actor layout: allocator + metadata + heap up high, above the actor.
-    let layout = Layout {
-        memory_pages: 256,
-        metadata_base: 0x40_0000,
-        alloc_base: 0x41_0000,
-        heap_base: 0x42_0000,
-        heap_end: 0x100_0000,
-    };
-    let composite = packr::link(
-        vec![
-            LinkBinary {
-                alias: "alloc".into(),
-                wasm: packr::DEFAULT_ALLOCATOR_WASM.to_vec(),
-                allocator: true,
-            },
-            LinkBinary {
-                alias: "actor".into(),
-                wasm: member,
-                allocator: false,
-            },
-        ],
-        &[],
-        layout,
-    )?;
-
-    let out_path = output.unwrap_or_else(|| wasm_path.with_extension("composite.wasm"));
-    std::fs::write(&out_path, &composite)
-        .map_err(|e| anyhow::anyhow!("writing {}: {e}", out_path.display()))?;
-    println!(
-        "built self-contained composite → {} ({} bytes)",
-        out_path.display(),
-        composite.len()
-    );
-    Ok(())
+    Ok((wasm, wasm_path))
 }
 
 /// Find the cdylib `.wasm` cargo emitted, from its `--message-format=json`
