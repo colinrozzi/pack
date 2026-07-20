@@ -1024,15 +1024,112 @@ impl GraphCodec for Value {
     }
 
     fn decode_graph(decoder: &Decoder<'_>, root: u32) -> Result<Self, AbiError> {
+        // Only nodes referenced by more than one parent (the shared nodes of a
+        // DAG) need caching. The encoder emits TREES (one node per value), so in
+        // the common case this set is empty and no subtree is ever deep-cloned
+        // into the cache — decode is O(n) instead of O(n × depth) (a deeply
+        // nested value otherwise blows up super-linearly). Shared nodes are still
+        // cached, so a genuine DAG never re-decodes or goes exponential.
+        let shared = shared_nodes(decoder, root);
         let mut cache = HashMap::new();
         let mut visiting = HashSet::new();
-        decode_value(decoder, root, &mut cache, &mut visiting)
+        decode_value(decoder, root, &shared, &mut cache, &mut visiting)
     }
+}
+
+/// Enumerate a node's child indices from its payload (mirrors `decode_value`'s
+/// container layout, without materializing values). Scalars and `Array` (inline
+/// data) have none.
+fn node_children(node: &Node) -> Result<Vec<u32>, AbiError> {
+    let mut cursor = Cursor::new(&node.payload);
+    let mut kids = Vec::new();
+    match node.kind {
+        NodeKind::List => {
+            let _ = decode_value_type(&mut cursor)?;
+            let count = cursor.read_u32()? as usize;
+            for _ in 0..count {
+                kids.push(cursor.read_u32()?);
+            }
+        }
+        NodeKind::Record => {
+            let nl = cursor.read_u32()? as usize;
+            cursor.read_bytes(nl)?;
+            let count = cursor.read_u32()? as usize;
+            for _ in 0..count {
+                let fnl = cursor.read_u32()? as usize;
+                cursor.read_bytes(fnl)?;
+            }
+            for _ in 0..count {
+                kids.push(cursor.read_u32()?);
+            }
+        }
+        NodeKind::Tuple => {
+            let count = cursor.read_u32()? as usize;
+            for _ in 0..count {
+                kids.push(cursor.read_u32()?);
+            }
+        }
+        NodeKind::Option => {
+            let _ = decode_value_type(&mut cursor)?;
+            if cursor.read_u8()? == 1 {
+                kids.push(cursor.read_u32()?);
+            }
+        }
+        NodeKind::Result => {
+            let _ = decode_value_type(&mut cursor)?;
+            let _ = decode_value_type(&mut cursor)?;
+            let _ = cursor.read_u32()?; // tag
+            if cursor.read_u8()? == 1 {
+                kids.push(cursor.read_u32()?);
+            }
+        }
+        NodeKind::Variant => {
+            let tnl = cursor.read_u32()? as usize;
+            cursor.read_bytes(tnl)?;
+            let cnl = cursor.read_u32()? as usize;
+            cursor.read_bytes(cnl)?;
+            let _ = cursor.read_u32()?; // tag
+            let pc = cursor.read_u32()? as usize;
+            for _ in 0..pc {
+                kids.push(cursor.read_u32()?);
+            }
+        }
+        _ => {} // scalars + Array (inline) have no child indices
+    }
+    Ok(kids)
+}
+
+/// The set of nodes referenced by more than one parent — the shared nodes of a
+/// DAG. Only these need caching during decode; a tree yields an empty set.
+/// Malformed child indices are ignored here (decode itself re-validates).
+fn shared_nodes(decoder: &Decoder<'_>, root: u32) -> HashSet<u32> {
+    let mut in_ref: HashMap<u32, u32> = HashMap::new();
+    let mut traversed: HashSet<u32> = HashSet::new();
+    let mut stack = vec![root];
+    while let Some(idx) = stack.pop() {
+        if !traversed.insert(idx) {
+            continue; // a node's children are fixed — enumerate them once
+        }
+        if let Some(node) = decoder.node(idx) {
+            if let Ok(kids) = node_children(node) {
+                for k in kids {
+                    *in_ref.entry(k).or_insert(0) += 1;
+                    stack.push(k);
+                }
+            }
+        }
+    }
+    in_ref
+        .into_iter()
+        .filter(|&(_, c)| c > 1)
+        .map(|(i, _)| i)
+        .collect()
 }
 
 fn decode_value(
     decoder: &Decoder<'_>,
     index: u32,
+    shared: &HashSet<u32>,
     cache: &mut HashMap<u32, Value>,
     visiting: &mut HashSet<u32>,
 ) -> Result<Value, AbiError> {
@@ -1116,7 +1213,7 @@ fn decode_value(
             let mut items = Vec::with_capacity(count);
             for _ in 0..count {
                 let child = cursor.read_u32()?;
-                items.push(decode_value(decoder, child, cache, visiting)?);
+                items.push(decode_value(decoder, child, shared, cache, visiting)?);
             }
             Value::List { elem_type, items }
         }
@@ -1141,7 +1238,7 @@ fn decode_value(
             let mut fields = Vec::with_capacity(count);
             for name in field_names {
                 let child = cursor.read_u32()?;
-                let value = decode_value(decoder, child, cache, visiting)?;
+                let value = decode_value(decoder, child, shared, cache, visiting)?;
                 fields.push((name, value));
             }
             Value::Record { type_name, fields }
@@ -1151,7 +1248,7 @@ fn decode_value(
             let mut items = Vec::with_capacity(count);
             for _ in 0..count {
                 let child = cursor.read_u32()?;
-                items.push(decode_value(decoder, child, cache, visiting)?);
+                items.push(decode_value(decoder, child, shared, cache, visiting)?);
             }
             Value::Tuple(items)
         }
@@ -1162,7 +1259,7 @@ fn decode_value(
             let value = if has_value == 1 {
                 let child = cursor.read_u32()?;
                 Some(alloc::boxed::Box::new(decode_value(
-                    decoder, child, cache, visiting,
+                    decoder, child, shared, cache, visiting,
                 )?))
             } else {
                 None
@@ -1177,7 +1274,7 @@ fn decode_value(
             let has_payload = cursor.read_u8()?;
             let value = if has_payload == 1 {
                 let child = cursor.read_u32()?;
-                let inner = decode_value(decoder, child, cache, visiting)?;
+                let inner = decode_value(decoder, child, shared, cache, visiting)?;
                 if tag == 0 {
                     Ok(alloc::boxed::Box::new(inner))
                 } else {
@@ -1213,7 +1310,7 @@ fn decode_value(
             let mut payload = Vec::with_capacity(payload_count);
             for _ in 0..payload_count {
                 let child = cursor.read_u32()?;
-                payload.push(decode_value(decoder, child, cache, visiting)?);
+                payload.push(decode_value(decoder, child, shared, cache, visiting)?);
             }
             Value::Variant {
                 type_name,
@@ -1231,6 +1328,66 @@ fn decode_value(
     }
 
     visiting.remove(&index);
-    cache.insert(index, value.clone());
+    // Only shared (multi-parent) nodes are worth caching — for a tree this is
+    // never taken, so no subtree is deep-cloned and decode stays O(n).
+    if shared.contains(&index) {
+        cache.insert(index, value.clone());
+    }
     Ok(value)
+}
+
+#[cfg(test)]
+mod shared_node_tests {
+    use super::*;
+
+    /// The encoder only ever emits trees, so the shared-node cache path is
+    /// otherwise unexercised. Hand-build a DAG — a Tuple whose two elements are
+    /// the SAME child node — and prove (a) `shared_nodes` flags the shared child
+    /// (referenced twice) but not the single-referenced root, and (b) decode
+    /// still materialises both elements correctly via the cache.
+    #[test]
+    fn dag_shared_child_decodes_correctly() {
+        let mut enc = Encoder::new();
+
+        // child: String("shared")  — payload [len:u32, bytes]
+        let s = b"shared";
+        let mut sp = Vec::new();
+        sp.extend_from_slice(&(s.len() as u32).to_le_bytes());
+        sp.extend_from_slice(s);
+        let c = enc.push_node(Node {
+            kind: NodeKind::String,
+            payload: sp,
+        });
+
+        // parent: Tuple[c, c]  — payload [count:u32=2, c, c]
+        let mut tp = Vec::new();
+        tp.extend_from_slice(&2u32.to_le_bytes());
+        tp.extend_from_slice(&c.to_le_bytes());
+        tp.extend_from_slice(&c.to_le_bytes());
+        let t = enc.push_node(Node {
+            kind: NodeKind::Tuple,
+            payload: tp,
+        });
+
+        let buf = enc.finish(t);
+
+        // (a) shared_nodes: the twice-referenced child is cached, the root isn't.
+        let decoder = Decoder::new(&buf);
+        let shared = shared_nodes(&decoder, t);
+        assert!(
+            shared.contains(&c),
+            "shared child must be flagged for caching"
+        );
+        assert!(!shared.contains(&t), "single-referenced root must not be");
+
+        // (b) round-trip through the public byte path.
+        let value = decode(&buf.to_bytes()).expect("decode DAG");
+        assert_eq!(
+            value,
+            Value::Tuple(alloc::vec![
+                Value::String(String::from("shared")),
+                Value::String(String::from("shared")),
+            ])
+        );
+    }
 }

@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.10.4 (2026-07-19)
+
+### Fixed
+- **Mailbox `load_state` decode spun the mail spine (prod hang, root cause).**
+  Decoding a graph value deep-cloned *every* node's subtree into the DAG-dedup
+  cache (`cache.insert(index, value.clone())`) — even though the encoder only
+  ever emits trees (no shared nodes), so nothing was ever read back. For a
+  restored mailbox (`MailboxState { messages: Vec<Message> }` — hundreds of
+  records) that is a **~3x peak-memory blowup and ~3x the allocations**. Decode
+  stays *linear in time* either way (a flat `Vec` is shallow — it was never
+  quadratic), but against a self-contained actor's **capped** WASM heap
+  (`internalize` fixes `memory.max`, so `memory.grow` cannot extend it) the
+  transient blowup pushes a big-enough mailbox past the ceiling: dlmalloc can't
+  grow, the allocation fails, and the guest spins (~42% CPU) before its first log
+  line. The decoder now runs a refcount pre-pass (`shared_nodes`) and caches
+  **only** nodes referenced by more than one parent, so a tree clones nothing —
+  decode is O(n) with ~1x peak. Genuine DAGs still decode correctly and never
+  re-traverse (new `dag_shared_child_decodes_correctly` guard). Size-correlated,
+  before-first-log, and CI-missed (fake sub-manifests → no real store load) — all
+  consistent. **Wire format unchanged**: the same bytes decode to the same value,
+  no data migration — the existing accumulated mailboxes decode fast on the fixed
+  decoder. New regression bench: `tests/mailbox_decode_bench.rs` (synthetic
+  N-sweep with a counting allocator, proving linear time + ~1x peak). Fleet
+  event: theater bumps its `packr-abi` pin and re-cuts; `packr-guest` consumers
+  rebuild in lockstep.
+
 ## v0.10.3 (2026-07-19)
 
 ### Fixed
