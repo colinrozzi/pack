@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **Runaway-guest kill switch: epoch interruption on `AsyncRuntime`.** A guest
+  stuck in an infinite loop (e.g. a pathological decode) was previously
+  UNINTERRUPTIBLE — it pegged a core forever and could wedge the host (the
+  mail-spine failure class: one bad mailbox `init` hung the whole spine, and the
+  init-watchdog could name the spinner but not kill it). The async engine now
+  enables `epoch_interruption`; `AsyncInstance::set_epoch_deadline(ticks)` arms a
+  per-call deadline and the host advances epochs via
+  `AsyncRuntime::engine().increment_epoch()` on a ticker — when the deadline
+  passes the guest **traps** and the call returns `Err`, so a runaway fails
+  cleanly instead of burning a core. **Non-breaking**: stores default to no
+  deadline (`u64::MAX`), so behaviour is unchanged until a caller opts in. Test:
+  `runaway_guest_traps_on_epoch_deadline`.
+
 ## v0.10.4 (2026-07-19)
 
 ### Fixed
