@@ -265,6 +265,15 @@ impl AsyncRuntime {
         config.async_support(true);
         // Enable multi-memory for composed modules that merge multiple WASM files
         config.wasm_multi_memory(true);
+        // Epoch interruption: a runaway guest (e.g. an infinite decode loop) is
+        // otherwise UNINTERRUPTIBLE and pegs a core forever, wedging the host.
+        // With this on, a store can be given a deadline (`AsyncInstance::
+        // set_epoch_deadline`) and the host advances epochs (`engine().
+        // increment_epoch()`) on a ticker; when the deadline passes the guest
+        // TRAPS and the call returns `Err` — a killable runaway. Stores default
+        // to no deadline (see the instantiate paths), so behaviour is unchanged
+        // until a caller opts in.
+        config.epoch_interruption(true);
         let engine = Engine::new(&config).expect("failed to create async engine");
         Self { engine }
     }
@@ -406,6 +415,9 @@ impl AsyncCompiledModule<'_> {
     /// Instantiate the module with no imports (async).
     pub async fn instantiate_async(&self) -> Result<AsyncInstance<()>, RuntimeError> {
         let mut store = Store::new(self.engine, ());
+        // epoch_interruption is enabled engine-wide; default to no deadline so
+        // the guest never traps unless a caller arms it via set_epoch_deadline.
+        store.set_epoch_deadline(u64::MAX);
         let mut linker = Linker::<()>::new(self.engine);
         register_default_alloc(&mut linker)?;
 
@@ -469,6 +481,9 @@ impl AsyncCompiledModule<'_> {
         assert_self_contained(&self.module)?;
 
         let mut store = Store::new(self.engine, state);
+        // epoch_interruption is enabled engine-wide; default to no deadline so
+        // the guest never traps unless the caller arms it via set_epoch_deadline.
+        store.set_epoch_deadline(u64::MAX);
 
         // Only the caller's host functions to wire — the actor provides its own
         // memory and `__pack_alloc`, so there is no shared memory, allocator side
@@ -526,6 +541,19 @@ impl<T: Send> AsyncInstance<T> {
     /// Validate that this instance implements the given interface.
     pub fn validate_interface(&mut self, interface: &Interface) -> Result<(), InterfaceError> {
         validate_instance_implements_interface(&mut self.store, &self.instance, interface)
+    }
+
+    /// Arm the runaway-guest kill switch: the next guest call traps once
+    /// `ticks_until_trap` epochs have elapsed. Pair with a host ticker that
+    /// calls [`AsyncRuntime::engine`]`().increment_epoch()` at a fixed cadence
+    /// — e.g. `set_epoch_deadline(30)` + one tick/second ⇒ a ~30s deadline.
+    ///
+    /// The deadline is relative to the engine's current epoch and re-arms every
+    /// call (each call may set its own). On expiry the guest gets an epoch trap
+    /// and the call returns `Err`, so a stuck decode/loop fails cleanly instead
+    /// of pegging a core forever. Pass `u64::MAX` to disable (the default).
+    pub fn set_epoch_deadline(&mut self, ticks_until_trap: u64) {
+        self.store.set_epoch_deadline(ticks_until_trap);
     }
 
     /// The guest memory: the host-owned one (PIC), else the exported "memory".
@@ -1719,6 +1747,57 @@ mod tests {
             .await
             .expect("call");
         assert_eq!(answer, 42);
+    }
+
+    /// The runaway-guest kill switch: a guest stuck in an infinite loop must
+    /// TRAP once its epoch deadline passes, so the call returns `Err` instead of
+    /// pegging a core forever (the mail-spine decode-loop failure class). The
+    /// epoch is advanced from a separate OS thread (the guest fiber occupies the
+    /// executor while it spins), and the whole test is bounded by a timeout so a
+    /// BROKEN guardrail fails loudly instead of hanging.
+    #[tokio::test]
+    async fn runaway_guest_traps_on_epoch_deadline() {
+        let wasm = wat::parse_str(
+            r#"
+            (module
+                (func (export "spin") (loop br 0)))
+            "#,
+        )
+        .expect("wat");
+
+        let runtime = AsyncRuntime::new();
+        let compiled = runtime.load_module(&wasm).expect("load_module");
+        let mut instance = compiled
+            .instantiate_async()
+            .await
+            .expect("instantiate_async");
+
+        // Arm the kill switch: trap one epoch tick from now.
+        instance.set_epoch_deadline(1);
+
+        // Advance the engine epoch from another OS thread while the guest spins.
+        let engine = runtime.engine().clone();
+        std::thread::spawn(move || {
+            for _ in 0..20 {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                engine.increment_epoch();
+            }
+        });
+
+        let func = instance
+            .instance
+            .get_typed_func::<(), ()>(&mut instance.store, "spin")
+            .expect("typed func");
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            func.call_async(&mut instance.store, ()),
+        )
+        .await
+        .expect("guardrail FAILED: runaway guest was not interrupted within 5s");
+
+        // The guest trapped on the epoch deadline rather than looping forever.
+        assert!(result.is_err(), "expected an epoch-deadline trap, got Ok");
     }
 
     /// A `Module` compiled by Engine A must not be wrappable into a
