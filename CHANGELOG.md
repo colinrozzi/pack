@@ -1,5 +1,38 @@
 # Changelog
 
+## v0.11.0 (2026-07-21)
+
+**An actor is now a plain `cargo build`.** This retires packr's composition/fuse
+machinery entirely — a deliberate hard break (we control every actor, so the break
+forces the clean rebuild).
+
+### Changed
+- **BREAKING: `setup_guest!()` installs a LINKED-IN allocator** (`DlmallocAllocator`)
+  instead of the old `ImportedAllocator` that imported `pack:alloc` to be satisfied
+  by a fused-in allocator module. So a plain wasm cdylib exports its own memory +
+  `__pack_alloc`/`__pack_free` + lifecycle and imports **no** `pack:alloc` — nothing
+  to compose. Build an actor with a normal `cargo build --target wasm32-unknown-unknown`
+  plus `--export-memory --no-entry` (no fixed-base recipe, no `packr build`/`link`).
+  The actor's memory is **growable** (no `internalize` cap), which also removes the
+  capped-heap failure mode.
+
+### Removed
+- **BREAKING: all composition/fuse machinery.** `pack compose` / `packr link` /
+  `packr build` CLI commands; the `compose`/`link` library APIs (`compose`,
+  `ComposeSpec`, `PackageSpec`, `Layout`, `link`, `resolve_links`, `read_data_end`,
+  `member_region`, …); `internalize` and the multi-member fuse (the source of the
+  shadow-stack / resource-reconciliation bug class); the bundled
+  `DEFAULT_ALLOCATOR_WASM` allocator blob; and the now-dead `ImportedAllocator`.
+  `packr`'s only remaining subcommand is `inspect`.
+
+### Migration
+Composition model going forward: **source-deps** for zero-cost sharing (import a
+package as a crate and compile it in — "as other libraries do it"), **isolated
+actors** (theater message boundary) for runtime composition. A package that was a
+fused *helper* becomes a crate dependency; host interfaces (`theater:simple/*`) stay
+residual imports the runtime provides. Every actor must be rebuilt as a plain cdylib
+on packr-guest 0.11.0 — no compat path, by design.
+
 ## v0.10.6 (2026-07-21)
 
 ### Fixed

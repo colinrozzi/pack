@@ -51,9 +51,7 @@
 
 pub mod abi;
 pub mod codegen;
-pub mod compose;
 pub mod interface_impl;
-pub mod link;
 pub mod metadata;
 pub mod parser;
 pub mod runtime;
@@ -88,10 +86,3 @@ pub use transform::{InterfaceTransform, RpcTransform, TransformRegistry};
 pub use types::{Arena, Case, Field, Function, Param, Type, TypePath};
 
 pub use codegen::generate_rust;
-pub use compose::{
-    compose, ComposeError, ComposeSpec, Layout, PackageSpec, ParsedModule, DEFAULT_ALLOCATOR_WASM,
-};
-pub use link::{
-    check_interface_link, check_link, link, read_data_end, read_surface, resolve_links, LinkBinary,
-    LinkEdge, LinkError,
-};
