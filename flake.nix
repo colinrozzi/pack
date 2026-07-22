@@ -49,7 +49,6 @@
             cargo-expand
             wasm-pack
             wasmtime
-            binaryen  # wasm-merge, used by `pack compose`
             gh
           ];
 

@@ -48,36 +48,26 @@ pub use packr_abi as composite_abi;
 #[doc(hidden)]
 pub use alloc as __alloc;
 
-/// Global allocator shim that forwards all allocation to imported functions.
-///
-/// Composable packages do **not** embed an allocator. Instead they import
-/// `pack:alloc.alloc` / `pack:alloc.dealloc` from a provider — either an
-/// in-wasm allocator module or host-supplied functions. This makes the
-/// allocator a swappable dependency and lets multiple packages share one
-/// allocator over a shared linear memory: the foundation for
-/// package-to-package composition (one allocator over one heap, rather than
-/// two embedded allocators colliding).
-///
-/// Installed as the `#[global_allocator]` by [`setup_guest!`].
-pub struct ImportedAllocator;
+/// A `dlmalloc`-backed `#[global_allocator]` **linked into** the actor — no
+/// imported `pack:alloc` provider. This is what makes an actor a plain
+/// `cargo build`: the allocator's bookkeeping and the heap it manages live in
+/// the actor's own linear memory (above its static data), which the actor grows
+/// via `memory.grow` as needed. Because nothing is imported, the module needs no
+/// composition/fusion step — it loads directly. `setup_guest!` installs it.
+pub struct DlmallocAllocator;
 
-#[link(wasm_import_module = "pack:alloc")]
-extern "C" {
-    #[link_name = "alloc"]
-    fn __pack_import_alloc(size: usize, align: usize) -> *mut u8;
-    #[link_name = "dealloc"]
-    fn __pack_import_dealloc(ptr: *mut u8, size: usize, align: usize);
-}
+// SAFETY: single-threaded wasm; no reentrant access to the arena.
+static mut DLMALLOC: dlmalloc::Dlmalloc = dlmalloc::Dlmalloc::new();
 
-unsafe impl core::alloc::GlobalAlloc for ImportedAllocator {
+unsafe impl core::alloc::GlobalAlloc for DlmallocAllocator {
     #[inline]
     unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
-        __pack_import_alloc(layout.size(), layout.align())
+        (*core::ptr::addr_of_mut!(DLMALLOC)).malloc(layout.size(), layout.align().max(1))
     }
 
     #[inline]
     unsafe fn dealloc(&self, ptr: *mut u8, layout: core::alloc::Layout) {
-        __pack_import_dealloc(ptr, layout.size(), layout.align());
+        (*core::ptr::addr_of_mut!(DLMALLOC)).free(ptr, layout.size(), layout.align().max(1));
     }
 }
 
@@ -379,14 +369,13 @@ macro_rules! panic_handler {
     };
 }
 
-/// Convenience macro to set up the imported-allocator shim and panic handler.
+/// Convenience macro to set up the linked-in allocator and panic handler.
 ///
-/// The package does **not** embed an allocator; it installs
-/// [`ImportedAllocator`] as its `#[global_allocator]`, forwarding all
-/// allocation to imported `pack:alloc.alloc` / `pack:alloc.dealloc`. A
-/// provider (an in-wasm allocator module or host-supplied functions) must
-/// satisfy those imports at instantiation. This is what lets packages share a
-/// single allocator over shared memory when composed.
+/// The actor **links in** its own allocator: it installs
+/// [`DlmallocAllocator`] as its `#[global_allocator]`, so the allocator's
+/// bookkeeping and the heap it manages live in the actor's own linear memory.
+/// Nothing is imported, so the module needs no composition/fusion step — it
+/// loads directly as a plain `cargo build` cdylib.
 ///
 /// # Example
 ///
@@ -397,7 +386,7 @@ macro_rules! panic_handler {
 macro_rules! setup_guest {
     () => {
         #[global_allocator]
-        static __PACK_ALLOCATOR: $crate::ImportedAllocator = $crate::ImportedAllocator;
+        static __PACK_ALLOCATOR: $crate::DlmallocAllocator = $crate::DlmallocAllocator;
         $crate::panic_handler!();
     };
 }

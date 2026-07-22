@@ -67,11 +67,8 @@ serde_json = "1.0"  # For debugging, can add binary format later
 thiserror = "1.0"
 anyhow = "1.0"
 
-# Static composition - parse and emit WASM modules
+# Parse WASM data segments for `packr inspect` (CGRF metadata extraction)
 wasmparser = "0.219"
-wasm-encoder = "0.219"
-walrus = "0.23"  # pack compose: internalize memory/globals into one self-contained module
-toml = "0.8"     # pack compose: manifest parsing
 
 # Hashing for interface compatibility
 sha2 = "0.10"

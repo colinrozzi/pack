@@ -202,8 +202,8 @@ pub(crate) fn assert_self_contained(module: &Module) -> Result<(), RuntimeError>
         if imp.module() == "env" && (imp.name() == "memory" || imp.name() == "__memory_base") {
             return Err(RuntimeError::WasmError(format!(
                 "not a self-contained actor (imports `env::{}`): this looks like a PIC/pre-0.10 \
-                 side module. Rebuild it self-contained (own + export its memory) via \
-                 `pack compose`/`link` before loading on the 0.10 runtime.",
+                 side module. Rebuild it as a plain wasm cdylib that owns and exports its memory \
+                 (`setup_guest!` links the allocator in; build with `--export-memory --no-entry`).",
                 imp.name()
             )));
         }

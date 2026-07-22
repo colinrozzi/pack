@@ -25,3 +25,7 @@ pic = []
 packr-abi = { workspace = true, default-features = false }
 packr-guest-macros.workspace = true
 packr-derive = { workspace = true, optional = true }
+# Linked-in default allocator: `setup_guest!` installs `DlmallocAllocator` so an
+# actor is a plain `cargo build` (own memory, own heap) — no imported `pack:alloc`
+# provider to fuse in. Same allocator the old bundled `pack-alloc` module used.
+dlmalloc = { version = "0.2", default-features = false }
