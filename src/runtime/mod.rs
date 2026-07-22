@@ -254,6 +254,16 @@ pub(crate) fn assert_self_contained(module: &Module) -> Result<(), RuntimeError>
 ///
 /// let result = instance.call_with_value_async("process", &input, 0).await?;
 /// ```
+/// A deadline delta meaning "never trap until a caller arms a real one."
+///
+/// NOT `u64::MAX`: `Store::set_epoch_deadline` computes `current_epoch() + delta`,
+/// and once the host's epoch ticker has advanced past 0, `current + u64::MAX`
+/// overflows — a panic in debug, a wrap to a garbage tiny (near-immediate) deadline
+/// in release, on every instantiate. Half of `u64::MAX` is still ~4.6e18 ticks
+/// (~146 billion years at 1/sec), so it never trips, and `current + this` cannot
+/// overflow for any realistic epoch count.
+const NO_EPOCH_DEADLINE: u64 = u64::MAX / 2;
+
 pub struct AsyncRuntime {
     engine: Engine,
 }
@@ -417,7 +427,7 @@ impl AsyncCompiledModule<'_> {
         let mut store = Store::new(self.engine, ());
         // epoch_interruption is enabled engine-wide; default to no deadline so
         // the guest never traps unless a caller arms it via set_epoch_deadline.
-        store.set_epoch_deadline(u64::MAX);
+        store.set_epoch_deadline(NO_EPOCH_DEADLINE);
         let mut linker = Linker::<()>::new(self.engine);
         register_default_alloc(&mut linker)?;
 
@@ -483,7 +493,7 @@ impl AsyncCompiledModule<'_> {
         let mut store = Store::new(self.engine, state);
         // epoch_interruption is enabled engine-wide; default to no deadline so
         // the guest never traps unless the caller arms it via set_epoch_deadline.
-        store.set_epoch_deadline(u64::MAX);
+        store.set_epoch_deadline(NO_EPOCH_DEADLINE);
 
         // Only the caller's host functions to wire — the actor provides its own
         // memory and `__pack_alloc`, so there is no shared memory, allocator side
@@ -551,7 +561,11 @@ impl<T: Send> AsyncInstance<T> {
     /// The deadline is relative to the engine's current epoch and re-arms every
     /// call (each call may set its own). On expiry the guest gets an epoch trap
     /// and the call returns `Err`, so a stuck decode/loop fails cleanly instead
-    /// of pegging a core forever. Pass `u64::MAX` to disable (the default).
+    /// of pegging a core forever. Stores default to a never-tripping deadline, so
+    /// a store that's never armed simply never traps. Do NOT pass `u64::MAX` to
+    /// "disable" — it's added to the current epoch and overflows once the host's
+    /// epoch ticker has advanced (see `NO_EPOCH_DEADLINE`); pass a large finite
+    /// delta if you need to widen it.
     pub fn set_epoch_deadline(&mut self, ticks_until_trap: u64) {
         self.store.set_epoch_deadline(ticks_until_trap);
     }
@@ -1798,6 +1812,37 @@ mod tests {
 
         // The guest trapped on the epoch deadline rather than looping forever.
         assert!(result.is_err(), "expected an epoch-deadline trap, got Ok");
+    }
+
+    /// Regression: the host advances the engine epoch on a ticker, so by the time
+    /// an actor is instantiated the epoch is already > 0. A "no deadline" default
+    /// of `u64::MAX` then overflows (`current_epoch() + u64::MAX`) — panicking in
+    /// debug, wrapping to a garbage tiny deadline (immediate trap) in release — on
+    /// EVERY spawn. Instantiating after an advanced epoch, then arming a real
+    /// deadline, must not overflow.
+    #[tokio::test]
+    async fn epoch_deadline_survives_advanced_epoch() {
+        let runtime = AsyncRuntime::new();
+        // Simulate the host's 1/sec ticker having run before any actor spawns.
+        let engine = runtime.engine().clone();
+        for _ in 0..10 {
+            engine.increment_epoch();
+        }
+
+        let wasm = wat::parse_str(r#"(module (func (export "noop")))"#).expect("wat");
+        let compiled = runtime.load_module(&wasm).expect("load");
+        // instantiate arms the default deadline internally — must not overflow.
+        let mut instance = compiled.instantiate_async().await.expect("instantiate");
+        // theater arms a real per-call deadline before each call — also must not.
+        instance.set_epoch_deadline(60);
+
+        let func = instance
+            .instance
+            .get_typed_func::<(), ()>(&mut instance.store, "noop")
+            .expect("func");
+        func.call_async(&mut instance.store, ())
+            .await
+            .expect("call");
     }
 
     /// A `Module` compiled by Engine A must not be wrappable into a

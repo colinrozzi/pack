@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.10.6 (2026-07-21)
+
+### Fixed
+- **Epoch deadline overflow panicked/mis-fired on every actor spawn (0.10.5
+  regression).** The self-contained instantiate paths armed a "no deadline"
+  default of `store.set_epoch_deadline(u64::MAX)`. But `set_epoch_deadline(delta)`
+  computes `current_epoch() + delta`, so once the host advances the engine epoch
+  (a 1/sec ticker driving `increment_epoch()`), `current + u64::MAX` **overflows**
+  — a panic in debug, a wrap to a garbage near-immediate deadline in release —
+  on *every* instantiate. The 0.10.5 kill-switch test missed it because the epoch
+  was still 0 at instantiation. The default is now `u64::MAX / 2` (`NO_EPOCH_DEADLINE`)
+  — still ~4.6e18 ticks (never trips), and `current + it` cannot overflow for any
+  realistic epoch count. The store genuinely has `epoch_interruption` enabled
+  (confirmed: `current_epoch()` returns a valid small count); only the default
+  delta was wrong. Regression test `epoch_deadline_survives_advanced_epoch`
+  reproduces the panic (advance epoch → instantiate → arm → call) and passes on
+  the fix. Host wiring (`set_epoch_deadline(N)` + `increment_epoch()` ticker) is
+  unchanged and correct.
+
 ## v0.10.5 (2026-07-21)
 
 ### Added
