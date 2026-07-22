@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.10.5 (2026-07-21)
 
 ### Added
 - **Runaway-guest kill switch: epoch interruption on `AsyncRuntime`.** A guest
