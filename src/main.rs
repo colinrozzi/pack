@@ -4,7 +4,9 @@
 //!   packr inspect <wasm>       - Display a package's metadata
 
 use clap::{Parser, Subcommand};
+use packr::compose::{compose, Component, GraphLink};
 use packr::{decode_metadata_with_hashes, Arena, Function, Param, Type};
+use serde::Deserialize;
 use std::path::PathBuf;
 
 /// CGRF magic bytes: "CGRF" in little-endian
@@ -33,6 +35,46 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+
+    /// Compose N components + a link graph into one multi-memory composite wasm
+    Compose {
+        /// Path to the compose manifest (TOML)
+        manifest: PathBuf,
+
+        /// Output path for the composite wasm
+        #[arg(long, short = 'o')]
+        output: PathBuf,
+    },
+}
+
+/// The compose manifest: `[[component]]` entries + `[[link]]` entries.
+#[derive(Debug, Deserialize)]
+struct ComposeManifest {
+    #[serde(default, rename = "component")]
+    components: Vec<ManifestComponent>,
+    #[serde(default, rename = "link")]
+    links: Vec<ManifestLink>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ManifestComponent {
+    name: String,
+    /// Path to a prebuilt `.wasm`, relative to the manifest file.
+    wasm: String,
+    #[serde(default)]
+    entry: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct ManifestLink {
+    /// Name of the consumer component.
+    consumer: String,
+    /// The consumer's import, formatted `"module.name"`.
+    import: String,
+    /// Name of the provider component.
+    provider: String,
+    /// The provider's export name.
+    export: String,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -44,7 +86,69 @@ fn main() -> anyhow::Result<()> {
             hashes,
             json,
         } => inspect_command(&wasm_file, hashes, json),
+        Commands::Compose { manifest, output } => compose_command(&manifest, &output),
     }
+}
+
+/// `packr compose <manifest> -o <out>`: parse the manifest, read each
+/// component's wasm (relative to the manifest), compose, and write the composite.
+fn compose_command(manifest_path: &PathBuf, output: &PathBuf) -> anyhow::Result<()> {
+    let text = std::fs::read_to_string(manifest_path).map_err(|e| {
+        anyhow::anyhow!("Failed to read manifest {}: {}", manifest_path.display(), e)
+    })?;
+    let manifest: ComposeManifest =
+        toml::from_str(&text).map_err(|e| anyhow::anyhow!("Failed to parse manifest: {}", e))?;
+
+    // Component wasm paths are relative to the manifest's directory.
+    let base = manifest_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+
+    let mut components = Vec::with_capacity(manifest.components.len());
+    for c in &manifest.components {
+        let wasm_path = base.join(&c.wasm);
+        let wasm = std::fs::read(&wasm_path).map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to read component `{}` wasm {}: {}",
+                c.name,
+                wasm_path.display(),
+                e
+            )
+        })?;
+        components.push(Component {
+            name: c.name.clone(),
+            wasm,
+            entry: c.entry,
+        });
+    }
+
+    let mut links = Vec::with_capacity(manifest.links.len());
+    for l in &manifest.links {
+        let (import_module, import_name) = l.import.split_once('.').ok_or_else(|| {
+            anyhow::anyhow!("link import `{}` must be formatted `module.name`", l.import)
+        })?;
+        links.push(GraphLink {
+            consumer: l.consumer.clone(),
+            import_module: import_module.to_string(),
+            import_name: import_name.to_string(),
+            provider: l.provider.clone(),
+            export_name: l.export.clone(),
+        });
+    }
+
+    let composite =
+        compose(components, &links).map_err(|e| anyhow::anyhow!("Composition failed: {:#}", e))?;
+
+    std::fs::write(output, &composite)
+        .map_err(|e| anyhow::anyhow!("Failed to write {}: {}", output.display(), e))?;
+
+    println!(
+        "Composed {} component(s), {} link(s) -> {}",
+        manifest.components.len(),
+        manifest.links.len(),
+        output.display()
+    );
+    Ok(())
 }
 
 fn inspect_command(wasm_file: &PathBuf, show_hashes: bool, json: bool) -> anyhow::Result<()> {
