@@ -21,6 +21,7 @@ exclude = [
     "packages/lifecycle-actor",
     "packages/math-real",
     "packages/math-mock",
+    "packages/math-wrong",
     "packages/doubler",
     "packages/echo",
     "packages/logger",

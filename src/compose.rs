@@ -38,15 +38,18 @@
 //! the CONSUMER's memory and the PROVIDER's memory (any two of the N memories),
 //! so it never needs to know the pact's high-level types.
 //!
-//! # Hash-checking (deferred)
+//! # Hash-checking
 //!
 //! The design says a link is valid iff the consumer's import interface and the
-//! provider's export interface have matching Merkle interface hashes. M2 wires
-//! links **by name** (as M1 did). Extracting each component's pact interfaces from
-//! its `__pack_types` (`CGRF`) data segment and comparing per-interface hashes is
-//! a self-contained follow-on; see `docs/component-composition.md`. Wiring by
-//! name is sound for the fixtures and the acceptance gate; the hash check is an
-//! additional safety net, not a correctness prerequisite for the transform.
+//! provider's export interface have matching Merkle interface hashes. Before
+//! wiring, [`verify_link_hashes`] statically reads each component's per-interface
+//! hashes from its `__pack_types` (`CGRF`) data segment (via
+//! [`crate::metadata::find_cgrf_metadata`] + [`crate::metadata::decode_metadata_with_hashes`],
+//! no instantiation) and rejects any link whose two sides disagree — surfacing a
+//! signature drift at compose time instead of as a runtime mis-marshal. A link
+//! whose components carry no embedded hashes (or a name-remapped link) is left
+//! name-wired; the check is an added safety net, not a prerequisite for the
+//! transform.
 
 use anyhow::{anyhow, Context, Result};
 use std::collections::HashMap;
@@ -168,6 +171,77 @@ fn scoped_name(component: &str, export: &str) -> String {
 /// component's memory and the provider component's memory (whichever two of the N
 /// they are), allocating with the provider's `__pack_alloc`, calling the
 /// provider's export, then copying the result back into the consumer's memory.
+/// Verify each link connects interfaces whose Merkle hashes agree.
+///
+/// For a link `consumer.import(module.name) <- provider.export`, both components
+/// must declare an interface named `module` in their `__pack_types` metadata, and
+/// the consumer's IMPORT hash for it must equal the provider's EXPORT hash. Import
+/// and export hashes for the same interface are equal by construction (the guest
+/// macro hashes the same structure both ways), so a mismatch means the signatures
+/// have genuinely drifted — the shim would then marshal bytes the two sides decode
+/// differently. That is a hard error, raised at compose time instead of surfacing
+/// as a runtime "failed to convert parameter".
+///
+/// If either side lacks an embedded hash for the interface — an older/non-packr
+/// component with no metadata, or a name-remapped link where the provider exports
+/// the interface under a different name than the consumer imports — the link is
+/// left name-wired and the check is skipped for it. Hash-checking is an additional
+/// safety net, not a prerequisite for the transform.
+fn verify_link_hashes(components: &[Component], links: &[GraphLink]) -> Result<()> {
+    use crate::metadata::{decode_metadata_with_hashes, find_cgrf_metadata, MetadataWithHashes};
+    use std::collections::HashMap;
+
+    // Decode each component's embedded interface metadata once (None if the
+    // component carries no CGRF metadata or it fails to decode).
+    let mut metas: HashMap<&str, Option<MetadataWithHashes>> = HashMap::new();
+    for c in components {
+        let meta = find_cgrf_metadata(&c.wasm)
+            .ok()
+            .flatten()
+            .and_then(|bytes| decode_metadata_with_hashes(&bytes).ok());
+        metas.insert(c.name.as_str(), meta);
+    }
+
+    for link in links {
+        // Both components must have decodable metadata to compare.
+        let (Some(Some(consumer_meta)), Some(Some(provider_meta))) = (
+            metas.get(link.consumer.as_str()),
+            metas.get(link.provider.as_str()),
+        ) else {
+            continue;
+        };
+
+        let consumer_hash = consumer_meta
+            .import_hashes
+            .iter()
+            .find(|h| h.name == link.import_module);
+        let provider_hash = provider_meta
+            .export_hashes
+            .iter()
+            .find(|h| h.name == link.import_module);
+
+        if let (Some(ci), Some(pi)) = (consumer_hash, provider_hash) {
+            if ci.hash != pi.hash {
+                return Err(anyhow!(
+                    "hash-checked link rejected: consumer `{}` imports interface `{}` \
+                     (hash {}), but provider `{}` exports it with a different hash ({}). \
+                     The interface signatures disagree — rebuild both against the same \
+                     pact, or fix the link.",
+                    link.consumer,
+                    link.import_module,
+                    ci.hash,
+                    link.provider,
+                    pi.hash,
+                ));
+            }
+        }
+        // Either side missing the interface hash => can't verify; leave the link
+        // name-wired (the transform still produces a working composite).
+    }
+
+    Ok(())
+}
+
 pub fn compose(components: Vec<Component>, links: &[GraphLink]) -> Result<Vec<u8>> {
     // Exactly one entry.
     let entry_count = components.iter().filter(|c| c.entry).count();
@@ -198,6 +272,11 @@ pub fn compose(components: Vec<Component>, links: &[GraphLink]) -> Result<Vec<u8
             return Err(anyhow!("link references unknown provider `{}`", l.provider));
         }
     }
+
+    // Safety net: reject a link whose two sides disagree on the interface's
+    // Merkle hash before we wire it (a mismatch would otherwise silently marshal
+    // garbage across the shim at runtime).
+    verify_link_hashes(&components, links)?;
 
     // Step 1: order entry first, pre-rename non-entry exports to `__c_<name>_*`.
     // The entry component keeps canonical export names untouched.

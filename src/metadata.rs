@@ -610,6 +610,29 @@ const TAG_UNIT: u32 = 21;
 // Metadata Decoding
 // ============================================================================
 
+/// The 4-byte magic (`CGRF`) that prefixes packr's metadata data segment.
+pub const CGRF_MAGIC: [u8; 4] = [0x43, 0x47, 0x52, 0x46];
+
+/// Statically extract the CGRF `__pack_types` metadata bytes from a wasm module
+/// by scanning its data segments — no instantiation required. Returns `None` if
+/// the module carries no packr metadata segment (e.g. an older or non-packr
+/// module).
+pub fn find_cgrf_metadata(wasm: &[u8]) -> Result<Option<Vec<u8>>, wasmparser::BinaryReaderError> {
+    use wasmparser::{Parser, Payload};
+
+    for payload in Parser::new(0).parse_all(wasm) {
+        if let Payload::DataSection(reader) = payload? {
+            for data in reader {
+                let bytes = data?.data;
+                if bytes.len() >= 4 && bytes[0..4] == CGRF_MAGIC {
+                    return Ok(Some(bytes.to_vec()));
+                }
+            }
+        }
+    }
+    Ok(None)
+}
+
 /// Decode CGRF bytes into an Arena.
 ///
 /// The metadata format is a record with "imports" and "exports" lists,
