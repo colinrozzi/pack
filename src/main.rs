@@ -9,9 +9,6 @@ use packr::{decode_metadata_with_hashes, Arena, Function, Param, Type};
 use serde::Deserialize;
 use std::path::PathBuf;
 
-/// CGRF magic bytes: "CGRF" in little-endian
-const CGRF_MAGIC: [u8; 4] = [0x43, 0x47, 0x52, 0x46];
-
 #[derive(Parser)]
 #[command(name = "pack")]
 #[command(about = "Tools for working with Pack packages", long_about = None)]
@@ -158,7 +155,7 @@ fn inspect_command(wasm_file: &PathBuf, show_hashes: bool, json: bool) -> anyhow
 
     // Scan the WASM binary's data segments for the CGRF metadata (no
     // instantiation needed).
-    let metadata_bytes = find_cgrf_metadata(&wasm_bytes)
+    let metadata_bytes = packr::metadata::find_cgrf_metadata(&wasm_bytes)
         .map_err(|e| anyhow::anyhow!("Failed to parse WASM: {}", e))?
         .ok_or_else(|| anyhow::anyhow!("No Pack metadata found in WASM file"))?;
 
@@ -187,26 +184,6 @@ fn inspect_command(wasm_file: &PathBuf, show_hashes: bool, json: bool) -> anyhow
     }
 
     Ok(())
-}
-
-/// Find CGRF metadata in the WASM data segments.
-///
-/// Scans the module's data section for the first segment whose bytes begin with
-/// the `CGRF` magic — packr emits the metadata as its own data segment.
-fn find_cgrf_metadata(wasm: &[u8]) -> Result<Option<Vec<u8>>, wasmparser::BinaryReaderError> {
-    use wasmparser::{Parser, Payload};
-
-    for payload in Parser::new(0).parse_all(wasm) {
-        if let Payload::DataSection(reader) = payload? {
-            for data in reader {
-                let bytes = data?.data;
-                if bytes.len() >= 4 && bytes[0..4] == CGRF_MAGIC {
-                    return Ok(Some(bytes.to_vec()));
-                }
-            }
-        }
-    }
-    Ok(None)
 }
 
 fn print_metadata(arena: &Arena) {
