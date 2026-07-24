@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.11.1 (2026-07-23)
+
+### Added
+- **`pact codegen` now emits the `GraphValue` codec on generated types.** Records,
+  variants, and enums get `#[derive(..., packr_guest::GraphValue)]` +
+  `#[graph(crate = "packr_guest::composite_abi")]`, so a pact-generated Rust module
+  actually **serializes** (encode/decode via the Graph ABI) instead of only declaring
+  types. This closes the last gap for **importable app-to-app pact packages**: a
+  `.pact` now codegens directly into a working, importable codec crate with zero
+  hand-editing. Verified end-to-end against `mesh-api/src/control.rs`'s oracle vectors
+  (the `mesh:control` envelope) — codegen'd types compile and round-trip losslessly
+  (`T → Value → encode → bytes → decode → Value → T`). Regression guard:
+  `codegen::tests::codegen_emits_graphvalue_codec_on_records_and_variants`.
+
 ## v0.11.0 (2026-07-21)
 
 **An actor is now a plain `cargo build`.** This retires packr's composition/fuse
