@@ -1,5 +1,46 @@
 # Changelog
 
+## v0.12.0 (2026-07-24)
+
+**Component composition — packr's Component-Model equivalent.** Compose N isolated
+packages into ONE multi-memory wasm binary via `packr compose`. Each component keeps
+its own memory (so the fusion reconciliation bug class is structurally impossible), a
+statically-generated bridging shim marshals every cross-component call over the Graph
+ABI, and the composite loads as a normal theater actor — it exports the entry
+component's `memory` + `__pack_alloc`/`__pack_free` + pact functions, and its only
+residual imports are host functions. Proven end-to-end under real theater (a composite
+runs through theater's own loader and is driven through the actor lifecycle) and against
+an async service component (a provider that suspends on an async host call resumes
+correctly through the synchronous shim).
+
+### Added
+- **`packr compose <manifest> -o <out>`** + `packr::compose(components, links)` — compose
+  N components across a link graph into one multi-memory composite. Manifest is TOML:
+  `[[component]]` (name/wasm/entry) + `[[link]]` (consumer/import/provider/export).
+- **Hash-checked links.** Before wiring, `compose` statically reads each component's
+  per-interface Merkle hashes from its `__pack_types` segment and **rejects a link whose
+  consumer-import and provider-export interface hashes disagree — at compose time**, with
+  an error naming the interface and both hashes, instead of a runtime "failed to convert
+  parameter". This catches signature drift between independently-versioned packages
+  automatically (both sides embed hashes via the guest macro). A component with no
+  embedded hashes, or a name-remapped link, is left name-wired.
+- Async-transparent composition: a composed component that suspends on an async host
+  import resumes correctly through the **unchanged** synchronous bridging shim (wasmtime
+  suspends the whole fiber at the host boundary).
+- `metadata::find_cgrf_metadata` is now public — statically extract a module's CGRF
+  `__pack_types` bytes from its data segments, no instantiation required.
+
+### Fixed
+- **Shim result-buffer leak.** Both generated shims (the link shim and the host-bridge
+  shim) copy the callee's result into the caller's memory but returned the callee's raw
+  status, so the caller's `__import_impl` never freed the buffer — one dlmalloc chunk
+  leaked per cross-component (or residual host) call, growing unboundedly for a host-heavy
+  composed actor. Both shims now return the guest-owned status so the caller frees the
+  buffer; the host-bridge additionally frees the host's result buffer when the host
+  guest-allocated it. Regression test asserts the entry heap plateaus over 20k calls.
+- A temp-file race in the wasm-merge step (two concurrent `compose` calls in one process
+  shared PID-named temp files); added a per-call nonce.
+
 ## v0.11.1 (2026-07-23)
 
 ### Added
