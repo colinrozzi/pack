@@ -66,7 +66,8 @@ fn generate_record(name: &str, fields: &[Field]) -> String {
     let mut out = String::new();
     let rust_name = to_pascal_case(name);
 
-    out.push_str("#[derive(Debug, Clone, PartialEq)]\n");
+    out.push_str("#[derive(Debug, Clone, PartialEq, packr_guest::GraphValue)]\n");
+    out.push_str("#[graph(crate = \"packr_guest::composite_abi\")]\n");
     out.push_str(&format!("pub struct {} {{\n", rust_name));
 
     for field in fields {
@@ -85,7 +86,8 @@ fn generate_variant(name: &str, cases: &[Case]) -> String {
     let mut out = String::new();
     let rust_name = to_pascal_case(name);
 
-    out.push_str("#[derive(Debug, Clone, PartialEq)]\n");
+    out.push_str("#[derive(Debug, Clone, PartialEq, packr_guest::GraphValue)]\n");
+    out.push_str("#[graph(crate = \"packr_guest::composite_abi\")]\n");
     out.push_str(&format!("pub enum {} {{\n", rust_name));
 
     for case in cases {
@@ -109,7 +111,8 @@ fn generate_enum(name: &str, cases: &[String]) -> String {
     let mut out = String::new();
     let rust_name = to_pascal_case(name);
 
-    out.push_str("#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]\n");
+    out.push_str("#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, packr_guest::GraphValue)]\n");
+    out.push_str("#[graph(crate = \"packr_guest::composite_abi\")]\n");
     out.push_str(&format!("pub enum {} {{\n", rust_name));
 
     for case in cases {
@@ -409,5 +412,33 @@ mod tests {
 
         // Generic-style: list<string>
         assert_eq!(to_pascal_case("list<string>"), "ListString");
+    }
+
+    #[test]
+    fn codegen_emits_graphvalue_codec_on_records_and_variants() {
+        // Generated types must carry the GraphValue codec (derive + graph crate
+        // attr) so a pact-generated package actually SERIALIZES, not just
+        // declares types. The mesh:control app-to-app package depends on exactly
+        // this — regressing to declaration-only output would silently break it.
+        let src = r#"
+            interface control {
+                record command-body {
+                    corr-id: u64,
+                    cmd: string,
+                }
+                variant control {
+                    command(command-body),
+                }
+            }
+        "#;
+        let code = generate_rust(&parse_pact(src).expect("parse"));
+        assert!(
+            code.contains("packr_guest::GraphValue"),
+            "generated records/variants must derive GraphValue:\n{code}"
+        );
+        assert!(
+            code.contains("#[graph(crate = \"packr_guest::composite_abi\")]"),
+            "generated types must carry the graph crate attr:\n{code}"
+        );
     }
 }
