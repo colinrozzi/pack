@@ -12,6 +12,7 @@ exclude = [
     "packages/doubler-pic",
     "packages/adder-pic",
     "packages/adder",
+    "packages/comp-actor",
     "packages/comp-app",
     "packages/comp-app2",
     "packages/comp-async-math",
