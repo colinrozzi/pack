@@ -51,8 +51,8 @@
 use anyhow::{anyhow, Context, Result};
 use std::collections::HashMap;
 use walrus::ir::{
-    BinaryOp, Binop, Call, Const, Instr, LoadKind, LocalGet, LocalSet, LocalTee, MemArg,
-    MemoryCopy, Store, StoreKind, Value as IrValue,
+    BinaryOp, Binop, Call, Const, IfElse, Instr, InstrSeqType, LoadKind, LocalGet, LocalSet,
+    LocalTee, MemArg, MemoryCopy, Select, Store, StoreKind, Value as IrValue,
 };
 use walrus::{
     ExportItem, FunctionBuilder, FunctionId, ImportKind, LocalId, MemoryId, Module, ValType,
@@ -295,12 +295,18 @@ fn rename_component_exports(component_wasm: &[u8], component: &str) -> Result<Ve
 fn merge_multimemory(inputs: &[(String, Vec<u8>)]) -> Result<Vec<u8>> {
     let dir = std::env::temp_dir();
     let pid = std::process::id();
-    let out_path = dir.join(format!("packr-compose-out-{pid}.wasm"));
+    // Per-call nonce: two `compose()` calls in the SAME process (e.g. parallel
+    // test threads) share the PID, so PID alone is not unique — they would clobber
+    // each other's temp inputs/output and wasm-merge would read a half-written
+    // file. The monotonic counter makes every call's paths distinct.
+    static COMPOSE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = COMPOSE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let out_path = dir.join(format!("packr-compose-out-{pid}-{seq}.wasm"));
 
     // Write each input to a temp file, remembering the paths for cleanup.
     let mut paths: Vec<std::path::PathBuf> = Vec::with_capacity(inputs.len());
     for (i, (_name, wasm)) in inputs.iter().enumerate() {
-        let p = dir.join(format!("packr-compose-in-{pid}-{i}.wasm"));
+        let p = dir.join(format!("packr-compose-in-{pid}-{seq}-{i}.wasm"));
         std::fs::write(&p, wasm)?;
         paths.push(p);
     }
@@ -814,8 +820,26 @@ fn emit_shim(module: &mut Module, p: &ShimParams) -> FunctionId {
         })
         .instr(Call { func: prov_free });
 
-    // return status
-    body.instr(LocalGet { local: status });
+    // Return the ownership status to the consumer's `__import_impl`. On success
+    // return 1 (guest-allocated), NOT the provider export's status: `aptr` lives
+    // in the CONSUMER's memory and was allocated by THIS shim via
+    // `consumer.__pack_alloc`, so the consumer must free it — and `__import_impl`
+    // frees the result buffer only for status == 1. The provider's pact export
+    // returns 0 on success; passing that 0 through would leak `aptr` in the
+    // consumer's memory on every call. On error (status < 0) propagate unchanged.
+    //   result = (status < 0) ? status : 1
+    body.instr(LocalGet { local: status }) // select val1 (returned when cond true)
+        .instr(Const {
+            value: IrValue::I32(1),
+        }) // select val2 (returned when cond false)
+        .instr(LocalGet { local: status })
+        .instr(Const {
+            value: IrValue::I32(0),
+        })
+        .instr(Binop {
+            op: BinaryOp::I32LtS,
+        }) // cond = status < 0
+        .instr(Select { ty: None });
 
     let args: Vec<LocalId> = vec![in_ptr, in_len, out_ptr_ptr, out_len_ptr];
     builder.finish(args, &mut module.funcs)
@@ -886,6 +910,19 @@ fn emit_host_shim(module: &mut Module, p: &HostShimParams) -> FunctionId {
         align: 2,
         offset: 0,
     };
+
+    // Pre-build the dangling sequences for the conditional free, before the main
+    // body takes its mutable borrow of the builder. `free_host_buf` frees the
+    // host's result buffer; `skip_free` is the empty else-branch. Which one runs
+    // is decided at the tail by the host's return status.
+    let free_host_buf = {
+        let mut seq = builder.dangling_instr_seq(InstrSeqType::Simple(None));
+        seq.instr(LocalGet { local: h_out_ptr })
+            .instr(LocalGet { local: h_out_len })
+            .instr(Call { func: entry_free });
+        seq.id()
+    };
+    let skip_free = builder.dangling_instr_seq(InstrSeqType::Simple(None)).id();
 
     let mut body = builder.func_body();
 
@@ -987,23 +1024,47 @@ fn emit_host_shim(module: &mut Module, p: &HostShimParams) -> FunctionId {
         })
         .instr(Call { func: entry_free });
 
-    // KNOWN LEAK — M3 follow-up. `h_out_ptr` is the host's result buffer. On the
-    // guest-allocated return path the GUEST owns it and frees it after consuming
-    // it (see packr-guest's import wrapper: `__pack_free(out_ptr, out_len)` when the
-    // host guest-allocated the result). This bridge IS that guest-side consumer, so
-    // it SHOULD `entry_free(h_out_ptr, h_out_len)` here. It does NOT yet — and the
-    // entry allocator is dlmalloc (a real free-list, NOT a bump), so this leaks
-    // `h_out_len` bytes per residual host call from a non-entry component and GROWS
-    // unboundedly for a host-heavy actor (e.g. a composed mesh-client doing many
-    // message-server calls). Not freed unconditionally yet because the raw host ABI
-    // this bridge calls doesn't thread the ownership marker (guest-allocated vs
-    // host-owned) through to here, and a wrong free would double-free a host-owned
-    // result. FIX: confirm the raw host-import return is always guest-allocated (or
-    // thread the marker) and free accordingly. Must land before composed actors do
-    // real host I/O.
+    // Free the host's result buffer (`h_out_ptr`, entry memory) IFF the host
+    // guest-allocated it. The raw host-import ABI signals ownership via the status:
+    //   status == 1 => host guest-allocated the return via entry.__pack_alloc, the
+    //                  guest (this bridge is that guest-side consumer) owns + frees it;
+    //   status == 0 => host wrote its own fixed scratch buffer — must NOT free it
+    //                  (that pointer was never handed out by entry.__pack_alloc).
+    // See packr-guest `__import_impl`, which frees on exactly the same condition.
+    // Without this, `h_out_ptr` leaked on the async / guest-allocated path — a
+    // GROWING leak (entry alloc is dlmalloc, not a bump) per residual host call.
+    body.instr(LocalGet { local: status })
+        .instr(Const {
+            value: IrValue::I32(1),
+        })
+        .instr(Binop {
+            op: BinaryOp::I32Eq,
+        })
+        .instr(IfElse {
+            consequent: free_host_buf,
+            alternative: skip_free,
+        });
 
-    // return status
-    body.instr(LocalGet { local: status });
+    // Return the ownership status to the calling component's `__import_impl`. On
+    // success we return 1 (guest-allocated), NOT the host's raw status: `c_out`
+    // lives in the COMPONENT's memory and was allocated by THIS bridge via
+    // `comp_alloc`, so the component must free it — and `__import_impl` frees the
+    // result buffer only for status == 1. Passing the host's raw 0 through here
+    // (host-owned scratch) would leak `c_out` in the component's memory. On error
+    // (status < 0) propagate the host's status unchanged.
+    //   result = (status < 0) ? status : 1
+    body.instr(LocalGet { local: status }) // select val1 (returned when cond true)
+        .instr(Const {
+            value: IrValue::I32(1),
+        }) // select val2 (returned when cond false)
+        .instr(LocalGet { local: status })
+        .instr(Const {
+            value: IrValue::I32(0),
+        })
+        .instr(Binop {
+            op: BinaryOp::I32LtS,
+        }) // cond = status < 0
+        .instr(Select { ty: None });
 
     let args: Vec<LocalId> = vec![in_ptr, in_len, out_ptr_ptr, out_len_ptr];
     builder.finish(args, &mut module.funcs)

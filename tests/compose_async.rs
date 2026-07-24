@@ -195,3 +195,126 @@ async fn compose_async_provider_suspends_under_sync_shim() {
          fiber genuinely suspended on it)"
     );
 }
+
+/// Regression test for the host-bridge result-buffer leak.
+///
+/// The host-bridge shim (for a residual host import declared by a NON-entry
+/// component) copies the host's result out of the ENTRY memory into the calling
+/// component's memory. On the guest-allocated return path (`status == 1`, which
+/// the async `tick` takes), the host allocated that result buffer via the entry
+/// allocator and the guest owns it — so the bridge must `entry.__pack_free` it.
+/// An earlier version did NOT, leaking one dlmalloc chunk in the ENTRY heap per
+/// residual host call — a monotonic, unbounded growth for a host-heavy actor.
+///
+/// This calls `run` (which drives the provider's `host.tick`) many thousands of
+/// times on a single instance and asserts the entry memory does not grow after a
+/// warm-up. With the leak, the entry heap climbs several pages; with the fix,
+/// dlmalloc reuses the freed chunk every call and the footprint is flat.
+#[tokio::test]
+async fn compose_async_host_bridge_does_not_leak_entry_memory() {
+    let (app, provider) = match build_all() {
+        Some(t) => t,
+        None => {
+            eprintln!(
+                "SKIP: could not build fixtures for wasm32-unknown-unknown \
+                 (wasm target / cargo unavailable)."
+            );
+            return;
+        }
+    };
+
+    let components = vec![
+        Component {
+            name: "app".to_string(),
+            wasm: app,
+            entry: true,
+        },
+        Component {
+            name: "math".to_string(),
+            wasm: provider,
+            entry: false,
+        },
+    ];
+    let links = vec![GraphLink {
+        consumer: "app".to_string(),
+        import_module: "math".to_string(),
+        import_name: "double".to_string(),
+        provider: "math".to_string(),
+        export_name: "double".to_string(),
+    }];
+
+    let composite = match compose(components, &links) {
+        Ok(c) => c,
+        Err(e) => {
+            let msg = e.to_string();
+            if msg.contains("wasm-merge") || msg.contains("binaryen") {
+                eprintln!("SKIP: {msg}");
+                return;
+            }
+            panic!("compose failed: {e:?}");
+        }
+    };
+
+    let runtime = AsyncRuntime::new();
+    let module = runtime
+        .load_module(&composite)
+        .expect("load composite module");
+
+    let tick_count = Arc::new(AtomicUsize::new(0));
+    let mut instance = module
+        .instantiate_with_host_async(tick_count.clone(), |builder| {
+            builder.interface("host")?.func_async(
+                "tick",
+                |ctx: packr::AsyncCtx<Arc<AtomicUsize>>, _input: Value| async move {
+                    tokio::task::yield_now().await;
+                    ctx.data().fetch_add(1, Ordering::SeqCst);
+                    Value::Tuple(vec![])
+                },
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("instantiate composite (async, with residual host.tick)");
+
+    // Warm up: let dlmalloc reach steady state (every allocation size the call
+    // path uses is now on the free list).
+    const WARMUP: usize = 200;
+    const MEASURED: usize = 20_000;
+    for _ in 0..WARMUP {
+        let r = instance
+            .call_with_value_async("run", &Value::S64(21))
+            .await
+            .expect("call run");
+        assert_eq!(r, Value::S64(42));
+    }
+
+    let baseline = instance.memory_size().expect("read entry memory size");
+
+    for _ in 0..MEASURED {
+        let r = instance
+            .call_with_value_async("run", &Value::S64(21))
+            .await
+            .expect("call run");
+        assert_eq!(r, Value::S64(42));
+    }
+
+    let after = instance.memory_size().expect("read entry memory size");
+
+    // Allow up to one wasm page (64 KiB) of slack for any allocator bookkeeping;
+    // the leak would grow the entry heap by many pages over MEASURED calls.
+    const PAGE: usize = 64 * 1024;
+    assert!(
+        after <= baseline + PAGE,
+        "entry memory grew {} bytes over {MEASURED} residual host calls \
+         (baseline {baseline}, after {after}) — the host-bridge is leaking the \
+         host result buffer",
+        after.saturating_sub(baseline),
+    );
+
+    // Sanity: every call really drove the residual host import.
+    assert_eq!(
+        tick_count.load(Ordering::SeqCst),
+        WARMUP + MEASURED,
+        "each run() must invoke host.tick exactly once"
+    );
+}
