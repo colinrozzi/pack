@@ -134,6 +134,51 @@ composite).
    composed with a Rust component — the moment "any language that produces wasm
    interoperates" becomes real rather than aspirational.
 
+## Milestone 3: async component composition
+
+**Status: DONE.** Composition works when a component does an ASYNC host call
+(suspends). Acceptance test: `tests/compose_async.rs`, fixture
+`packages/comp-async-math` (exports `math.double`, calls a residual `host.tick`
+before returning `n*2`), composed against `comp-app` (entry) and run under the
+`AsyncRuntime` with `tick` provided as a genuinely-awaiting host fn.
+
+### The link shim is async-transparent (the hypothesis held)
+
+The bridging shim (link shims *and* the host-bridge shim below) is plain
+**synchronous** wasm — alloc → `memory.copy` → call → `memory.copy` → free, no
+`await`. It needs no async-specific machinery because wasmtime's async support
+suspends the **entire fiber** at an async host-import boundary: the whole wasm
+call stack (entry frame → link shim → provider frame) and every component memory
+freeze together and resume together. The suspend happens transparently *below*
+the shim; the shim is just straight-line wasm on either side of a call that
+happens to yield. So a provider that suspends on an async host import composes
+with the **unchanged** sync link shim. (The "async shims" roadmap item — a shim
+that itself awaits — is not needed for this; the fiber-level suspend subsumes it.)
+
+### What DID need fixing: residual host imports from a non-entry component
+
+A residual host import (one no link satisfies — the host provides it at
+instantiate) that is declared by a **non-entry** component pointed at the wrong
+memory. The provider calls `host.tick(in_ptr, in_len, …)` with pointers into its
+**own** memory (memory 1), but the host resolves the guest memory + allocator
+from the composite's canonical `memory`/`__pack_alloc` exports — i.e. the
+**entry's** memory 0. So the host read the call's args from memory 0 and decoded
+garbage (`Invalid magic`), then the guest hung on the error path. This is a
+memory-routing bug, **not** an async bug: it would bite a synchronous residual
+host import from a non-entry component just the same; the async fixture merely
+surfaced it (M1/M2 had no non-entry residual host import).
+
+The fix (in `compose.rs`) is a **host-bridge shim**, the exact mirror of the link
+shim: for each non-entry component's residual host import, emit a shim that
+copies the call's input from the component's memory into the entry's memory (via
+the entry allocator), calls the **real** host import (which the host serves
+against the entry memory — now correct), then copies the host's result back into
+the component's memory. The residual import is **kept** (it is the composite's
+residual surface, filled by the host); only the component's own call sites are
+rewired to the bridge, and the bridge itself still calls the real import. An
+entry component's own residual host imports need no bridge — they already target
+memory 0.
+
 ## Reuse (not from scratch)
 
 Graph ABI codec · the actor ABI (`in_ptr/in_len/out…`) · theater's host↔actor

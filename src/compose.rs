@@ -95,6 +95,22 @@ pub struct GraphLink {
     pub export_name: String,
 }
 
+/// A residual host import declared by a NON-ENTRY component that must be
+/// bridged through the entry's memory (see [`compose`] and [`emit_host_shim`]).
+///
+/// The provider calls `(import_module, import_name)` with pointers into its OWN
+/// memory; the host reads/writes the composite's canonical (entry) memory. The
+/// bridge shim marshals between the two around the real host call.
+#[derive(Debug, Clone)]
+struct HostBridge {
+    /// The non-entry component that declares the residual import.
+    component: String,
+    /// The residual import's module (e.g. `"host"`).
+    import_module: String,
+    /// The residual import's field (e.g. `"tick"`).
+    import_name: String,
+}
+
 /// A single link between exactly two components (the M1 API).
 ///
 /// Retained for backwards compatibility; `compose_pair` builds a two-component
@@ -202,15 +218,45 @@ pub fn compose(components: Vec<Component>, links: &[GraphLink]) -> Result<Vec<u8
         merge_inputs.push((c.name.clone(), bytes));
     }
 
+    // A residual host import declared by a NON-ENTRY component points into that
+    // component's own memory (memory 1, 2, …), but the host resolves the guest
+    // memory + allocator from the composite's canonical `memory`/`__pack_alloc`
+    // exports — i.e. the ENTRY's memory 0. Left alone, the host would read the
+    // call's args from the wrong memory ("Invalid magic" on decode). So for each
+    // such import we emit a host-bridge shim (memory1↔memory0 marshalling around
+    // the real host call) and rewire the component's calls to it — the async M3
+    // analogue of the link shim. Collect them here (pre-merge, where each
+    // component's imports are unambiguous), skipping any import a link satisfies.
+    let mut host_bridges: Vec<HostBridge> = Vec::new();
+    for c in ordered.iter().filter(|c| !c.entry) {
+        let linked: std::collections::HashSet<(&str, &str)> = links
+            .iter()
+            .filter(|l| l.consumer == c.name)
+            .map(|l| (l.import_module.as_str(), l.import_name.as_str()))
+            .collect();
+        for (module_name, field) in component_func_imports(&c.wasm)
+            .with_context(|| format!("reading imports for component `{}`", c.name))?
+        {
+            if !linked.contains(&(module_name.as_str(), field.as_str())) {
+                host_bridges.push(HostBridge {
+                    component: c.name.clone(),
+                    import_module: module_name,
+                    import_name: field,
+                });
+            }
+        }
+    }
+
     // Step 2: merge with wasm-merge (multi-memory), entry first (→ memory 0).
     let merged = merge_multimemory(&merge_inputs)
         .context("merging components into a multi-memory module")?;
 
     // Step 3 + 4: locate every component's memory/funcs by name, emit one shim
-    // per link, rewire the consumer's import, and strip scaffolding exports.
+    // per link, rewire the consumer's import, bridge non-entry residual host
+    // imports through memory 0, and strip scaffolding exports.
     let entry_name = &ordered[0].name;
     let component_names: Vec<String> = ordered.iter().map(|c| c.name.clone()).collect();
-    let composite = shim_and_rewire(&merged, entry_name, &component_names, links)
+    let composite = shim_and_rewire(&merged, entry_name, &component_names, links, &host_bridges)
         .context("emitting shims and rewiring imports")?;
 
     Ok(composite)
@@ -362,6 +408,7 @@ fn shim_and_rewire(
     entry_name: &str,
     component_names: &[String],
     links: &[GraphLink],
+    host_bridges: &[HostBridge],
 ) -> Result<Vec<u8>> {
     let mut module = Module::from_buffer(merged_wasm)?;
 
@@ -373,6 +420,52 @@ fn shim_and_rewire(
         let r = resolve_component(&module, name, is_entry)
             .with_context(|| format!("locating component `{name}` in the merged module"))?;
         resolved.insert(name.clone(), r);
+    }
+
+    // Bridge each non-entry component's residual host import through memory 0.
+    // The host reads/writes the composite's canonical (entry) memory + allocator;
+    // the component's call passes pointers into its OWN memory. The bridge copies
+    // input component-mem → entry-mem, calls the REAL host import (which the host
+    // fills, resolving the entry memory), then copies the result entry-mem →
+    // component-mem. The import is KEPT (the host provides it); only the
+    // component's own call sites are rewired to the bridge — excluding the
+    // bridge itself, so it still calls the real import.
+    let entry = resolved
+        .get(entry_name)
+        .ok_or_else(|| anyhow!("entry component `{entry_name}` not resolved"))?;
+    let entry_mem = entry.memory;
+    let entry_alloc = entry.alloc;
+    let entry_free = entry.free;
+    for bridge in host_bridges {
+        let component = resolved
+            .get(&bridge.component)
+            .ok_or_else(|| anyhow!("host-bridge component `{}` not resolved", bridge.component))?;
+        let comp_mem = component.memory;
+        let comp_alloc = component.alloc;
+
+        let import_func = find_func_import(&module, &bridge.import_module, &bridge.import_name)
+            .ok_or_else(|| {
+                anyhow!(
+                    "no residual host import `{}.{}` found for component `{}`",
+                    bridge.import_module,
+                    bridge.import_name,
+                    bridge.component
+                )
+            })?;
+
+        let params = HostShimParams {
+            comp_mem,
+            comp_alloc,
+            entry_mem,
+            entry_alloc,
+            entry_free,
+            host_import: import_func,
+        };
+        let shim_id = emit_host_shim(&mut module, &params);
+
+        // Rewire the component's calls to the import → the bridge, but leave the
+        // bridge's own call to the import intact, and KEEP the import.
+        rewire_import_except(&mut module, import_func, shim_id, shim_id);
     }
 
     // For each link, emit a shim bridging the consumer's import to the provider's
@@ -469,6 +562,21 @@ fn resolve_component(module: &Module, name: &str, is_entry: bool) -> Result<Reso
     })
 }
 
+/// List a component's function imports as `(module, field)` pairs, in module
+/// order. Used pre-merge to identify residual host imports (those a link does
+/// not satisfy) that need memory-bridging.
+fn component_func_imports(component_wasm: &[u8]) -> Result<Vec<(String, String)>> {
+    let module = Module::from_buffer(component_wasm)?;
+    Ok(module
+        .imports
+        .iter()
+        .filter_map(|imp| match imp.kind {
+            ImportKind::Function(_) => Some((imp.module.clone(), imp.name.clone())),
+            _ => None,
+        })
+        .collect())
+}
+
 /// Find an imported function by `(module, name)`.
 fn find_func_import(module: &Module, imp_module: &str, imp_name: &str) -> Option<FunctionId> {
     module.imports.iter().find_map(|imp| match imp.kind {
@@ -512,6 +620,29 @@ fn rewire_import(module: &mut Module, import_func: FunctionId, shim_id: Function
         module.imports.delete(id);
     }
     module.funcs.delete(import_func);
+}
+
+/// Rewrite every `Call { func: import_func }` to `Call { func: shim_id }`,
+/// EXCEPT inside `skip` (the bridge itself, which must still call the import),
+/// and KEEP the import (the host provides it). Used for host-import bridging,
+/// where the residual import survives as the composite's residual surface.
+fn rewire_import_except(
+    module: &mut Module,
+    import_func: FunctionId,
+    shim_id: FunctionId,
+    skip: FunctionId,
+) {
+    for (id, func) in module.funcs.iter_local_mut() {
+        if id == skip {
+            continue;
+        }
+        let entry = func.entry_block();
+        let mut rewriter = CallRewriter {
+            from: import_func,
+            to: shim_id,
+        };
+        walrus::ir::dfs_pre_order_mut(&mut rewriter, func, entry);
+    }
 }
 
 /// A VisitorMut that rewrites `Call{from}` to `Call{to}`.
@@ -682,6 +813,194 @@ fn emit_shim(module: &mut Module, p: &ShimParams) -> FunctionId {
             value: IrValue::I32(8),
         })
         .instr(Call { func: prov_free });
+
+    // return status
+    body.instr(LocalGet { local: status });
+
+    let args: Vec<LocalId> = vec![in_ptr, in_len, out_ptr_ptr, out_len_ptr];
+    builder.finish(args, &mut module.funcs)
+}
+
+/// The handles a host-bridge shim needs: the calling COMPONENT's memory + alloc
+/// (where the guest's call args live), the ENTRY's memory + alloc/free (which the
+/// host reads/writes), and the real host import to invoke.
+struct HostShimParams {
+    comp_mem: MemoryId,
+    comp_alloc: FunctionId,
+    entry_mem: MemoryId,
+    entry_alloc: FunctionId,
+    entry_free: FunctionId,
+    host_import: FunctionId,
+}
+
+/// Emit a host-bridge shim and return its id.
+///
+/// Signature `(in_ptr, in_len, out_ptr_ptr, out_len_ptr) -> status`, all i32,
+/// pointers into the CALLING COMPONENT's memory (memory 1, 2, …). A residual
+/// host import is served by the host against the composite's canonical (entry,
+/// memory 0) memory + allocator, so this shim marshals the call across:
+///
+/// 1. `entry.__pack_alloc(in_len)` → `e_in` (entry memory).
+/// 2. copy input: component memory `[in_ptr]` → entry memory `[e_in]`.
+/// 3. `entry.__pack_alloc(8)` → `e_slots` for the host's out ptr/len.
+/// 4. call the real host import `(e_in, in_len, e_slots, e_slots+4)` — the host
+///    reads its args from the entry memory (correct now), writes the result into
+///    the entry memory, and stores its ptr/len into the entry slots.
+/// 5. read `h_out_ptr`/`h_out_len` from the entry slots.
+/// 6. `component.__pack_alloc(h_out_len)` → `c_out` (component memory).
+/// 7. copy result: entry memory `[h_out_ptr]` → component memory `[c_out]`.
+/// 8. store `c_out`/`h_out_len` into the component's out slots; free the entry
+///    scratch; return the host's status.
+///
+/// This is exactly [`emit_shim`] with the provider role played by the entry
+/// (memory 0) and the "export call" replaced by the residual host import — so a
+/// component's residual host call marshals identically to a link call, just in
+/// the other direction across the memory gap.
+fn emit_host_shim(module: &mut Module, p: &HostShimParams) -> FunctionId {
+    let i32 = ValType::I32;
+    let mut builder = FunctionBuilder::new(&mut module.types, &[i32, i32, i32, i32], &[i32]);
+    builder.name("__host_bridge_shim".to_string());
+
+    // Params (pointers into the calling component's memory).
+    let in_ptr = module.locals.add(i32);
+    let in_len = module.locals.add(i32);
+    let out_ptr_ptr = module.locals.add(i32);
+    let out_len_ptr = module.locals.add(i32);
+
+    // Locals.
+    let e_in = module.locals.add(i32); // entry input buffer
+    let e_slots = module.locals.add(i32); // entry out-ptr/out-len slots
+    let status = module.locals.add(i32);
+    let h_out_ptr = module.locals.add(i32); // host result ptr (entry mem)
+    let h_out_len = module.locals.add(i32); // host result len
+    let c_out = module.locals.add(i32); // component result buffer
+
+    let comp_mem = p.comp_mem;
+    let comp_alloc = p.comp_alloc;
+    let entry_mem = p.entry_mem;
+    let entry_alloc = p.entry_alloc;
+    let entry_free = p.entry_free;
+    let host_import = p.host_import;
+
+    let mem4 = MemArg {
+        align: 2,
+        offset: 0,
+    };
+
+    let mut body = builder.func_body();
+
+    // e_in = entry.__pack_alloc(in_len)
+    body.instr(LocalGet { local: in_len })
+        .instr(Call { func: entry_alloc })
+        .instr(LocalSet { local: e_in });
+
+    // memory.copy dst=entry src=component : dst=e_in, src=in_ptr, len=in_len
+    body.instr(LocalGet { local: e_in })
+        .instr(LocalGet { local: in_ptr })
+        .instr(LocalGet { local: in_len })
+        .instr(MemoryCopy {
+            src: comp_mem,
+            dst: entry_mem,
+        });
+
+    // e_slots = entry.__pack_alloc(8)
+    body.instr(Const {
+        value: IrValue::I32(8),
+    })
+    .instr(Call { func: entry_alloc })
+    .instr(LocalSet { local: e_slots });
+
+    // status = host_import(e_in, in_len, e_slots, e_slots+4)
+    body.instr(LocalGet { local: e_in })
+        .instr(LocalGet { local: in_len })
+        .instr(LocalGet { local: e_slots })
+        .instr(LocalGet { local: e_slots })
+        .instr(Const {
+            value: IrValue::I32(4),
+        })
+        .instr(Binop {
+            op: BinaryOp::I32Add,
+        })
+        .instr(Call { func: host_import })
+        .instr(LocalSet { local: status });
+
+    // h_out_ptr = i32.load entry [e_slots]
+    body.instr(LocalGet { local: e_slots })
+        .instr(walrus::ir::Load {
+            memory: entry_mem,
+            kind: LoadKind::I32 { atomic: false },
+            arg: mem4,
+        })
+        .instr(LocalSet { local: h_out_ptr });
+
+    // h_out_len = i32.load entry [e_slots+4]
+    body.instr(LocalGet { local: e_slots })
+        .instr(walrus::ir::Load {
+            memory: entry_mem,
+            kind: LoadKind::I32 { atomic: false },
+            arg: MemArg {
+                align: 2,
+                offset: 4,
+            },
+        })
+        .instr(LocalSet { local: h_out_len });
+
+    // c_out = component.__pack_alloc(h_out_len)
+    body.instr(LocalGet { local: h_out_len })
+        .instr(Call { func: comp_alloc })
+        .instr(LocalTee { local: c_out })
+        // memory.copy dst=component src=entry : dst=c_out, src=h_out_ptr, len
+        .instr(LocalGet { local: h_out_ptr })
+        .instr(LocalGet { local: h_out_len })
+        .instr(MemoryCopy {
+            src: entry_mem,
+            dst: comp_mem,
+        });
+
+    // i32.store component [out_ptr_ptr] = c_out
+    body.instr(LocalGet { local: out_ptr_ptr })
+        .instr(LocalGet { local: c_out })
+        .instr(Store {
+            memory: comp_mem,
+            kind: StoreKind::I32 { atomic: false },
+            arg: mem4,
+        });
+
+    // i32.store component [out_len_ptr] = h_out_len
+    body.instr(LocalGet { local: out_len_ptr })
+        .instr(LocalGet { local: h_out_len })
+        .instr(Store {
+            memory: comp_mem,
+            kind: StoreKind::I32 { atomic: false },
+            arg: mem4,
+        });
+
+    // entry.__pack_free(e_in, in_len)
+    body.instr(LocalGet { local: e_in })
+        .instr(LocalGet { local: in_len })
+        .instr(Call { func: entry_free });
+
+    // entry.__pack_free(e_slots, 8)
+    body.instr(LocalGet { local: e_slots })
+        .instr(Const {
+            value: IrValue::I32(8),
+        })
+        .instr(Call { func: entry_free });
+
+    // KNOWN LEAK — M3 follow-up. `h_out_ptr` is the host's result buffer. On the
+    // guest-allocated return path the GUEST owns it and frees it after consuming
+    // it (see packr-guest's import wrapper: `__pack_free(out_ptr, out_len)` when the
+    // host guest-allocated the result). This bridge IS that guest-side consumer, so
+    // it SHOULD `entry_free(h_out_ptr, h_out_len)` here. It does NOT yet — and the
+    // entry allocator is dlmalloc (a real free-list, NOT a bump), so this leaks
+    // `h_out_len` bytes per residual host call from a non-entry component and GROWS
+    // unboundedly for a host-heavy actor (e.g. a composed mesh-client doing many
+    // message-server calls). Not freed unconditionally yet because the raw host ABI
+    // this bridge calls doesn't thread the ownership marker (guest-allocated vs
+    // host-owned) through to here, and a wrong free would double-free a host-owned
+    // result. FIX: confirm the raw host-import return is always guest-allocated (or
+    // thread the marker) and free accordingly. Must land before composed actors do
+    // real host I/O.
 
     // return status
     body.instr(LocalGet { local: status });
