@@ -51,6 +51,7 @@
 
 pub mod abi;
 pub mod codegen;
+pub mod compose;
 pub mod interface_impl;
 pub mod metadata;
 pub mod parser;
@@ -86,3 +87,4 @@ pub use transform::{InterfaceTransform, RpcTransform, TransformRegistry};
 pub use types::{Arena, Case, Field, Function, Param, Type, TypePath};
 
 pub use codegen::generate_rust;
+pub use compose::{compose_pair, Link};

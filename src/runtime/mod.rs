@@ -123,9 +123,13 @@ pub struct Runtime {
 
 impl Runtime {
     pub fn new() -> Self {
-        Self {
-            engine: Engine::default(),
-        }
+        let mut config = Config::new();
+        // Enable multi-memory so a *composed* actor (one memory per component,
+        // wired by bridging shims — see `crate::compose`) loads here, not just on
+        // the async path. A plain single-memory actor is unaffected.
+        config.wasm_multi_memory(true);
+        let engine = Engine::new(&config).expect("valid wasmtime config");
+        Self { engine }
     }
 
     /// Load a WASM module from bytes
