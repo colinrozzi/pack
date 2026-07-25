@@ -11,6 +11,11 @@
   directly, no shim. Surfaced by the mesh-client pilot (its `mesh` functions return
   `result<...>`). Regression guard: `tests/compose_import_result.rs`.
 
+### Changed
+- `packr compose` now documents (in `--help`) and, on a missing component wasm,
+  reports that each component's `wasm` path is resolved relative to the **manifest
+  file's directory**, not the cwd — a papercut the pilot hit.
+
 ## v0.12.0 (2026-07-24)
 
 **Component composition — packr's Component-Model equivalent.** Compose N isolated
