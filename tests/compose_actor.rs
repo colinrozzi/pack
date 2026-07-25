@@ -109,6 +109,53 @@ async fn compose_theater_actor_init_drives_cross_component_call() {
     // Isolation proof: two components, two memories.
     assert_eq!(memory_count(&composite), 2, "composite keeps two memories");
 
+    // Metadata-strip regression: the internalized `math` interface must be gone
+    // from the composite's `__pack_types` (theater resolves handlers from that
+    // metadata; a lingering `math` import would fail actor setup with "No handler
+    // provides interface math"), while the residual `theater:simple/runtime` host
+    // import must remain. Decode the composite's CGRF directly and assert.
+    {
+        use packr::metadata::{decode_metadata_with_hashes, find_cgrf_metadata};
+        let cgrf = find_cgrf_metadata(&composite)
+            .expect("scan composite for CGRF")
+            .expect("composite carries __pack_types metadata");
+        let meta = decode_metadata_with_hashes(&cgrf).expect("decode composite metadata");
+        let import_ifaces: Vec<String> = meta
+            .arena
+            .imports()
+            .iter()
+            .map(|f| f.interface.clone())
+            .collect();
+        assert!(
+            import_ifaces.iter().any(|i| i == "theater:simple/runtime"),
+            "residual host import `theater:simple/runtime` must survive in metadata, got {import_ifaces:?}"
+        );
+        assert!(
+            !import_ifaces.iter().any(|i| i == "math"),
+            "internalized `math` interface must be stripped from metadata, got {import_ifaces:?}"
+        );
+        assert!(
+            !meta.import_hashes.iter().any(|h| h.name == "math"),
+            "internalized `math` interface hash must be stripped, got {:?}",
+            meta.import_hashes
+                .iter()
+                .map(|h| &h.name)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            meta.import_hashes
+                .iter()
+                .any(|h| h.name == "theater:simple/runtime"),
+            "residual `theater:simple/runtime` interface hash must survive"
+        );
+        assert!(
+            meta.export_hashes
+                .iter()
+                .any(|h| h.name == "theater:simple/actor"),
+            "export `theater:simple/actor` hash must survive the strip"
+        );
+    }
+
     let runtime = AsyncRuntime::new();
     let module = runtime
         .load_module(&composite)
