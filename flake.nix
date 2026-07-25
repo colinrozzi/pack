@@ -72,7 +72,7 @@
 
         packages.default = pkgs.rustPlatform.buildRustPackage {
           pname = "packr";
-          version = "0.5.1";
+          version = "0.12.2";
 
           src = ./.;
 
@@ -80,7 +80,23 @@
             lockFile = ./Cargo.lock;
           };
 
-          inherit nativeBuildInputs buildInputs;
+          inherit buildInputs;
+          nativeBuildInputs = nativeBuildInputs ++ [ pkgs.makeWrapper ];
+
+          # The integration tests shell out to `wasm-merge` (binaryen) and build
+          # wasm fixtures with cargo — neither is available in the sealed
+          # buildRustPackage sandbox, so the compose tests would fail the package
+          # build. The CI workflow runs the full suite (under `nix develop`, with
+          # binaryen present); building the distributable CLI does not need it.
+          doCheck = false;
+
+          # `packr compose` shells out to `wasm-merge` at RUNTIME to fuse the
+          # multi-memory composite. Put binaryen on the wrapped binary's PATH so
+          # nix consumers of `packr compose` get it automatically — no need to add
+          # binaryen to their own build environment.
+          postInstall = ''
+            wrapProgram $out/bin/packr --prefix PATH : ${pkgs.binaryen}/bin
+          '';
 
           meta = with pkgs.lib; {
             description = "A WebAssembly package runtime with extended WIT support for recursive types";

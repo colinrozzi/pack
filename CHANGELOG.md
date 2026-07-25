@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.12.3 (2026-07-24)
+
+### Fixed
+- **The `packr` flake package (`packages.packr`/`.default`) now builds in a sealed
+  nix sandbox and carries `binaryen` at runtime.** Two papercuts every nix consumer
+  of `packr compose` hit (found by the sentinel compose-in-nix integration):
+  - `doCheck = false` on the CLI package — the integration tests shell out to
+    `wasm-merge` and build wasm fixtures, neither available in the buildRustPackage
+    sandbox, so they failed the package build. The full suite still runs in CI
+    (under `nix develop`, with binaryen present); building the CLI doesn't need it.
+  - `packr` is wrapped so `binaryen` is on its PATH — `packr compose` shells out to
+    `wasm-merge` at runtime, so consumers no longer need to add binaryen to their own
+    build environment.
+
 ## v0.12.2 (2026-07-24)
 
 ### Added
