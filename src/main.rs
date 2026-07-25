@@ -35,7 +35,8 @@ enum Commands {
 
     /// Compose N components + a link graph into one multi-memory composite wasm
     Compose {
-        /// Path to the compose manifest (TOML)
+        /// Path to the compose manifest (TOML). Each component's `wasm` path in the
+        /// manifest is resolved relative to THIS file's directory, not the cwd.
         manifest: PathBuf,
 
         /// Output path for the composite wasm
@@ -106,10 +107,13 @@ fn compose_command(manifest_path: &PathBuf, output: &PathBuf) -> anyhow::Result<
         let wasm_path = base.join(&c.wasm);
         let wasm = std::fs::read(&wasm_path).map_err(|e| {
             anyhow::anyhow!(
-                "Failed to read component `{}` wasm {}: {}",
+                "Failed to read component `{}` wasm {}: {} \
+                 (component `wasm` paths are resolved relative to the manifest \
+                 directory `{}`, not the cwd)",
                 c.name,
                 wasm_path.display(),
-                e
+                e,
+                base.display(),
             )
         })?;
         components.push(Component {
