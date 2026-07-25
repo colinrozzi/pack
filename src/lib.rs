@@ -58,6 +58,7 @@ pub mod parser;
 pub mod runtime;
 pub mod transform;
 pub mod types;
+pub mod verify;
 
 pub use abi::{decode, encode};
 pub use interface_impl::{FuncSignature, HostFunc, InterfaceImpl, PackParams, PackType};

@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.12.2 (2026-07-24)
+
+### Added
+- **`packr verify <wasm> --host-only`** — assert every import of a composite (or a
+  plain self-contained actor) is a host function under `theater:simple/`, exiting
+  non-zero and listing the offenders otherwise. A one-shot, first-class check for a
+  build pipeline to gate that a composed actor is deployable — nothing cross-component
+  left unsatisfied — instead of grep-parsing `wasm-tools print`. Requested by the
+  sentinel compose-in-nix integration. Library entry point: `packr::verify::non_host_imports`.
+
 ## v0.12.1 (2026-07-24)
 
 ### Fixed
