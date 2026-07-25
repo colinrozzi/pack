@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.12.4 (2026-07-25)
+
+### Fixed
+- **`packr compose` now strips internalized interfaces from the composite's
+  `__pack_types` metadata.** Compose correctly deleted an internalized interface's
+  wasm imports (wiring them to the bridging shim) but left the interface declared as
+  a REQUIRED import in the composite's `__pack_types` metadata. A theater loader that
+  resolves handlers from that metadata then demanded a host handler for an interface
+  that is satisfied internally, and failed actor setup: "No handler provides interface
+  `mesh` required by actor". Now the composite's declared import surface matches its
+  real residual (host-only) wasm imports — every interface internalized by a link
+  whose consumer is the entry component is removed from the entry's `__pack_types`
+  (the whole interface, by name, so it works even when the consumer declares more
+  functions than it links, as a hash-checked link requires). Surfaced by loading the
+  composed sentinel under a real theater handler set. Regression guard in
+  `tests/compose_actor.rs` asserts the composite metadata carries only the residual
+  host imports.
+
 ## v0.12.3 (2026-07-24)
 
 ### Fixed

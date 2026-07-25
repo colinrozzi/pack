@@ -286,10 +286,38 @@ pub fn compose(components: Vec<Component>, links: &[GraphLink]) -> Result<Vec<u8
         ordered.push(c);
     }
 
+    // Interfaces internalized on the ENTRY component: for each link whose consumer
+    // is the entry, that whole import interface (`link.import_module`) is satisfied
+    // internally by a bridging shim and its wasm import is deleted. It must NOT
+    // remain in the composite's `__pack_types`, or theater (which resolves handlers
+    // from that metadata) sees it as an unsatisfied required import and fails actor
+    // setup with "No handler provides interface <x> required by actor". We strip it
+    // PRE-MERGE from the entry (a single-component wasm with exactly one CGRF
+    // segment and a simple `__pack_types`); the merged composite then inherits the
+    // entry's corrected metadata verbatim.
+    let entry_name = &ordered[0].name;
+    let entry_internalized: Vec<String> = {
+        let mut v: Vec<String> = links
+            .iter()
+            .filter(|l| &l.consumer == entry_name)
+            .map(|l| l.import_module.clone())
+            .collect();
+        v.sort();
+        v.dedup();
+        v
+    };
+
     let mut merge_inputs: Vec<(String, Vec<u8>)> = Vec::with_capacity(ordered.len());
     for c in &ordered {
         let bytes = if c.entry {
-            c.wasm.clone()
+            strip_internalized_imports_from_metadata(&c.wasm, &entry_internalized).with_context(
+                || {
+                    format!(
+                        "stripping internalized imports from entry component `{}` metadata",
+                        c.name
+                    )
+                },
+            )?
         } else {
             rename_component_exports(&c.wasm, &c.name)
                 .with_context(|| format!("renaming exports for component `{}`", c.name))?
@@ -333,12 +361,211 @@ pub fn compose(components: Vec<Component>, links: &[GraphLink]) -> Result<Vec<u8
     // Step 3 + 4: locate every component's memory/funcs by name, emit one shim
     // per link, rewire the consumer's import, bridge non-entry residual host
     // imports through memory 0, and strip scaffolding exports.
-    let entry_name = &ordered[0].name;
     let component_names: Vec<String> = ordered.iter().map(|c| c.name.clone()).collect();
     let composite = shim_and_rewire(&merged, entry_name, &component_names, links, &host_bridges)
         .context("emitting shims and rewiring imports")?;
 
     Ok(composite)
+}
+
+/// Strip the given import INTERFACES from the entry component's `__pack_types`
+/// CGRF metadata, in place, without shifting any data addresses.
+///
+/// When a link internalizes one of the consumer's imports, we delete the dead
+/// wasm import — but theater resolves actor handlers from the `__pack_types`
+/// metadata, not the wasm import section. If the internalized interface stays in
+/// the metadata, theater sees it as a still-required import with no host handler
+/// and fails actor setup ("No handler provides interface <x> required by actor").
+/// So the composite's metadata import surface must equal the RESIDUAL imports —
+/// every internalized interface (the whole interface, all its functions — theater
+/// resolves by interface, and a consumer may declare more functions than it links)
+/// must be removed.
+///
+/// We do this PRE-MERGE on the entry, where the wasm is a single component with
+/// exactly one CGRF segment and a trivial `__pack_types`:
+///
+/// 1. Parse `__pack_types` for its two baked-in `i32.const`s: the FIRST is the
+///    metadata data address (DATA_ADDR), the SECOND is the metadata byte length
+///    (`old_len`). (`__pack_types` stores DATA_ADDR into `out_ptr_ptr` then
+///    `old_len` into `out_len_ptr`.)
+/// 2. Find the active data segment initialized at DATA_ADDR — its first `old_len`
+///    bytes are the CGRF metadata (the segment may be a larger `.rodata` blob that
+///    starts with the metadata).
+/// 3. Decode those bytes → arena, remove each named interface from the imports,
+///    re-encode with hashes (which recomputes the surviving interfaces' hashes and
+///    drops the removed one). The re-encode is `new_len <= old_len` bytes.
+/// 4. Overwrite the segment's first `old_len` bytes IN PLACE: `[0..new_len)` = the
+///    new CGRF, `[new_len..old_len)` = zero. The segment length/offset and every
+///    following byte are untouched, so no address shifts.
+/// 5. Patch `__pack_types`'s length constant from `old_len` to `new_len` (the
+///    DATA_ADDR constant is left unchanged).
+///
+/// If `interfaces` is empty, or the component has no CGRF metadata / no
+/// `__pack_types`, the wasm is returned re-emitted but semantically unchanged.
+fn strip_internalized_imports_from_metadata(
+    entry_wasm: &[u8],
+    interfaces: &[String],
+) -> Result<Vec<u8>> {
+    use walrus::ir::Value as IrValue;
+    use walrus::ConstExpr;
+
+    if interfaces.is_empty() {
+        return Ok(entry_wasm.to_vec());
+    }
+
+    let mut module = Module::from_buffer(entry_wasm)?;
+
+    // Locate the exported `__pack_types` function.
+    let Some(pack_types_fn) = export_func(&module, "__pack_types") else {
+        // No metadata accessor — nothing to strip.
+        return Ok(module.emit_wasm());
+    };
+
+    // Read its two baked-in i32 constants in body order: [DATA_ADDR, old_len].
+    let consts: Vec<i32> = {
+        let func = module.funcs.get(pack_types_fn);
+        let local = match &func.kind {
+            walrus::FunctionKind::Local(l) => l,
+            _ => return Ok(module.emit_wasm()),
+        };
+        let mut collector = ConstCollector { values: Vec::new() };
+        let entry = local.entry_block();
+        walrus::ir::dfs_in_order(&mut collector, local, entry);
+        collector.values
+    };
+    if consts.len() < 2 {
+        return Err(anyhow!(
+            "entry `__pack_types` has {} i32.const(s); expected the [DATA_ADDR, len] pair",
+            consts.len()
+        ));
+    }
+    let data_addr = consts[0];
+    let old_len = consts[1];
+    if old_len < 0 {
+        return Err(anyhow!("entry `__pack_types` metadata length is negative"));
+    }
+    let old_len = old_len as usize;
+
+    // Find the active data segment initialized at DATA_ADDR (the CGRF blob starts
+    // at its offset 0). Its first `old_len` bytes are the metadata.
+    let data_id = module
+        .data
+        .iter()
+        .find(|d| match &d.kind {
+            walrus::DataKind::Active { offset, .. } => {
+                matches!(offset, ConstExpr::Value(IrValue::I32(a)) if *a == data_addr)
+            }
+            _ => false,
+        })
+        .map(|d| d.id());
+    let Some(data_id) = data_id else {
+        return Err(anyhow!(
+            "no active data segment found at metadata address {data_addr} (for `__pack_types`)"
+        ));
+    };
+
+    // Decode the current metadata, strip the named interfaces from imports, and
+    // re-encode (hashes recomputed from the surviving arena).
+    let new_cgrf = {
+        let seg = module.data.get(data_id);
+        if seg.value.len() < old_len {
+            return Err(anyhow!(
+                "entry metadata segment is {} bytes, shorter than the declared length {old_len}",
+                seg.value.len()
+            ));
+        }
+        let meta_bytes = &seg.value[..old_len];
+        let mut meta = crate::metadata::decode_metadata_with_hashes(meta_bytes)
+            .map_err(|e| anyhow!("decoding entry `__pack_types` metadata: {e}"))?;
+        remove_import_interfaces(&mut meta.arena, interfaces);
+        crate::metadata::encode_metadata_with_hashes(&meta.arena)
+            .map_err(|e| anyhow!("re-encoding stripped entry metadata: {e}"))?
+    };
+
+    let new_len = new_cgrf.len();
+    if new_len > old_len {
+        return Err(anyhow!(
+            "stripped metadata grew ({new_len} > {old_len}); refusing to shift data addresses"
+        ));
+    }
+
+    // Overwrite in place: [0..new_len) = new CGRF, [new_len..old_len) = zero.
+    {
+        let seg = module.data.get_mut(data_id);
+        seg.value[..new_len].copy_from_slice(&new_cgrf);
+        for b in &mut seg.value[new_len..old_len] {
+            *b = 0;
+        }
+    }
+
+    // Patch the `__pack_types` length constant (old_len -> new_len). Leave the
+    // DATA_ADDR constant untouched.
+    {
+        let func = module.funcs.get_mut(pack_types_fn);
+        if let walrus::FunctionKind::Local(local) = &mut func.kind {
+            let entry = local.entry_block();
+            let mut patcher = ConstPatcher {
+                from: old_len as i32,
+                to: new_len as i32,
+                done: false,
+            };
+            walrus::ir::dfs_pre_order_mut(&mut patcher, local, entry);
+            if !patcher.done {
+                return Err(anyhow!(
+                    "could not find the `__pack_types` length constant {old_len} to patch"
+                ));
+            }
+        }
+    }
+
+    Ok(module.emit_wasm())
+}
+
+/// Remove each named interface (the whole interface, all functions) from the
+/// arena's `imports` child. Interfaces not present are ignored.
+fn remove_import_interfaces(arena: &mut crate::types::Arena, interfaces: &[String]) {
+    if let Some(imports) = arena.children.iter_mut().find(|c| c.name == "imports") {
+        imports
+            .children
+            .retain(|iface| !interfaces.iter().any(|n| n == &iface.name));
+    }
+}
+
+/// Collects `i32.const` values from a function body in traversal order.
+struct ConstCollector {
+    values: Vec<i32>,
+}
+
+impl<'instr> walrus::ir::Visitor<'instr> for ConstCollector {
+    fn visit_const(&mut self, c: &walrus::ir::Const) {
+        if let walrus::ir::Value::I32(v) = c.value {
+            self.values.push(v);
+        }
+    }
+}
+
+/// Rewrites the FIRST `i32.const from` to `i32.const to`.
+struct ConstPatcher {
+    from: i32,
+    to: i32,
+    done: bool,
+}
+
+impl walrus::ir::VisitorMut for ConstPatcher {
+    fn visit_instr_mut(&mut self, instr: &mut Instr, _loc: &mut walrus::ir::InstrLocId) {
+        if self.done {
+            return;
+        }
+        if let Instr::Const(walrus::ir::Const {
+            value: walrus::ir::Value::I32(v),
+        }) = instr
+        {
+            if *v == self.from {
+                *v = self.to;
+                self.done = true;
+            }
+        }
+    }
 }
 
 /// Rename ALL of a non-entry component's exports to `__c_<name>_<orig>` so none
