@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.12.1 (2026-07-24)
+
+### Fixed
+- **`#[import_from]` decodes a package import's return value via `FromValue`** (like
+  `#[import]` and `#[export]` already do), instead of `TryFrom<Value>`. The composite
+  ABI implements `FromValue` for nested `Option`/`Result` but not `TryFrom<Value>`, so
+  every consumer of a `Result`- or `Option`-returning package function previously
+  needed a hand-written `TryFrom<Value>` newtype shim just to call it. Now it decodes
+  directly, no shim. Surfaced by the mesh-client pilot (its `mesh` functions return
+  `result<...>`). Regression guard: `tests/compose_import_result.rs`.
+
 ## v0.12.0 (2026-07-24)
 
 **Component composition — packr's Component-Model equivalent.** Compose N isolated

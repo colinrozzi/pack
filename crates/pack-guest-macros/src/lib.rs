@@ -1449,6 +1449,10 @@ pub fn import_from(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     // Build the body. When `has_return`, decode the result; otherwise drop it.
+    // Use FromValue::from_value() (like `#[import]` and `#[export]` do) so nested
+    // `Option`/`Result` return types decode — the composite ABI implements
+    // `FromValue` for those but not `TryFrom<Value>`, so `try_into()` forced every
+    // consumer of a `Result`-returning package function to write a newtype shim.
     let body = if has_return {
         quote! {
             let input = #input_construction;
@@ -1458,7 +1462,7 @@ pub fn import_from(attr: TokenStream, item: TokenStream) -> TokenStream {
                 },
                 input,
             );
-            match result.try_into() {
+            match packr_guest::FromValue::from_value(result) {
                 Ok(v) => v,
                 Err(_) => panic!("failed to convert import result from package '{}'", #package),
             }
