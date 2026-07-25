@@ -43,6 +43,19 @@ enum Commands {
         #[arg(long, short = 'o')]
         output: PathBuf,
     },
+
+    /// Verify a composite / self-contained actor wasm meets a property
+    Verify {
+        /// Path to the wasm to verify
+        wasm_file: PathBuf,
+
+        /// Assert every import is a host function (module under `theater:simple/`).
+        /// Exits non-zero and lists the offenders otherwise — use it in a build
+        /// pipeline to gate that a composite is deployable (nothing cross-component
+        /// left unsatisfied).
+        #[arg(long)]
+        host_only: bool,
+    },
 }
 
 /// The compose manifest: `[[component]]` entries + `[[link]]` entries.
@@ -85,7 +98,43 @@ fn main() -> anyhow::Result<()> {
             json,
         } => inspect_command(&wasm_file, hashes, json),
         Commands::Compose { manifest, output } => compose_command(&manifest, &output),
+        Commands::Verify {
+            wasm_file,
+            host_only,
+        } => verify_command(&wasm_file, host_only),
     }
+}
+
+/// `packr verify <wasm> --host-only`: assert every import is a host function.
+fn verify_command(wasm_file: &PathBuf, host_only: bool) -> anyhow::Result<()> {
+    let wasm = std::fs::read(wasm_file)
+        .map_err(|e| anyhow::anyhow!("Failed to read {}: {}", wasm_file.display(), e))?;
+
+    if host_only {
+        let offenders = packr::verify::non_host_imports(&wasm, packr::verify::HOST_MODULE_PREFIX)
+            .map_err(|e| anyhow::anyhow!("Failed to parse WASM: {}", e))?;
+        if !offenders.is_empty() {
+            let list = offenders
+                .iter()
+                .map(|(m, n)| format!("  {m} {n}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            anyhow::bail!(
+                "{} is NOT host-only — {} non-host import(s) remain (an unsatisfied \
+                 link, or an unexpected dependency):\n{}",
+                wasm_file.display(),
+                offenders.len(),
+                list
+            );
+        }
+        println!(
+            "OK: {} is host-only (every import is under `{}`).",
+            wasm_file.display(),
+            packr::verify::HOST_MODULE_PREFIX
+        );
+    }
+
+    Ok(())
 }
 
 /// `packr compose <manifest> -o <out>`: parse the manifest, read each
