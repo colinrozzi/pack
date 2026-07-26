@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.12.5 (2026-07-26)
+
+### Added
+- **`#[graph(forward_compatible)]` on the `GraphValue` derive** — an opt-in,
+  schema-evolution-tolerant record decode. On an opted-in struct a MISSING field
+  defaults (instead of erroring) and an EXTRA field is ignored, so **appending a
+  field is decode-safe in both directions**: an old build reads new data (the
+  rollback case — no more orphaned store history) and a new build reads old data
+  (retiring hand-written pad-missing migrations). Default (attr absent) keeps the
+  strict field-count decode, so genuine field-count bugs still fail loud. Named
+  structs match fields by name (add/remove/reorder tolerated); tuple structs decode
+  positionally, so only appending a trailing field is safe. Encode is unchanged —
+  no wire-format change. It ships schema-neutral first, then a field-add lands
+  rollback-safe. Motivated by a persisted-store field-add that was a one-way door
+  under the strict decode (an old, rolled-back build rejected the extra field and
+  re-init'd empty). Tests: `crates/pack-abi/tests/derive_tests.rs`.
+
 ## v0.12.4 (2026-07-25)
 
 ### Fixed

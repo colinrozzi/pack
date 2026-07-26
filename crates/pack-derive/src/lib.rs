@@ -98,6 +98,13 @@ fn get_crate_path(attrs: &[Attribute]) -> proc_macro2::TokenStream {
 /// - `#[graph(crate = "path")]` - Specify the crate path (default: `packr_abi`)
 /// - `#[graph(rename = "name")]` - Use a different name for field/variant
 /// - `#[graph(tag = N)]` - Use explicit tag number for variant
+/// - `#[graph(forward_compatible)]` - Tolerant decode for schema evolution on a
+///   STRUCT: a missing field defaults and an extra field is ignored, so appending
+///   a field is decode-safe both ways (old build reads new data; new build reads
+///   old data — no rollback data loss, no hand-written pad-missing migration).
+///   Default (absent) is a strict field-count decode. Named structs match fields
+///   by name (add/remove/reorder tolerated); tuple structs are positional, so only
+///   APPENDING a trailing field is safe. Encode is unchanged (wire-compatible).
 #[proc_macro_derive(GraphValue, attributes(graph))]
 pub fn derive_graph_value(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
@@ -116,6 +123,28 @@ pub fn derive_graph_value(input: TokenStream) -> TokenStream {
     expanded.into()
 }
 
+/// Whether `#[graph(forward_compatible)]` is present. It opts a struct into a
+/// schema-evolution-tolerant decode: a MISSING field defaults instead of erroring,
+/// and EXTRA fields are ignored, so appending a field stays decode-safe in BOTH
+/// directions (an old build reads new data; a new build reads old data). Default
+/// (attr absent) keeps the strict field-count decode so genuine field-count bugs
+/// still fail loud. For NAMED structs fields are matched by NAME, so add/remove/
+/// reorder are all tolerated; for TUPLE structs decode is POSITIONAL, so only
+/// APPENDING a trailing field is safe (never mid-insert or reorder).
+fn has_forward_compatible(attrs: &[Attribute]) -> bool {
+    for attr in attrs {
+        if attr.path().is_ident("graph") {
+            if let Meta::List(list) = &attr.meta {
+                let tokens = list.tokens.to_string();
+                if tokens.split(',').any(|t| t.trim() == "forward_compatible") {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 fn derive_struct(
     input: &DeriveInput,
     data: &syn::DataStruct,
@@ -123,6 +152,7 @@ fn derive_struct(
 ) -> proc_macro2::TokenStream {
     let name = &input.ident;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+    let forward_compatible = has_forward_compatible(&input.attrs);
 
     match &data.fields {
         Fields::Named(fields) => {
@@ -131,19 +161,39 @@ fn derive_struct(
                 let field_name = f.ident.as_ref().unwrap();
                 let field_name_str = get_rename(&f.attrs).unwrap_or_else(|| field_name.to_string());
                 let field_type = &f.ty;
-                quote! {
-                    #field_name: {
-                        let field_value = fields.iter()
+                if forward_compatible {
+                    // A missing field defaults instead of erroring (extra fields are
+                    // simply never looked up, since decode is by name).
+                    quote! {
+                        #field_name: match fields.iter()
                             .find(|(name, _)| name == #field_name_str)
                             .map(|(_, v)| v.clone())
-                            .ok_or_else(|| #krate::ConversionError::MissingField(
-                                #krate::__private::String::from(#field_name_str)
-                            ))?;
-                        <#field_type as #krate::__private::TryFrom<#krate::Value>>::try_from(field_value)
-                            .map_err(|e| #krate::ConversionError::FieldError(
-                                #krate::__private::String::from(#field_name_str),
-                                #krate::__private::Box::new(e)
-                            ))?
+                        {
+                            #krate::__private::Some(field_value) =>
+                                <#field_type as #krate::__private::TryFrom<#krate::Value>>::try_from(field_value)
+                                    .map_err(|e| #krate::ConversionError::FieldError(
+                                        #krate::__private::String::from(#field_name_str),
+                                        #krate::__private::Box::new(e)
+                                    ))?,
+                            #krate::__private::None =>
+                                <#field_type as ::core::default::Default>::default(),
+                        }
+                    }
+                } else {
+                    quote! {
+                        #field_name: {
+                            let field_value = fields.iter()
+                                .find(|(name, _)| name == #field_name_str)
+                                .map(|(_, v)| v.clone())
+                                .ok_or_else(|| #krate::ConversionError::MissingField(
+                                    #krate::__private::String::from(#field_name_str)
+                                ))?;
+                            <#field_type as #krate::__private::TryFrom<#krate::Value>>::try_from(field_value)
+                                .map_err(|e| #krate::ConversionError::FieldError(
+                                    #krate::__private::String::from(#field_name_str),
+                                    #krate::__private::Box::new(e)
+                                ))?
+                        }
                     }
                 }
             }).collect();
@@ -169,6 +219,22 @@ fn derive_struct(
 
             let type_name_str = name.to_string();
 
+            // A forward-compatible record does not check the field count: extra
+            // fields are ignored and missing ones default (above), which is what
+            // makes appending a field decode-safe both ways.
+            let count_check = if forward_compatible {
+                quote! {}
+            } else {
+                quote! {
+                    if fields.len() != #field_count {
+                        return #krate::__private::Err(#krate::ConversionError::WrongFieldCount {
+                            expected: #field_count,
+                            got: fields.len(),
+                        });
+                    }
+                }
+            };
+
             quote! {
                 impl #impl_generics #krate::__private::From<#name #ty_generics> for #krate::Value #where_clause {
                     fn from(value: #name #ty_generics) -> #krate::Value {
@@ -187,12 +253,7 @@ fn derive_struct(
                     fn try_from(value: #krate::Value) -> #krate::__private::Result<Self, Self::Error> {
                         match value {
                             #krate::Value::Record { fields, .. } => {
-                                if fields.len() != #field_count {
-                                    return #krate::__private::Err(#krate::ConversionError::WrongFieldCount {
-                                        expected: #field_count,
-                                        got: fields.len(),
-                                    });
-                                }
+                                #count_check
                                 #krate::__private::Ok(Self {
                                     #(#field_from_value),*
                                 })
@@ -219,15 +280,43 @@ fn derive_struct(
 
             let field_from_value: Vec<_> = fields.unnamed.iter().enumerate().map(|(i, f)| {
                 let field_type = &f.ty;
-                quote! {
-                    <#field_type as #krate::__private::TryFrom<#krate::Value>>::try_from(
-                        fields.get(#i).cloned().ok_or_else(|| #krate::ConversionError::MissingIndex(#i))?
-                    ).map_err(|e| #krate::ConversionError::IndexError(#i, #krate::__private::Box::new(e)))?
+                if forward_compatible {
+                    // Decode is positional: a missing trailing index defaults, an
+                    // extra trailing element is ignored (below). Only APPENDING a
+                    // trailing field is safe for a tuple struct.
+                    quote! {
+                        match fields.get(#i).cloned() {
+                            #krate::__private::Some(field_value) =>
+                                <#field_type as #krate::__private::TryFrom<#krate::Value>>::try_from(field_value)
+                                    .map_err(|e| #krate::ConversionError::IndexError(#i, #krate::__private::Box::new(e)))?,
+                            #krate::__private::None =>
+                                <#field_type as ::core::default::Default>::default(),
+                        }
+                    }
+                } else {
+                    quote! {
+                        <#field_type as #krate::__private::TryFrom<#krate::Value>>::try_from(
+                            fields.get(#i).cloned().ok_or_else(|| #krate::ConversionError::MissingIndex(#i))?
+                        ).map_err(|e| #krate::ConversionError::IndexError(#i, #krate::__private::Box::new(e)))?
+                    }
                 }
             }).collect();
 
             let field_count = fields.unnamed.len();
             let field_types: Vec<_> = fields.unnamed.iter().map(|f| &f.ty).collect();
+
+            let count_check = if forward_compatible {
+                quote! {}
+            } else {
+                quote! {
+                    if fields.len() != #field_count {
+                        return #krate::__private::Err(#krate::ConversionError::WrongFieldCount {
+                            expected: #field_count,
+                            got: fields.len(),
+                        });
+                    }
+                }
+            };
 
             quote! {
                 impl #impl_generics #krate::__private::From<#name #ty_generics> for #krate::Value #where_clause {
@@ -244,12 +333,7 @@ fn derive_struct(
                     fn try_from(value: #krate::Value) -> #krate::__private::Result<Self, Self::Error> {
                         match value {
                             #krate::Value::Tuple(fields) => {
-                                if fields.len() != #field_count {
-                                    return #krate::__private::Err(#krate::ConversionError::WrongFieldCount {
-                                        expected: #field_count,
-                                        got: fields.len(),
-                                    });
-                                }
+                                #count_check
                                 #krate::__private::Ok(Self(
                                     #(#field_from_value),*
                                 ))
