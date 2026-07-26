@@ -288,3 +288,147 @@ fn empty_vec_roundtrip() {
     let back: Container = value.try_into().unwrap();
     assert_eq!(original, back);
 }
+
+// ============================================================================
+// forward_compatible: schema-evolution-tolerant decode
+// ============================================================================
+
+// Simulates appending a `cc` field: MsgV1 is the pre-add shape, MsgV2 the post-add
+// shape. Both opt into forward_compatible. StrictMsg is the negative control.
+#[derive(Debug, Clone, PartialEq, GraphValue)]
+#[graph(forward_compatible)]
+struct MsgV1 {
+    id: i64,
+    body: String,
+}
+
+#[derive(Debug, Clone, PartialEq, GraphValue)]
+#[graph(forward_compatible)]
+struct MsgV2 {
+    id: i64,
+    body: String,
+    cc: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, GraphValue)]
+struct StrictMsg {
+    id: i64,
+    body: String,
+}
+
+#[test]
+fn forward_compat_old_reads_new_ignores_extra_field() {
+    // The ROLLBACK case: an OLD build (MsgV1) reads NEW data (MsgV2 with cc). The
+    // extra `cc` field is ignored instead of erroring.
+    let v2 = MsgV2 {
+        id: 7,
+        body: "hi".to_string(),
+        cc: vec!["a".to_string()],
+    };
+    let value: Value = v2.into();
+    let v1: MsgV1 = value.try_into().unwrap();
+    assert_eq!(
+        v1,
+        MsgV1 {
+            id: 7,
+            body: "hi".to_string()
+        }
+    );
+}
+
+#[test]
+fn forward_compat_new_reads_old_defaults_missing_field() {
+    // The MIGRATION case: a NEW build (MsgV2) reads OLD data (MsgV1 without cc).
+    // `cc` defaults instead of erroring — retiring hand-written pad-missing migrations.
+    let v1 = MsgV1 {
+        id: 7,
+        body: "hi".to_string(),
+    };
+    let value: Value = v1.into();
+    let v2: MsgV2 = value.try_into().unwrap();
+    assert_eq!(
+        v2,
+        MsgV2 {
+            id: 7,
+            body: "hi".to_string(),
+            cc: Vec::new()
+        }
+    );
+}
+
+#[test]
+fn forward_compat_named_tolerates_reorder() {
+    // Named decode is by NAME, so a reordered record still decodes.
+    let reordered = Value::Record {
+        type_name: String::new(),
+        fields: vec![
+            ("body".to_string(), Value::String("hi".to_string())),
+            ("id".to_string(), Value::S64(7)),
+        ],
+    };
+    let v1: MsgV1 = reordered.try_into().unwrap();
+    assert_eq!(
+        v1,
+        MsgV1 {
+            id: 7,
+            body: "hi".to_string()
+        }
+    );
+}
+
+#[test]
+fn strict_default_rejects_field_count_mismatch() {
+    // Without #[graph(forward_compatible)], an extra field is still a hard error —
+    // strictness is preserved everywhere it isn't explicitly opted out.
+    let v2 = MsgV2 {
+        id: 7,
+        body: "hi".to_string(),
+        cc: vec![],
+    };
+    let value: Value = v2.into();
+    let r: Result<StrictMsg, _> = value.try_into();
+    assert!(
+        r.is_err(),
+        "strict decode must reject a field-count mismatch"
+    );
+}
+
+#[test]
+fn forward_compat_encode_is_unchanged() {
+    // forward_compatible only affects DECODE tolerance; encode still writes every
+    // field, so the wire format is unchanged.
+    let m = MsgV2 {
+        id: 1,
+        body: "x".to_string(),
+        cc: vec!["a".to_string()],
+    };
+    let value: Value = m.clone().into();
+    match &value {
+        Value::Record { fields, .. } => assert_eq!(fields.len(), 3),
+        _ => panic!("expected record"),
+    }
+    let back: MsgV2 = value.try_into().unwrap();
+    assert_eq!(m, back);
+}
+
+// Tuple structs decode POSITIONALLY, so forward_compatible is append-only.
+#[derive(Debug, Clone, PartialEq, GraphValue)]
+#[graph(forward_compatible)]
+struct TupV1(i64);
+
+#[derive(Debug, Clone, PartialEq, GraphValue)]
+#[graph(forward_compatible)]
+struct TupV2(i64, i64);
+
+#[test]
+fn forward_compat_tuple_append_only() {
+    // old-reads-new: TupV1 decodes a 2-element tuple, ignoring the trailing extra.
+    let value: Value = TupV2(1, 2).into();
+    let v1: TupV1 = value.try_into().unwrap();
+    assert_eq!(v1, TupV1(1));
+
+    // new-reads-old: TupV2 decodes a 1-element tuple, defaulting the missing trailing.
+    let value2: Value = TupV1(9).into();
+    let v2: TupV2 = value2.try_into().unwrap();
+    assert_eq!(v2, TupV2(9, 0));
+}
