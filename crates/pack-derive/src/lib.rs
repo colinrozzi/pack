@@ -45,17 +45,24 @@ fn get_crate_path(attrs: &[Attribute]) -> proc_macro2::TokenStream {
         if attr.path().is_ident("graph") {
             if let Meta::List(list) = &attr.meta {
                 let tokens = list.tokens.to_string();
-                // Parse crate = "..."
-                if let Some(rest) = tokens.strip_prefix("crate") {
-                    let rest = rest.trim();
-                    if let Some(rest) = rest.strip_prefix('=') {
+                // The `graph(...)` list can carry multiple comma-separated args
+                // (e.g. `crate = "...", forward_compatible`), so scan each part
+                // for `crate = "..."` rather than assuming it is the whole list —
+                // otherwise a trailing arg would leave the string not ending in a
+                // quote and silently fall through to the default crate.
+                for part in tokens.split(',') {
+                    let part = part.trim();
+                    if let Some(rest) = part.strip_prefix("crate") {
                         let rest = rest.trim();
-                        if rest.starts_with('"') && rest.ends_with('"') {
-                            let path_str = &rest[1..rest.len() - 1];
-                            // Convert string path to token stream
-                            let path: syn::Path =
-                                syn::parse_str(path_str).expect("Invalid crate path");
-                            return quote! { #path };
+                        if let Some(rest) = rest.strip_prefix('=') {
+                            let rest = rest.trim();
+                            if rest.len() >= 2 && rest.starts_with('"') && rest.ends_with('"') {
+                                let path_str = &rest[1..rest.len() - 1];
+                                // Convert string path to token stream
+                                let path: syn::Path =
+                                    syn::parse_str(path_str).expect("Invalid crate path");
+                                return quote! { #path };
+                            }
                         }
                     }
                 }
@@ -656,4 +663,45 @@ fn get_tag(attrs: &[Attribute]) -> Option<usize> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{get_crate_path, has_forward_compatible};
+
+    // The COMBINED form must parse the crate correctly (not silently fall back to
+    // the default packr_abi — the bug the comma-split fix addresses) AND detect the
+    // forward_compatible flag.
+    #[test]
+    fn combined_crate_and_forward_compatible() {
+        let attr: syn::Attribute =
+            syn::parse_quote!(#[graph(crate = "foo::bar", forward_compatible)]);
+        let attrs = [attr];
+        assert_eq!(
+            get_crate_path(&attrs).to_string(),
+            quote::quote!(foo::bar).to_string(),
+            "combined form must parse the crate path, not default to packr_abi"
+        );
+        assert!(has_forward_compatible(&attrs));
+    }
+
+    #[test]
+    fn crate_only_parses_and_no_flag() {
+        let attrs = [syn::parse_quote!(#[graph(crate = "foo::bar")])];
+        assert_eq!(
+            get_crate_path(&attrs).to_string(),
+            quote::quote!(foo::bar).to_string()
+        );
+        assert!(!has_forward_compatible(&attrs));
+    }
+
+    #[test]
+    fn flag_only_defaults_crate() {
+        let attrs = [syn::parse_quote!(#[graph(forward_compatible)])];
+        assert_eq!(
+            get_crate_path(&attrs).to_string(),
+            quote::quote!(packr_abi).to_string()
+        );
+        assert!(has_forward_compatible(&attrs));
+    }
 }

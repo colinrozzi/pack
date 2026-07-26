@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.12.6 (2026-07-26)
+
+### Fixed
+- **`#[graph(crate = "...", forward_compatible)]` combined form now parses the crate
+  correctly.** `get_crate_path` assumed `crate = "..."` was the entire `graph(...)`
+  list, so a trailing arg (like `forward_compatible`) left the string not ending in a
+  quote and it silently fell back to the default `packr_abi` crate — wrong for a guest
+  using `packr_guest::composite_abi`. It now scans the comma-separated args, so the
+  combined form works alongside any other `graph` arg. (Surfaced pairing on the
+  0.12.5 forward_compatible adoption; the separate-attr form always worked.) Unit
+  tests added in `pack-derive`.
+
 ## v0.12.5 (2026-07-26)
 
 ### Added
