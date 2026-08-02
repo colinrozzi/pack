@@ -292,9 +292,9 @@ pub fn compose(components: Vec<Component>, links: &[GraphLink]) -> Result<Vec<u8
     // remain in the composite's `__pack_types`, or theater (which resolves handlers
     // from that metadata) sees it as an unsatisfied required import and fails actor
     // setup with "No handler provides interface <x> required by actor". We strip it
-    // PRE-MERGE from the entry (a single-component wasm with exactly one CGRF
-    // segment and a simple `__pack_types`); the merged composite then inherits the
-    // entry's corrected metadata verbatim.
+    // PRE-MERGE from the entry's `__pack_types` metadata (which may live at its own
+    // data segment or, under LTO, interior to the merged `.rodata`); the merged
+    // composite then inherits the entry's corrected metadata verbatim.
     let entry_name = &ordered[0].name;
     let entry_internalized: Vec<String> = {
         let mut v: Vec<String> = links
@@ -381,22 +381,22 @@ pub fn compose(components: Vec<Component>, links: &[GraphLink]) -> Result<Vec<u8
 /// resolves by interface, and a consumer may declare more functions than it links)
 /// must be removed.
 ///
-/// We do this PRE-MERGE on the entry, where the wasm is a single component with
-/// exactly one CGRF segment and a trivial `__pack_types`:
+/// We do this PRE-MERGE on the entry, before the components share one binary:
 ///
 /// 1. Parse `__pack_types` for its two baked-in `i32.const`s: the FIRST is the
 ///    metadata data address (DATA_ADDR), the SECOND is the metadata byte length
 ///    (`old_len`). (`__pack_types` stores DATA_ADDR into `out_ptr_ptr` then
 ///    `old_len` into `out_len_ptr`.)
-/// 2. Find the active data segment initialized at DATA_ADDR — its first `old_len`
-///    bytes are the CGRF metadata (the segment may be a larger `.rodata` blob that
-///    starts with the metadata).
+/// 2. Find the active data segment whose address range CONTAINS DATA_ADDR, and the
+///    offset `rel = DATA_ADDR - base` of the metadata within it. The CGRF may start
+///    the segment (`rel == 0`, a dedicated `.rodata`) or sit interior to a merged
+///    `.rodata` under LTO (`rel > 0`); `seg.value[rel..rel + old_len]` is the CGRF.
 /// 3. Decode those bytes → arena, remove each named interface from the imports,
 ///    re-encode with hashes (which recomputes the surviving interfaces' hashes and
 ///    drops the removed one). The re-encode is `new_len <= old_len` bytes.
-/// 4. Overwrite the segment's first `old_len` bytes IN PLACE: `[0..new_len)` = the
-///    new CGRF, `[new_len..old_len)` = zero. The segment length/offset and every
-///    following byte are untouched, so no address shifts.
+/// 4. Overwrite `[rel..rel + old_len)` IN PLACE: `[rel..rel + new_len)` = the new
+///    CGRF, `[rel + new_len..rel + old_len)` = zero. The segment length/offset and
+///    every other byte are untouched, so no address shifts.
 /// 5. Patch `__pack_types`'s length constant from `old_len` to `new_len` (the
 ///    DATA_ADDR constant is left unchanged).
 ///
@@ -446,21 +446,25 @@ fn strip_internalized_imports_from_metadata(
     }
     let old_len = old_len as usize;
 
-    // Find the active data segment initialized at DATA_ADDR (the CGRF blob starts
-    // at its offset 0). Its first `old_len` bytes are the metadata.
-    let data_id = module
-        .data
-        .iter()
-        .find(|d| match &d.kind {
-            walrus::DataKind::Active { offset, .. } => {
-                matches!(offset, ConstExpr::Value(IrValue::I32(a)) if *a == data_addr)
-            }
-            _ => false,
-        })
-        .map(|d| d.id());
-    let Some(data_id) = data_id else {
+    // Find the active data segment whose address range CONTAINS DATA_ADDR. Under
+    // LTO the CGRF metadata is merged into the module's single `.rodata` segment, so
+    // DATA_ADDR is an *interior* offset (segment base + `rel`), not the start of a
+    // dedicated segment. `rel` is where the metadata begins within `seg.value`; the
+    // old exact-offset match was just the `rel == 0` special case.
+    let hit = module.data.iter().find_map(|d| match &d.kind {
+        walrus::DataKind::Active {
+            offset: ConstExpr::Value(IrValue::I32(base)),
+            ..
+        } => {
+            let base = *base;
+            let rel = data_addr.checked_sub(base)?;
+            (rel >= 0 && (rel as usize) < d.value.len()).then(|| (d.id(), rel as usize))
+        }
+        _ => None,
+    });
+    let Some((data_id, rel)) = hit else {
         return Err(anyhow!(
-            "no active data segment found at metadata address {data_addr} (for `__pack_types`)"
+            "no active data segment contains metadata address {data_addr} (for `__pack_types`)"
         ));
     };
 
@@ -468,13 +472,14 @@ fn strip_internalized_imports_from_metadata(
     // re-encode (hashes recomputed from the surviving arena).
     let new_cgrf = {
         let seg = module.data.get(data_id);
-        if seg.value.len() < old_len {
+        if seg.value.len() < rel + old_len {
             return Err(anyhow!(
-                "entry metadata segment is {} bytes, shorter than the declared length {old_len}",
-                seg.value.len()
+                "entry metadata segment is {} bytes, shorter than the metadata end {} (rel {rel} + len {old_len})",
+                seg.value.len(),
+                rel + old_len
             ));
         }
-        let meta_bytes = &seg.value[..old_len];
+        let meta_bytes = &seg.value[rel..rel + old_len];
         let mut meta = crate::metadata::decode_metadata_with_hashes(meta_bytes)
             .map_err(|e| anyhow!("decoding entry `__pack_types` metadata: {e}"))?;
         remove_import_interfaces(&mut meta.arena, interfaces);
@@ -489,11 +494,12 @@ fn strip_internalized_imports_from_metadata(
         ));
     }
 
-    // Overwrite in place: [0..new_len) = new CGRF, [new_len..old_len) = zero.
+    // Overwrite in place within the segment: [rel..rel+new_len) = new CGRF,
+    // [rel+new_len..rel+old_len) = zero.
     {
         let seg = module.data.get_mut(data_id);
-        seg.value[..new_len].copy_from_slice(&new_cgrf);
-        for b in &mut seg.value[new_len..old_len] {
+        seg.value[rel..rel + new_len].copy_from_slice(&new_cgrf);
+        for b in &mut seg.value[rel + new_len..rel + old_len] {
             *b = 0;
         }
     }
