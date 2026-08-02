@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.12.7 (2026-08-02)
+
+### Fixed
+- **`packr compose` now strips internalized imports when `__pack_types` metadata is
+  interior to a merged `.rodata` segment (LTO).** When the entry component is built
+  with `lto = true`, the CGRF metadata blob is merged into the module's single
+  `.rodata` data segment, so `__pack_types`'s baked-in DATA_ADDR is an *interior*
+  offset (segment base + rel), not the start of a dedicated segment.
+  `strip_internalized_imports_from_metadata` only matched a segment whose base
+  EXACTLY equalled DATA_ADDR, so it bailed with *"no active data segment found at
+  metadata address ..."* whenever the entry's sole import was fully internalized. It
+  now finds the segment whose address range CONTAINS DATA_ADDR and slices/overwrites
+  the metadata at `rel = DATA_ADDR - base` (the old exact match is just the
+  `rel == 0` case) — fully backward-compatible for dedicated segments. Root-caused
+  and patch-authored by mesh-dev against the mesh RSM SM-boundary (sm-smoke /
+  sm-trivial). Regression test `tests/compose_lto_interior.rs` forces the interior
+  layout deterministically and fails pre-fix with the exact error.
+
 ## v0.12.6 (2026-07-26)
 
 ### Fixed
