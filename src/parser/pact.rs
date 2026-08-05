@@ -1090,6 +1090,18 @@ enum TypeItem {
 fn parse_type_item(parser: &mut Parser) -> Result<TypeItem, ParseError> {
     let name = parser.expect_ident()?;
 
+    // Check for generic type alias: `type foo<A, B> = ...`
+    if matches!(parser.peek(), Token::Symbol('<')) {
+        let type_params = parse_type_param_list(parser)?;
+        parser.expect_symbol('=')?;
+        let ty = parse_type(parser)?;
+        return Ok(TypeItem::TypeDef(TypeDef::alias_generic(
+            name,
+            type_params,
+            ty,
+        )));
+    }
+
     // Check for type parameter constraint: `type T: Constraint`
     if parser.accept_symbol(':') {
         let constraint = parser.expect_ident()?;
@@ -1112,8 +1124,29 @@ fn parse_type_item(parser: &mut Parser) -> Result<TypeItem, ParseError> {
     }))
 }
 
+/// Parse an optional generic parameter list following a type name:
+/// `<A, B, ...>`. Returns an empty vec if no `<` follows.
+fn parse_type_param_list(parser: &mut Parser) -> Result<Vec<String>, ParseError> {
+    let mut params = Vec::new();
+    if !parser.accept_symbol('<') {
+        return Ok(params);
+    }
+    loop {
+        if parser.accept_symbol('>') {
+            break;
+        }
+        params.push(parser.expect_ident()?);
+        if parser.accept_symbol('>') {
+            break;
+        }
+        parser.expect_symbol(',')?;
+    }
+    Ok(params)
+}
+
 fn parse_record(parser: &mut Parser) -> Result<TypeDef, ParseError> {
     let name = parser.expect_ident()?;
+    let type_params = parse_type_param_list(parser)?;
     parser.expect_symbol('{')?;
     let mut fields = Vec::new();
 
@@ -1126,11 +1159,12 @@ fn parse_record(parser: &mut Parser) -> Result<TypeDef, ParseError> {
         parser.accept_symbol(';');
     }
 
-    Ok(TypeDef::record(name, fields))
+    Ok(TypeDef::record_generic(name, type_params, fields))
 }
 
 fn parse_variant(parser: &mut Parser) -> Result<TypeDef, ParseError> {
     let name = parser.expect_ident()?;
+    let type_params = parse_type_param_list(parser)?;
     parser.expect_symbol('{')?;
     let mut cases = Vec::new();
 
@@ -1148,7 +1182,7 @@ fn parse_variant(parser: &mut Parser) -> Result<TypeDef, ParseError> {
         parser.accept_symbol(';');
     }
 
-    Ok(TypeDef::variant(name, cases))
+    Ok(TypeDef::variant_generic(name, type_params, cases))
 }
 
 fn parse_enum(parser: &mut Parser) -> Result<TypeDef, ParseError> {
@@ -1361,8 +1395,36 @@ fn parse_type(parser: &mut Parser) -> Result<Type, ParseError> {
         "option" => parse_generic_type(parser, Type::option),
         "tuple" => parse_tuple(parser),
         "result" => parse_result(parser),
-        _ => Ok(Type::named(ident)),
+        _ => {
+            // Generic type application: `name<T, ...>`. A bare name with no
+            // angle brackets is an ordinary named reference (which the
+            // resolver treats as a type-parameter reference when the name is
+            // an in-scope generic parameter).
+            if matches!(parser.peek(), Token::Symbol('<')) {
+                let args = parse_angle_type_args(parser)?;
+                Ok(Type::app(ident, args))
+            } else {
+                Ok(Type::named(ident))
+            }
+        }
     }
+}
+
+/// Parse `<T, U, ...>` as a list of type arguments (leading `<` required).
+fn parse_angle_type_args(parser: &mut Parser) -> Result<Vec<Type>, ParseError> {
+    parser.expect_symbol('<')?;
+    let mut args = Vec::new();
+    loop {
+        if parser.accept_symbol('>') {
+            break;
+        }
+        args.push(parse_type(parser)?);
+        if parser.accept_symbol('>') {
+            break;
+        }
+        parser.expect_symbol(',')?;
+    }
+    Ok(args)
 }
 
 fn parse_generic_type<F>(parser: &mut Parser, wrap: F) -> Result<Type, ParseError>

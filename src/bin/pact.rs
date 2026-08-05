@@ -205,15 +205,46 @@ fn print_interface_summary(interface: &PactInterface, indent: usize) {
     println!("{}}}", prefix);
 }
 
+fn format_type_params(params: &[String]) -> String {
+    if params.is_empty() {
+        String::new()
+    } else {
+        format!("<{}>", params.join(", "))
+    }
+}
+
 fn format_typedef(typedef: &TypeDef) -> String {
     match typedef {
-        TypeDef::Alias { name, ty } => format!("type {} = {}", name, format_type(ty)),
-        TypeDef::Record { name, fields } => {
-            format!("record {} {{ {} fields }}", name, fields.len())
-        }
-        TypeDef::Variant { name, cases } => {
-            format!("variant {} {{ {} cases }}", name, cases.len())
-        }
+        TypeDef::Alias {
+            name,
+            type_params,
+            ty,
+        } => format!(
+            "type {}{} = {}",
+            name,
+            format_type_params(type_params),
+            format_type(ty)
+        ),
+        TypeDef::Record {
+            name,
+            type_params,
+            fields,
+        } => format!(
+            "record {}{} {{ {} fields }}",
+            name,
+            format_type_params(type_params),
+            fields.len()
+        ),
+        TypeDef::Variant {
+            name,
+            type_params,
+            cases,
+        } => format!(
+            "variant {}{} {{ {} cases }}",
+            name,
+            format_type_params(type_params),
+            cases.len()
+        ),
         TypeDef::Enum { name, cases } => {
             format!("enum {} {{ {} cases }}", name, cases.len())
         }
@@ -249,6 +280,11 @@ fn format_type(ty: &Type) -> String {
             )
         }
         Type::Ref(path) => path.to_string(),
+        Type::App { path, args } => format!(
+            "{}<{}>",
+            path,
+            args.iter().map(format_type).collect::<Vec<_>>().join(", ")
+        ),
         Type::Value => "value".to_string(),
     }
 }

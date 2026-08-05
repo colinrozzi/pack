@@ -228,14 +228,31 @@ impl Param {
 /// A type definition (named type).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TypeDef {
-    /// Type alias: `type foo = bar`
-    Alias { name: String, ty: Type },
+    /// Type alias: `type foo = bar` (optionally generic: `type foo<A> = ...`)
+    Alias {
+        name: String,
+        #[serde(default)]
+        type_params: Vec<String>,
+        ty: Type,
+    },
 
     /// Record type: `record foo { field: type, ... }`
-    Record { name: String, fields: Vec<Field> },
+    /// (optionally generic: `record foo<A, B> { ... }`)
+    Record {
+        name: String,
+        #[serde(default)]
+        type_params: Vec<String>,
+        fields: Vec<Field>,
+    },
 
     /// Variant type: `variant foo { case(payload), ... }`
-    Variant { name: String, cases: Vec<Case> },
+    /// (optionally generic: `variant foo<T> { ... }`)
+    Variant {
+        name: String,
+        #[serde(default)]
+        type_params: Vec<String>,
+        cases: Vec<Case>,
+    },
 
     /// Enum type: `enum foo { case1, case2, ... }`
     Enum { name: String, cases: Vec<String> },
@@ -256,10 +273,31 @@ impl TypeDef {
         }
     }
 
+    /// Get the type parameters of this definition (empty for non-generic
+    /// definitions and for enum/flags, which cannot be generic).
+    pub fn type_params(&self) -> &[String] {
+        match self {
+            TypeDef::Alias { type_params, .. }
+            | TypeDef::Record { type_params, .. }
+            | TypeDef::Variant { type_params, .. } => type_params,
+            TypeDef::Enum { .. } | TypeDef::Flags { .. } => &[],
+        }
+    }
+
     /// Create an alias type definition.
     pub fn alias(name: impl Into<String>, ty: Type) -> Self {
         TypeDef::Alias {
             name: name.into(),
+            type_params: Vec::new(),
+            ty,
+        }
+    }
+
+    /// Create a generic alias type definition.
+    pub fn alias_generic(name: impl Into<String>, type_params: Vec<String>, ty: Type) -> Self {
+        TypeDef::Alias {
+            name: name.into(),
+            type_params,
             ty,
         }
     }
@@ -268,6 +306,20 @@ impl TypeDef {
     pub fn record(name: impl Into<String>, fields: Vec<Field>) -> Self {
         TypeDef::Record {
             name: name.into(),
+            type_params: Vec::new(),
+            fields,
+        }
+    }
+
+    /// Create a generic record type definition.
+    pub fn record_generic(
+        name: impl Into<String>,
+        type_params: Vec<String>,
+        fields: Vec<Field>,
+    ) -> Self {
+        TypeDef::Record {
+            name: name.into(),
+            type_params,
             fields,
         }
     }
@@ -276,6 +328,20 @@ impl TypeDef {
     pub fn variant(name: impl Into<String>, cases: Vec<Case>) -> Self {
         TypeDef::Variant {
             name: name.into(),
+            type_params: Vec::new(),
+            cases,
+        }
+    }
+
+    /// Create a generic variant type definition.
+    pub fn variant_generic(
+        name: impl Into<String>,
+        type_params: Vec<String>,
+        cases: Vec<Case>,
+    ) -> Self {
+        TypeDef::Variant {
+            name: name.into(),
+            type_params,
             cases,
         }
     }
@@ -293,6 +359,46 @@ impl TypeDef {
         TypeDef::Flags {
             name: name.into(),
             flags,
+        }
+    }
+
+    /// Instantiate a generic type definition by binding its type parameters to
+    /// concrete `args`, producing a monomorphic (non-generic) definition with
+    /// every parameter reference substituted away.
+    ///
+    /// For non-generic definitions (including enum/flags) this is a clone.
+    /// Callers are responsible for checking arity (`type_params().len() ==
+    /// args.len()`) before calling.
+    pub fn instantiate(&self, args: &[Type]) -> TypeDef {
+        let env: std::collections::HashMap<String, Type> = self
+            .type_params()
+            .iter()
+            .cloned()
+            .zip(args.iter().cloned())
+            .collect();
+        match self {
+            TypeDef::Alias { name, ty, .. } => TypeDef::Alias {
+                name: name.clone(),
+                type_params: Vec::new(),
+                ty: ty.substitute(&env),
+            },
+            TypeDef::Record { name, fields, .. } => TypeDef::Record {
+                name: name.clone(),
+                type_params: Vec::new(),
+                fields: fields
+                    .iter()
+                    .map(|f| Field::new(f.name.clone(), f.ty.substitute(&env)))
+                    .collect(),
+            },
+            TypeDef::Variant { name, cases, .. } => TypeDef::Variant {
+                name: name.clone(),
+                type_params: Vec::new(),
+                cases: cases
+                    .iter()
+                    .map(|c| Case::new(c.name.clone(), c.payload.substitute(&env)))
+                    .collect(),
+            },
+            TypeDef::Enum { .. } | TypeDef::Flags { .. } => self.clone(),
         }
     }
 }
@@ -377,8 +483,18 @@ pub enum Type {
     Result { ok: Box<Type>, err: Box<Type> },
     Tuple(Vec<Type>),
 
-    // Named type reference (with qualified path)
+    // Named type reference (with qualified path).
+    //
+    // Also used for references to an in-scope generic type parameter: a bare
+    // `Ref(simple("T"))` inside a generic definition's body resolves to the
+    // parameter `T` when the surrounding definition declares it, and to a
+    // nominal type otherwise. The distinction is made by the resolver's
+    // binding environment, not by a dedicated variant.
     Ref(TypePath),
+
+    // Generic type application: a named generic type applied to type
+    // arguments, e.g. `pair<u32, string>` or the recursive `tree<T>`.
+    App { path: TypePath, args: Vec<Type> },
 
     // Dynamic value (escape hatch for untyped data)
     Value,
@@ -419,6 +535,45 @@ impl Type {
         Type::Ref(TypePath::self_ref())
     }
 
+    /// Create a generic type application by simple name, e.g. `pair<u32, string>`.
+    pub fn app(name: impl Into<String>, args: Vec<Type>) -> Self {
+        Type::App {
+            path: TypePath::simple(name),
+            args,
+        }
+    }
+
+    /// Substitute in-scope type parameters with concrete types.
+    ///
+    /// A `Ref` whose simple name is bound in `env` is replaced by the bound
+    /// type; every other type is rebuilt with substitution applied to its
+    /// component types. This is the core operation behind generic
+    /// instantiation (see [`TypeDef::instantiate`]).
+    pub fn substitute(&self, env: &std::collections::HashMap<String, Type>) -> Type {
+        match self {
+            Type::Ref(path) => {
+                if let Some(name) = path.as_simple() {
+                    if let Some(bound) = env.get(name) {
+                        return bound.clone();
+                    }
+                }
+                self.clone()
+            }
+            Type::List(inner) => Type::List(Box::new(inner.substitute(env))),
+            Type::Option(inner) => Type::Option(Box::new(inner.substitute(env))),
+            Type::Result { ok, err } => Type::Result {
+                ok: Box::new(ok.substitute(env)),
+                err: Box::new(err.substitute(env)),
+            },
+            Type::Tuple(items) => Type::Tuple(items.iter().map(|t| t.substitute(env)).collect()),
+            Type::App { path, args } => Type::App {
+                path: path.clone(),
+                args: args.iter().map(|t| t.substitute(env)).collect(),
+            },
+            _ => self.clone(),
+        }
+    }
+
     /// Check if this type is Unit.
     pub fn is_unit(&self) -> bool {
         matches!(self, Type::Unit)
@@ -436,6 +591,7 @@ impl Type {
             Type::List(inner) | Type::Option(inner) => inner.contains_recursion(),
             Type::Result { ok, err } => ok.contains_recursion() || err.contains_recursion(),
             Type::Tuple(types) => types.iter().any(|t| t.contains_recursion()),
+            Type::App { args, .. } => args.iter().any(|t| t.contains_recursion()),
             _ => false,
         }
     }
@@ -537,6 +693,7 @@ impl std::fmt::Display for TypePath {
 pub fn sexpr_type() -> TypeDef {
     TypeDef::Variant {
         name: "sexpr".to_string(),
+        type_params: Vec::new(),
         cases: vec![
             Case::new("sym", Type::String),
             Case::new("num", Type::S64),

@@ -367,6 +367,11 @@ fn format_type(ty: &Type) -> String {
             }
         }
         Type::Ref(path) => path.to_string(),
+        Type::App { path, args } => format!(
+            "{}<{}>",
+            path,
+            args.iter().map(format_type).collect::<Vec<_>>().join(", ")
+        ),
         Type::Value => "value".to_string(),
     }
 }
