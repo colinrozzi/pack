@@ -680,17 +680,20 @@ pub fn decode_metadata(bytes: &[u8]) -> Result<Arena, MetadataError> {
             let mut imports = Vec::new();
             let mut exports = Vec::new();
             let mut type_defs = Vec::new();
+            let mut type_params = Vec::new();
 
             for (name, val) in fields {
                 match name.as_str() {
                     "imports" => imports = decode_func_sig_list(val, &mut type_defs)?,
                     "exports" => exports = decode_func_sig_list(val, &mut type_defs)?,
+                    "type-params" => type_params = decode_type_param_list(val)?,
                     _ => {}
                 }
             }
 
             // Build an Arena with imports and exports as child arenas
             let mut arena = Arena::new("package");
+            arena.type_params = type_params;
 
             if !imports.is_empty() {
                 let mut import_arena = Arena::new("imports");
@@ -750,6 +753,7 @@ pub fn decode_metadata_with_hashes(bytes: &[u8]) -> Result<MetadataWithHashes, M
             let mut import_hashes = Vec::new();
             let mut export_hashes = Vec::new();
             let mut type_defs = Vec::new();
+            let mut type_params = Vec::new();
 
             for (name, val) in fields {
                 match name.as_str() {
@@ -757,12 +761,14 @@ pub fn decode_metadata_with_hashes(bytes: &[u8]) -> Result<MetadataWithHashes, M
                     "exports" => exports = decode_func_sig_list(val, &mut type_defs)?,
                     "import-hashes" => import_hashes = decode_interface_hash_list(val)?,
                     "export-hashes" => export_hashes = decode_interface_hash_list(val)?,
+                    "type-params" => type_params = decode_type_param_list(val)?,
                     _ => {}
                 }
             }
 
             // Build the arena (same as decode_metadata)
             let mut arena = Arena::new("package");
+            arena.type_params = type_params;
 
             if !imports.is_empty() {
                 let mut import_arena = Arena::new("imports");
@@ -1285,24 +1291,27 @@ pub fn encode_metadata(arena: &Arena) -> Result<Vec<u8>, MetadataError> {
         }
     }
 
+    let mut fields = vec![
+        (
+            "imports".to_string(),
+            Value::List {
+                elem_type: crate::abi::ValueType::Record("FunctionSignature".to_string()),
+                items: imports,
+            },
+        ),
+        (
+            "exports".to_string(),
+            Value::List {
+                elem_type: crate::abi::ValueType::Record("FunctionSignature".to_string()),
+                items: exports,
+            },
+        ),
+    ];
+    fields.extend(type_params_field(arena));
+
     let record = Value::Record {
         type_name: "PackageMetadata".to_string(),
-        fields: vec![
-            (
-                "imports".to_string(),
-                Value::List {
-                    elem_type: crate::abi::ValueType::Record("FunctionSignature".to_string()),
-                    items: imports,
-                },
-            ),
-            (
-                "exports".to_string(),
-                Value::List {
-                    elem_type: crate::abi::ValueType::Record("FunctionSignature".to_string()),
-                    items: exports,
-                },
-            ),
-        ],
+        fields,
     };
 
     encode(&record).map_err(|e| MetadataError::EncodeFailed(format!("{:?}", e)))
@@ -1343,6 +1352,76 @@ fn encode_param_value(param: &Param) -> Value {
             ("type".to_string(), encode_type_value(&param.ty)),
         ],
     }
+}
+
+/// Encode an interface-level generic type parameter. The optional constraint is
+/// stored as a plain string (empty = none) to avoid Option marshalling.
+fn encode_type_param_value(tp: &crate::types::TypeParam) -> Value {
+    Value::Record {
+        type_name: "TypeParam".to_string(),
+        fields: vec![
+            ("name".to_string(), Value::String(tp.name.clone())),
+            (
+                "constraint".to_string(),
+                Value::String(tp.constraint.clone().unwrap_or_default()),
+            ),
+        ],
+    }
+}
+
+/// Build the optional `type-params` metadata field. Returns `None` for a
+/// non-generic arena so existing (non-generic) packages encode byte-identically
+/// to before this field existed.
+fn type_params_field(arena: &Arena) -> Option<(String, Value)> {
+    if arena.type_params.is_empty() {
+        return None;
+    }
+    Some((
+        "type-params".to_string(),
+        Value::List {
+            elem_type: crate::abi::ValueType::Record("TypeParam".to_string()),
+            items: arena
+                .type_params
+                .iter()
+                .map(encode_type_param_value)
+                .collect(),
+        },
+    ))
+}
+
+/// Decode the `type-params` metadata field (a list of `{name, constraint}`).
+fn decode_type_param_list(val: Value) -> Result<Vec<crate::types::TypeParam>, MetadataError> {
+    let items = match val {
+        Value::List { items, .. } => items,
+        _ => {
+            return Err(MetadataError::InvalidStructure(
+                "type-params must be a list".into(),
+            ))
+        }
+    };
+    let mut params = Vec::with_capacity(items.len());
+    for item in items {
+        if let Value::Record { fields, .. } = item {
+            let mut name = String::new();
+            let mut constraint = String::new();
+            for (n, v) in fields {
+                match (n.as_str(), v) {
+                    ("name", Value::String(s)) => name = s,
+                    ("constraint", Value::String(s)) => constraint = s,
+                    _ => {}
+                }
+            }
+            params.push(crate::types::TypeParam::new(
+                name,
+                if constraint.is_empty() {
+                    None
+                } else {
+                    Some(constraint)
+                },
+            ));
+        }
+    }
+    Ok(params)
 }
 
 fn encode_type_value(ty: &Type) -> Value {
@@ -1525,6 +1604,19 @@ pub fn encode_metadata_with_hashes(arena: &Arena) -> Result<Vec<u8>, MetadataErr
                 },
             ),
         ],
+    };
+
+    // Append the optional generic type-params field (present only for generic
+    // interfaces), keeping non-generic metadata byte-identical to before.
+    let record = match record {
+        Value::Record {
+            type_name,
+            mut fields,
+        } => {
+            fields.extend(type_params_field(arena));
+            Value::Record { type_name, fields }
+        }
+        other => other,
     };
 
     encode(&record).map_err(|e| MetadataError::EncodeFailed(format!("{:?}", e)))
@@ -2485,5 +2577,66 @@ mod tests {
         );
 
         assert_eq!(compute_interface_hash(&by_ref), expected);
+    }
+
+    // ========================================================================
+    // Interface-level generics (M4a): type_params survive into metadata
+    // ========================================================================
+
+    #[test]
+    fn interface_type_params_survive_metadata_roundtrip() {
+        let iface = crate::parser::parse_pact(
+            "interface storage {
+                type t: serializable
+                exports {
+                    get: func() -> t
+                    set: func(value: t)
+                }
+            }",
+        )
+        .expect("parse generic interface");
+
+        let arena = iface.to_arena();
+        // to_arena must carry the interface-level generic parameter.
+        assert_eq!(arena.type_params.len(), 1);
+        assert_eq!(arena.type_params[0].name, "t");
+        assert_eq!(
+            arena.type_params[0].constraint.as_deref(),
+            Some("serializable")
+        );
+
+        let bytes = encode_metadata_with_hashes(&arena).expect("encode");
+        let decoded = decode_metadata_with_hashes(&bytes).expect("decode");
+
+        // The generic parameter round-trips...
+        assert_eq!(decoded.arena.type_params, arena.type_params);
+        // ...and the extra field does not disturb the export signatures.
+        assert!(!decoded.export_hashes.is_empty());
+    }
+
+    #[test]
+    fn non_generic_metadata_omits_type_params_field() {
+        let iface = crate::parser::parse_pact(
+            "interface plain {
+                exports {
+                    ping: func() -> bool
+                }
+            }",
+        )
+        .expect("parse plain interface");
+        let arena = iface.to_arena();
+        assert!(arena.type_params.is_empty());
+
+        let bytes = encode_metadata_with_hashes(&arena).expect("encode");
+        // A non-generic package must not carry the field at all, so old readers
+        // and new readers alike see exactly what they saw before this change.
+        assert!(
+            !String::from_utf8_lossy(&bytes).contains("type-params"),
+            "non-generic metadata should not embed a type-params field"
+        );
+
+        // And decoding still yields empty type_params (the default), no error.
+        let decoded = decode_metadata_with_hashes(&bytes).expect("decode");
+        assert!(decoded.arena.type_params.is_empty());
     }
 }

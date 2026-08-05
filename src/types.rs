@@ -34,6 +34,35 @@ pub struct Arena {
     pub functions: Vec<Function>,
     /// Child arenas (for hierarchical namespaces)
     pub children: Vec<Arena>,
+    /// Interface-level generic type parameters (e.g. `type t: serializable`).
+    /// Empty for non-generic interfaces. Carried through into embedded
+    /// metadata so composition can identify which signature type-references are
+    /// generic parameters (see [`TypeParam`]).
+    #[serde(default)]
+    pub type_params: Vec<TypeParam>,
+}
+
+/// An interface-level generic type parameter, e.g. `type t: serializable`.
+///
+/// The `constraint` is the name of an interface the bound type must satisfy
+/// (currently carried but not yet enforced).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct TypeParam {
+    /// Parameter name (e.g. "t").
+    pub name: String,
+    /// Optional constraint — an interface name the concrete type must satisfy.
+    #[serde(default)]
+    pub constraint: Option<String>,
+}
+
+impl TypeParam {
+    /// Create a type parameter.
+    pub fn new(name: impl Into<String>, constraint: Option<String>) -> Self {
+        Self {
+            name: name.into(),
+            constraint,
+        }
+    }
 }
 
 impl Arena {
@@ -44,6 +73,7 @@ impl Arena {
             types: Vec::new(),
             functions: Vec::new(),
             children: Vec::new(),
+            type_params: Vec::new(),
         }
     }
 

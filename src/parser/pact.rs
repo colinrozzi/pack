@@ -62,6 +62,15 @@ impl PactInterface {
     pub fn to_arena(&self) -> Arena {
         let mut arena = Arena::new(&self.name);
 
+        // Carry interface-level generic parameters through into the Arena so
+        // they reach embedded metadata (composition needs them to tell which
+        // signature type-references are generic parameters).
+        arena.type_params = self
+            .type_params
+            .iter()
+            .map(|tp| crate::types::TypeParam::new(tp.name.clone(), tp.constraint.clone()))
+            .collect();
+
         // Add type definitions
         for typedef in &self.types {
             arena.add_type(typedef.clone());
