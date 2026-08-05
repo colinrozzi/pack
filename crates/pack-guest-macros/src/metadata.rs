@@ -437,6 +437,18 @@ pub fn wit_type_to_type_desc(
             }
             TypeDesc::Value
         }
+        crate::wit_parser::Type::App { name, args } => {
+            // A generic instantiation describes (and hashes) as its instantiated
+            // structure — erasure means `pair<u32, string>` is metadata-identical
+            // to a plain record of the same shape, which keeps host and guest
+            // hashes in agreement.
+            for td in types {
+                if td.name() == name && td.type_params().len() == args.len() {
+                    return typedef_to_type_desc(&td.instantiate(args), types);
+                }
+            }
+            TypeDesc::Value
+        }
         crate::wit_parser::Type::SelfRef => TypeDesc::Value,
     }
 }
@@ -448,14 +460,14 @@ pub fn typedef_to_type_desc(
 ) -> TypeDesc {
     match td {
         crate::wit_parser::TypeDef::Alias { ty, .. } => wit_type_to_type_desc(ty, types),
-        crate::wit_parser::TypeDef::Record { name, fields } => TypeDesc::Record {
+        crate::wit_parser::TypeDef::Record { name, fields, .. } => TypeDesc::Record {
             name: name.clone(),
             fields: fields
                 .iter()
                 .map(|(n, t)| (n.clone(), wit_type_to_type_desc(t, types)))
                 .collect(),
         },
-        crate::wit_parser::TypeDef::Variant { name, cases } => TypeDesc::Variant {
+        crate::wit_parser::TypeDef::Variant { name, cases, .. } => TypeDesc::Variant {
             name: name.clone(),
             cases: cases
                 .iter()
