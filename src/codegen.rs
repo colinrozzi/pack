@@ -54,11 +54,11 @@ pub fn generate_rust(interface: &PactInterface) -> String {
 
 fn generate_typedef(typedef: &TypeDef) -> String {
     match typedef {
-        TypeDef::Record { name, fields } => generate_record(name, fields),
-        TypeDef::Variant { name, cases } => generate_variant(name, cases),
+        TypeDef::Record { name, fields, .. } => generate_record(name, fields),
+        TypeDef::Variant { name, cases, .. } => generate_variant(name, cases),
         TypeDef::Enum { name, cases } => generate_enum(name, cases),
         TypeDef::Flags { name, flags } => generate_flags(name, flags),
-        TypeDef::Alias { name, ty } => generate_alias(name, ty),
+        TypeDef::Alias { name, ty, .. } => generate_alias(name, ty),
     }
 }
 
@@ -253,6 +253,12 @@ fn type_to_rust(ty: &Type) -> String {
         Type::Ref(path) => {
             // Named type reference
             to_pascal_case(&path.segments.join("::"))
+        }
+        Type::App { path, args } => {
+            // Generic type application, e.g. `pair<u32, string>` -> `Pair<u32, String>`.
+            let base = to_pascal_case(&path.segments.join("::"));
+            let args: Vec<String> = args.iter().map(type_to_rust).collect();
+            format!("{base}<{}>", args.join(", "))
         }
         Type::Value => "serde_json::Value".to_string(),
     }

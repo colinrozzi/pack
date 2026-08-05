@@ -402,8 +402,40 @@ fn hash_type_inner(ty: &Type, types: &[TypeDef], stack: &mut Vec<String>) -> Typ
             hash_tuple(&hashes)
         }
         Type::Ref(path) => hash_ref(path, types, stack),
+        Type::App { path, args } => hash_app(path, args, types, stack),
         Type::Value => HASH_SELF_REF,
     }
+}
+
+/// Hash a generic type application. Under type-parameter erasure a generic
+/// instantiation hashes identically to the equivalent hand-written monomorphic
+/// type: we resolve the definition, substitute the arguments, and hash the
+/// resulting structure. This keeps `pair<u32, string>` wire/hash-compatible
+/// with a plain record of the same shape.
+fn hash_app(
+    path: &TypePath,
+    args: &[Type],
+    types: &[TypeDef],
+    stack: &mut Vec<String>,
+) -> TypeHash {
+    if let Some(name) = path.as_simple() {
+        // Cycle within the same instantiation: recurse as a self-reference.
+        if stack.iter().any(|s| s == name) {
+            return HASH_SELF_REF;
+        }
+        if let Some(td) = types.iter().find(|t| t.name() == name) {
+            if td.type_params().len() == args.len() {
+                let inst = td.instantiate(args);
+                stack.push(name.to_string());
+                let h = hash_typedef_inner(&inst, types, stack);
+                stack.pop();
+                return h;
+            }
+        }
+    }
+    // Unresolved or mismatched-arity application: fall back to a nominal
+    // by-name hash so it still produces a stable value.
+    hash_ref(path, types, stack)
 }
 
 fn hash_ref(path: &TypePath, types: &[TypeDef], stack: &mut Vec<String>) -> TypeHash {
@@ -1131,6 +1163,7 @@ fn decode_record_type(value: Value, type_defs: &mut Vec<TypeDef>) -> Result<Type
                 if !type_defs.iter().any(|td| td.name() == name) {
                     type_defs.push(TypeDef::Record {
                         name: name.clone(),
+                        type_params: Vec::new(),
                         fields: decoded_fields,
                     });
                 }
@@ -1206,6 +1239,7 @@ fn decode_variant_type(value: Value, type_defs: &mut Vec<TypeDef>) -> Result<Typ
             {
                 type_defs.push(TypeDef::Variant {
                     name: name.clone(),
+                    type_params: Vec::new(),
                     cases: decoded_cases,
                 });
             }
@@ -1347,6 +1381,21 @@ fn encode_type_value(ty: &Type) -> Value {
             }],
         ),
         Type::Ref(path) => {
+            let name = path.segments.join("::");
+            (
+                TAG_VARIANT as usize,
+                vec![Value::Record {
+                    type_name: "TypeRef".to_string(),
+                    fields: vec![("name".to_string(), Value::String(name))],
+                }],
+            )
+        }
+        Type::App { path, .. } => {
+            // M1: generic applications are not yet embedded structurally in
+            // metadata (guest codegen doesn't emit generic types until M2).
+            // Encode by base name like a nominal ref so this compiles and stays
+            // stable; M2 must embed the instantiated form (or add a first-class
+            // generic tag with matching decode support).
             let name = path.segments.join("::");
             (
                 TAG_VARIANT as usize,
@@ -1710,10 +1759,10 @@ pub fn validate_value_in_type_space(
             let type_def = type_defs.iter().find(|td| td.name() == name);
 
             match type_def {
-                Some(TypeDef::Record { name, fields }) => {
+                Some(TypeDef::Record { name, fields, .. }) => {
                     validate_record(value, name, fields, type_defs)
                 }
-                Some(TypeDef::Variant { name, cases }) => {
+                Some(TypeDef::Variant { name, cases, .. }) => {
                     validate_variant(value, name, cases, type_defs)
                 }
                 Some(TypeDef::Alias { ty, .. }) => {
@@ -1724,6 +1773,42 @@ pub fn validate_value_in_type_space(
                     Value::Flags(_) => Ok(()),
                     _ => Err(mismatch("flags", value)),
                 },
+                None => Err(TypeValidationError::UnresolvedRef {
+                    path: path.to_string(),
+                }),
+            }
+        }
+
+        // Generic application — resolve, check arity, instantiate, validate.
+        // Under erasure the instantiated definition is validated exactly like a
+        // hand-written monomorphic type.
+        Type::App { path, args } => {
+            let name = path.segments.last().map(|s| s.as_str()).unwrap_or("");
+            match type_defs.iter().find(|td| td.name() == name) {
+                Some(def) => {
+                    if def.type_params().len() != args.len() {
+                        return Err(TypeValidationError::WrongArity {
+                            expected: def.type_params().len(),
+                            got: args.len(),
+                        });
+                    }
+                    match def.instantiate(args) {
+                        TypeDef::Record { name, fields, .. } => {
+                            validate_record(value, &name, &fields, type_defs)
+                        }
+                        TypeDef::Variant { name, cases, .. } => {
+                            validate_variant(value, &name, &cases, type_defs)
+                        }
+                        TypeDef::Alias { ty, .. } => {
+                            validate_value_in_type_space(value, &ty, type_defs)
+                        }
+                        TypeDef::Enum { name, cases } => validate_enum(value, &name, &cases),
+                        TypeDef::Flags { .. } => match value {
+                            Value::Flags(_) => Ok(()),
+                            _ => Err(mismatch("flags", value)),
+                        },
+                    }
+                }
                 None => Err(TypeValidationError::UnresolvedRef {
                     path: path.to_string(),
                 }),
@@ -2109,6 +2194,7 @@ mod tests {
     fn test_validate_record() {
         let defs = vec![TypeDef::Record {
             name: "my-state".into(),
+            type_params: Vec::new(),
             fields: vec![
                 Field::new("count", Type::S32),
                 Field::new("name", Type::String),
@@ -2159,6 +2245,7 @@ mod tests {
     fn test_validate_variant() {
         let defs = vec![TypeDef::Variant {
             name: "result".into(),
+            type_params: Vec::new(),
             cases: vec![
                 Case::new("ok", Type::String),
                 Case::new("err", Type::String),
@@ -2225,6 +2312,7 @@ mod tests {
         let defs = vec![
             TypeDef::Record {
                 name: "state".into(),
+                type_params: Vec::new(),
                 fields: vec![
                     Field::new("status", Type::Ref(TypePath::simple("status"))),
                     Field::new("count", Type::U32),
@@ -2232,6 +2320,7 @@ mod tests {
             },
             TypeDef::Variant {
                 name: "status".into(),
+                type_params: Vec::new(),
                 cases: vec![Case::unit("pending"), Case::new("active", Type::String)],
             },
         ];

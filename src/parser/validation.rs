@@ -26,6 +26,12 @@ pub enum ValidationError {
     VariantPayloadMismatch { node: u32, tag: u32 },
     #[error("Unsupported type: {0}")]
     UnsupportedType(String),
+    #[error("Type argument arity mismatch for {name}: expected {expected}, got {actual}")]
+    ArityMismatch {
+        name: String,
+        expected: usize,
+        actual: usize,
+    },
 }
 
 pub fn validate_graph_against_type(
@@ -268,11 +274,41 @@ fn validate_type(
                 )))
             }
         }
+        Type::App { path, args } => {
+            let (name, inst) = instantiate_app(path, args, types)?;
+            validate_typedef(buffer, index, &inst, Some(&name), types, assigned)
+        }
         Type::Value => {
             // Value type is a dynamic escape hatch - accept any node kind
             Ok(())
         }
     }
+}
+
+/// Resolve a generic type application `name<args...>` to a concrete,
+/// monomorphic type definition: look up the definition, check that the number
+/// of type arguments matches its arity, and substitute the arguments in.
+/// Returns the definition's name alongside the instantiated definition.
+fn instantiate_app(
+    path: &crate::types::TypePath,
+    args: &[Type],
+    types: &HashMap<String, &TypeDef>,
+) -> Result<(String, TypeDef), ValidationError> {
+    let name = path.as_simple().ok_or_else(|| {
+        ValidationError::UnsupportedType(format!("qualified generic type path: {path}"))
+    })?;
+    let def = types
+        .get(name)
+        .ok_or_else(|| ValidationError::UndefinedType(name.to_string()))?;
+    let expected = def.type_params().len();
+    if expected != args.len() {
+        return Err(ValidationError::ArityMismatch {
+            name: name.to_string(),
+            expected,
+            actual: args.len(),
+        });
+    }
+    Ok((name.to_string(), def.instantiate(args)))
 }
 
 fn validate_typedef(
@@ -285,10 +321,10 @@ fn validate_typedef(
 ) -> Result<(), ValidationError> {
     match def {
         TypeDef::Alias { ty, .. } => validate_type(buffer, index, ty, self_name, types, assigned),
-        TypeDef::Record { name, fields } => {
+        TypeDef::Record { name, fields, .. } => {
             validate_record(buffer, index, name, fields, types, assigned)
         }
-        TypeDef::Variant { name, cases } => {
+        TypeDef::Variant { name, cases, .. } => {
             validate_variant(buffer, index, name, cases, types, assigned)
         }
         TypeDef::Enum { name, cases } => validate_enum(buffer, index, name, cases),
@@ -369,6 +405,10 @@ fn validate_value(
                 )))
             }
         }
+        (value, Type::App { path, args }) => {
+            let (name, inst) = instantiate_app(path, args, types)?;
+            validate_value_named(value, &inst, types, Some(&name))
+        }
         (value, _) => Err(ValidationError::TypeMismatch {
             node: 0,
             expected: format!("{ty:?}"),
@@ -385,7 +425,7 @@ fn validate_value_named(
 ) -> Result<(), ValidationError> {
     match def {
         TypeDef::Alias { ty, .. } => validate_value(value, ty, self_name, types),
-        TypeDef::Record { name, fields } => match value {
+        TypeDef::Record { name, fields, .. } => match value {
             Value::Record {
                 fields: value_fields,
                 ..
@@ -415,7 +455,7 @@ fn validate_value_named(
                 actual: format!("{value:?}"),
             }),
         },
-        TypeDef::Variant { name, cases } => match value {
+        TypeDef::Variant { name, cases, .. } => match value {
             Value::Variant { tag, payload, .. } => {
                 let payload_opt = payload.first();
                 validate_value_variant(*tag, payload_opt, name, cases, types)?;
@@ -670,6 +710,10 @@ fn type_key(ty: &Type, self_name: Option<&str>) -> String {
     match ty {
         Type::Ref(path) if path.is_self_ref() => format!("self({})", self_name.unwrap_or("?")),
         Type::Ref(path) => format!("ref({})", path),
+        Type::App { path, args } => {
+            let arg_keys: Vec<String> = args.iter().map(|a| type_key(a, self_name)).collect();
+            format!("app({}<{}>)", path, arg_keys.join(","))
+        }
         _ => format!("{ty:?}"),
     }
 }
@@ -773,5 +817,153 @@ impl<'a> PayloadCursor<'a> {
                 "Unknown type tag: {tag:#x}"
             ))),
         }
+    }
+}
+
+// ============================================================================
+// Tests — user-defined generics (M1): parse + resolve/round-trip
+// ============================================================================
+
+#[cfg(test)]
+mod generics_tests {
+    use super::*;
+    use crate::parser::pact::parse_pact;
+    use crate::types::{Type, TypeDef};
+
+    /// Parse a pact source and return its top-level type definitions.
+    fn types_of(src: &str) -> Vec<TypeDef> {
+        parse_pact(src).expect("pact should parse").types
+    }
+
+    #[test]
+    fn parses_generic_record_header_and_param_refs() {
+        let types = types_of(
+            "interface t {
+                record pair<a, b> {
+                    first: a,
+                    second: b,
+                }
+            }",
+        );
+        let pair = types.iter().find(|t| t.name() == "pair").unwrap();
+        assert_eq!(pair.type_params(), ["a", "b"]);
+        match pair {
+            TypeDef::Record { fields, .. } => {
+                // Field types are bare references to the in-scope params.
+                assert_eq!(fields[0].ty, Type::named("a"));
+                assert_eq!(fields[1].ty, Type::named("b"));
+            }
+            _ => panic!("expected record"),
+        }
+    }
+
+    #[test]
+    fn parses_type_application_in_signature() {
+        // `pair<u32, string>` in a function result parses to a Type::App.
+        let iface = parse_pact(
+            "interface t {
+                record pair<a, b> { first: a, second: b }
+                exports {
+                    get: func() -> pair<u32, string>
+                }
+            }",
+        )
+        .expect("parse");
+        let func = &iface.exports;
+        // Find the exported function's single result type.
+        let result_ty = func
+            .iter()
+            .find_map(|e| match e {
+                crate::parser::pact::PactExport::Function(f) => f.results.first().cloned(),
+                _ => None,
+            })
+            .expect("exported function with a result");
+        assert_eq!(result_ty, Type::app("pair", vec![Type::U32, Type::String]));
+    }
+
+    #[test]
+    fn round_trips_generic_record_instantiation() {
+        let types = types_of(
+            "interface t {
+                record pair<a, b> { first: a, second: b }
+            }",
+        );
+        // pair<u32, string>
+        let root = Type::app("pair", vec![Type::U32, Type::String]);
+        let value = Value::Record {
+            type_name: "pair".to_string(),
+            fields: vec![
+                ("first".to_string(), Value::U32(7)),
+                ("second".to_string(), Value::String("hi".to_string())),
+            ],
+        };
+
+        // Value-space validation + encode, then graph-space validation + decode.
+        let bytes = encode_with_schema(&types, &value, &root).expect("encode_with_schema");
+        let decoded = decode_with_schema(&types, &bytes, &root, None).expect("decode_with_schema");
+        assert_eq!(decoded, value);
+    }
+
+    #[test]
+    fn round_trips_recursive_generic_variant() {
+        // A recursive generic: tree<t> whose `branch` case holds two subtrees.
+        let types = types_of(
+            "interface t {
+                variant tree<t> {
+                    leaf(t),
+                    branch(tuple<tree<t>, tree<t>>),
+                }
+            }",
+        );
+        let root = Type::app("tree", vec![Type::U32]);
+
+        let leaf = |n: u32| Value::Variant {
+            type_name: "tree".to_string(),
+            case_name: "leaf".to_string(),
+            tag: 0,
+            payload: vec![Value::U32(n)],
+        };
+        // branch((leaf 1, leaf 2))
+        let value = Value::Variant {
+            type_name: "tree".to_string(),
+            case_name: "branch".to_string(),
+            tag: 1,
+            payload: vec![Value::Tuple(vec![leaf(1), leaf(2)])],
+        };
+
+        let bytes = encode_with_schema(&types, &value, &root).expect("encode recursive generic");
+        let decoded =
+            decode_with_schema(&types, &bytes, &root, None).expect("decode recursive generic");
+        assert_eq!(decoded, value);
+    }
+
+    #[test]
+    fn rejects_arity_mismatch() {
+        let types = types_of(
+            "interface t {
+                record pair<a, b> { first: a, second: b }
+            }",
+        );
+        // pair takes two args; supply one.
+        let root = Type::app("pair", vec![Type::U32]);
+        let value = Value::Record {
+            type_name: "pair".to_string(),
+            fields: vec![
+                ("first".to_string(), Value::U32(7)),
+                ("second".to_string(), Value::String("hi".to_string())),
+            ],
+        };
+        let err = encode_with_schema(&types, &value, &root).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ValidationError::ArityMismatch {
+                    expected: 2,
+                    actual: 1,
+                    ..
+                }
+            ),
+            "expected arity mismatch, got {err:?}"
+        );
     }
 }
