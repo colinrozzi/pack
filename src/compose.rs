@@ -222,17 +222,40 @@ fn verify_link_hashes(components: &[Component], links: &[GraphLink]) -> Result<(
 
         if let (Some(ci), Some(pi)) = (consumer_hash, provider_hash) {
             if ci.hash != pi.hash {
-                return Err(anyhow!(
-                    "hash-checked link rejected: consumer `{}` imports interface `{}` \
-                     (hash {}), but provider `{}` exports it with a different hash ({}). \
-                     The interface signatures disagree — rebuild both against the same \
-                     pact, or fix the link.",
-                    link.consumer,
-                    link.import_module,
-                    ci.hash,
-                    link.provider,
-                    pi.hash,
-                ));
+                // Hashes differ. If one side is a generic interface, the mismatch
+                // is expected (a generic `state<s>` never hashes equal to a
+                // concrete `state<chat-state>`); try to reconcile by binding the
+                // generic parameters from the concrete side before rejecting.
+                match reconcile_generic_link(consumer_meta, provider_meta, &link.import_module) {
+                    // Reconciled: the generic side, with its parameters bound,
+                    // presents exactly the concrete interface. Accept.
+                    Some(Ok(())) => {}
+                    Some(Err(reason)) => {
+                        return Err(anyhow!(
+                            "hash-checked link rejected: consumer `{}` imports generic \
+                             interface `{}` from provider `{}`, but the parameters could \
+                             not be reconciled: {}",
+                            link.consumer,
+                            link.import_module,
+                            link.provider,
+                            reason,
+                        ));
+                    }
+                    // Neither side is generic — a genuine signature drift.
+                    None => {
+                        return Err(anyhow!(
+                            "hash-checked link rejected: consumer `{}` imports interface `{}` \
+                             (hash {}), but provider `{}` exports it with a different hash ({}). \
+                             The interface signatures disagree — rebuild both against the same \
+                             pact, or fix the link.",
+                            link.consumer,
+                            link.import_module,
+                            ci.hash,
+                            link.provider,
+                            pi.hash,
+                        ));
+                    }
+                }
             }
         }
         // Either side missing the interface hash => can't verify; leave the link
@@ -240,6 +263,141 @@ fn verify_link_hashes(components: &[Component], links: &[GraphLink]) -> Result<(
     }
 
     Ok(())
+}
+
+/// Find the arena describing interface `iface` within `section` ("imports" or
+/// "exports") of a decoded package arena.
+fn interface_arena<'a>(
+    arena: &'a crate::types::Arena,
+    section: &str,
+    iface: &str,
+) -> Option<&'a crate::types::Arena> {
+    arena
+        .children
+        .iter()
+        .find(|c| c.name == section)?
+        .children
+        .iter()
+        .find(|c| c.name == iface)
+}
+
+/// Attempt to reconcile a link whose interface hashes differ because one side is
+/// a GENERIC interface (declares type parameters) and the other pins them to
+/// concrete types.
+///
+/// Returns:
+/// - `None` — neither side is generic (the caller reports a plain drift).
+/// - `Some(Ok(()))` — the generic side, structurally unified against the
+///   concrete side, binds every parameter consistently; substituting those
+///   bindings reproduces the concrete signature exactly, so the interfaces
+///   agree and the link is sound.
+/// - `Some(Err(reason))` — a generic interface that could not be reconciled
+///   (unbound/conflicting parameter, arity or function-set mismatch, or a
+///   non-parameter structural difference).
+///
+/// Correctness rests on one-directional unification: if `unify` succeeds on
+/// every function's parameters and results, then `substitute(generic) ==
+/// concrete`, so the two interfaces hash identically once bound — no host-side
+/// re-hash is required, and the structural copy shim marshals correctly.
+fn reconcile_generic_link(
+    consumer_meta: &crate::metadata::MetadataWithHashes,
+    provider_meta: &crate::metadata::MetadataWithHashes,
+    iface: &str,
+) -> Option<Result<(), String>> {
+    use crate::types::Type;
+    use std::collections::{HashMap, HashSet};
+
+    let c_generic = !consumer_meta.arena.type_params.is_empty();
+    let p_generic = !provider_meta.arena.type_params.is_empty();
+    if !c_generic && !p_generic {
+        return None;
+    }
+    if c_generic && p_generic {
+        return Some(Err(
+            "generic-to-generic interface composition is not supported (v1): \
+             one side must pin the type parameters"
+                .to_string(),
+        ));
+    }
+
+    // Orient generic vs concrete. The consumer's copy of the interface lives in
+    // its "imports" section, the provider's in its "exports" section.
+    let (gen_meta, gen_section, con_meta, con_section) = if p_generic {
+        (provider_meta, "exports", consumer_meta, "imports")
+    } else {
+        (consumer_meta, "imports", provider_meta, "exports")
+    };
+
+    let Some(gen_iface) = interface_arena(&gen_meta.arena, gen_section, iface) else {
+        return Some(Err(format!(
+            "generic side is missing interface `{iface}` structure in metadata"
+        )));
+    };
+    let Some(con_iface) = interface_arena(&con_meta.arena, con_section, iface) else {
+        return Some(Err(format!(
+            "concrete side is missing interface `{iface}` structure in metadata"
+        )));
+    };
+
+    let params: HashSet<String> = gen_meta
+        .arena
+        .type_params
+        .iter()
+        .map(|tp| tp.name.clone())
+        .collect();
+
+    if gen_iface.functions.len() != con_iface.functions.len() {
+        return Some(Err(format!(
+            "interface `{iface}` has {} function(s) on the generic side but {} on the concrete side",
+            gen_iface.functions.len(),
+            con_iface.functions.len()
+        )));
+    }
+
+    let mut bindings: HashMap<String, Type> = HashMap::new();
+    for gf in &gen_iface.functions {
+        let Some(cf) = con_iface.functions.iter().find(|f| f.name == gf.name) else {
+            return Some(Err(format!(
+                "interface `{iface}`: generic function `{}` has no concrete counterpart",
+                gf.name
+            )));
+        };
+        if gf.params.len() != cf.params.len() || gf.results.len() != cf.results.len() {
+            return Some(Err(format!(
+                "interface `{iface}`: function `{}` has a different arity on each side",
+                gf.name
+            )));
+        }
+        for (gp, cp) in gf.params.iter().zip(&cf.params) {
+            if let Err(e) = gp.ty.unify(&cp.ty, &params, &mut bindings) {
+                return Some(Err(format!(
+                    "interface `{iface}` function `{}` parameter `{}`: {e}",
+                    gf.name, gp.name
+                )));
+            }
+        }
+        for (gr, cr) in gf.results.iter().zip(&cf.results) {
+            if let Err(e) = gr.unify(cr, &params, &mut bindings) {
+                return Some(Err(format!(
+                    "interface `{iface}` function `{}` result: {e}",
+                    gf.name
+                )));
+            }
+        }
+    }
+
+    // Every declared parameter must have been inferred from the concrete side.
+    for tp in &gen_meta.arena.type_params {
+        if !bindings.contains_key(&tp.name) {
+            return Some(Err(format!(
+                "interface `{iface}`: generic parameter `{}` could not be inferred \
+                 from the concrete side (it appears in no function signature)",
+                tp.name
+            )));
+        }
+    }
+
+    Some(Ok(()))
 }
 
 pub fn compose(components: Vec<Component>, links: &[GraphLink]) -> Result<Vec<u8>> {
@@ -1405,4 +1563,151 @@ fn strip_scoped_exports(
         module.exports.delete(id);
     }
     module
+}
+
+#[cfg(test)]
+mod generic_link_tests {
+    use super::{interface_arena, reconcile_generic_link};
+    use crate::metadata::MetadataWithHashes;
+    use crate::types::{Arena, Function, Param, Type, TypeParam};
+
+    /// Build a one-interface package metadata: `section` is "imports"/"exports",
+    /// `type_params` are the interface-level generics (empty = concrete).
+    fn meta(
+        section: &str,
+        iface: &str,
+        funcs: Vec<Function>,
+        type_params: Vec<TypeParam>,
+    ) -> MetadataWithHashes {
+        let mut iface_arena = Arena::new(iface);
+        for f in funcs {
+            iface_arena.add_function(f);
+        }
+        let mut section_arena = Arena::new(section);
+        section_arena.add_child(iface_arena);
+        let mut arena = Arena::new("package");
+        arena.type_params = type_params;
+        arena.add_child(section_arena);
+        MetadataWithHashes {
+            arena,
+            import_hashes: Vec::new(),
+            export_hashes: Vec::new(),
+        }
+    }
+
+    // The mesh RSM node<->SM shape, generic over the SM state type `s`.
+    fn sm_funcs(state: Type) -> Vec<Function> {
+        vec![
+            Function::with_signature("initial-state", vec![], vec![state.clone()]),
+            Function::with_signature(
+                "apply",
+                vec![
+                    Param::new("event", Type::U64),
+                    Param::new("s", state.clone()),
+                ],
+                vec![state.clone()],
+            ),
+            Function::with_signature(
+                "members",
+                vec![Param::new("s", state)],
+                vec![Type::list(Type::U32)],
+            ),
+        ]
+    }
+
+    #[test]
+    fn reconciles_generic_consumer_with_concrete_provider() {
+        // Consumer imports the interface generically (state = s); provider
+        // exports it pinned to chat-state.
+        let consumer = meta(
+            "imports",
+            "sm",
+            sm_funcs(Type::named("s")),
+            vec![TypeParam::new("s", Some("serializable".into()))],
+        );
+        let provider = meta("exports", "sm", sm_funcs(Type::named("chat-state")), vec![]);
+
+        assert_eq!(
+            reconcile_generic_link(&consumer, &provider, "sm"),
+            Some(Ok(()))
+        );
+    }
+
+    #[test]
+    fn reconciles_generic_provider_with_concrete_consumer() {
+        // Symmetric: a generic provider (a reusable node) exporting state<s>,
+        // consumed by a concrete side pinning control-state.
+        let provider = meta(
+            "exports",
+            "sm",
+            sm_funcs(Type::named("s")),
+            vec![TypeParam::new("s", None)],
+        );
+        let consumer = meta(
+            "imports",
+            "sm",
+            sm_funcs(Type::named("control-state")),
+            vec![],
+        );
+
+        assert_eq!(
+            reconcile_generic_link(&consumer, &provider, "sm"),
+            Some(Ok(()))
+        );
+    }
+
+    #[test]
+    fn non_generic_link_is_not_reconciled_here() {
+        // Neither side generic => reconcile declines (None); the caller keeps its
+        // plain exact-hash-mismatch error.
+        let consumer = meta("imports", "sm", sm_funcs(Type::named("a")), vec![]);
+        let provider = meta("exports", "sm", sm_funcs(Type::named("b")), vec![]);
+        assert_eq!(reconcile_generic_link(&consumer, &provider, "sm"), None);
+    }
+
+    #[test]
+    fn inconsistent_binding_is_rejected() {
+        // Generic side forces `s` in two positions that the concrete side fills
+        // with different types => not reconcilable.
+        let g = vec![Function::with_signature(
+            "swap",
+            vec![
+                Param::new("a", Type::named("s")),
+                Param::new("b", Type::named("s")),
+            ],
+            vec![],
+        )];
+        let c = vec![Function::with_signature(
+            "swap",
+            vec![Param::new("a", Type::U32), Param::new("b", Type::String)],
+            vec![],
+        )];
+        let consumer = meta("imports", "sm", g, vec![TypeParam::new("s", None)]);
+        let provider = meta("exports", "sm", c, vec![]);
+        assert!(matches!(
+            reconcile_generic_link(&consumer, &provider, "sm"),
+            Some(Err(_))
+        ));
+    }
+
+    #[test]
+    fn unbound_parameter_is_rejected() {
+        // `s` is declared but never appears in a signature => cannot be inferred.
+        let g = vec![Function::with_signature("ping", vec![], vec![Type::Bool])];
+        let c = vec![Function::with_signature("ping", vec![], vec![Type::Bool])];
+        let consumer = meta("imports", "sm", g, vec![TypeParam::new("s", None)]);
+        let provider = meta("exports", "sm", c, vec![]);
+        assert!(matches!(
+            reconcile_generic_link(&consumer, &provider, "sm"),
+            Some(Err(_))
+        ));
+    }
+
+    #[test]
+    fn interface_arena_finds_the_interface() {
+        let m = meta("exports", "sm", sm_funcs(Type::U32), vec![]);
+        assert!(interface_arena(&m.arena, "exports", "sm").is_some());
+        assert!(interface_arena(&m.arena, "exports", "nope").is_none());
+        assert!(interface_arena(&m.arena, "imports", "sm").is_none());
+    }
 }

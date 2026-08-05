@@ -604,6 +604,70 @@ impl Type {
         }
     }
 
+    /// Structurally unify this (generic) type against a `concrete` type,
+    /// recording bindings for any in-scope generic parameters.
+    ///
+    /// `params` is the set of generic parameter names in scope; a `Ref` whose
+    /// simple name is in `params` binds to whatever concrete type sits opposite
+    /// it. Every other construct must match structurally (same constructor,
+    /// same arity), recursing into children. Returns `Err` on a structural
+    /// mismatch or an inconsistent binding (a parameter forced to two different
+    /// types) — this is one-directional unification (the generic side has the
+    /// variables, the concrete side is ground), which is all compose-time
+    /// interface binding needs.
+    pub fn unify(
+        &self,
+        concrete: &Type,
+        params: &std::collections::HashSet<String>,
+        bindings: &mut std::collections::HashMap<String, Type>,
+    ) -> Result<(), String> {
+        // A reference to an in-scope generic parameter binds to `concrete`.
+        if let Type::Ref(path) = self {
+            if let Some(name) = path.as_simple() {
+                if params.contains(name) {
+                    if let Some(existing) = bindings.get(name) {
+                        if existing != concrete {
+                            return Err(format!(
+                                "generic parameter `{name}` bound to conflicting types: \
+                                 {existing:?} vs {concrete:?}"
+                            ));
+                        }
+                    } else {
+                        bindings.insert(name.to_string(), concrete.clone());
+                    }
+                    return Ok(());
+                }
+            }
+        }
+
+        match (self, concrete) {
+            (Type::List(a), Type::List(b)) | (Type::Option(a), Type::Option(b)) => {
+                a.unify(b, params, bindings)
+            }
+            (Type::Result { ok: a, err: c }, Type::Result { ok: b, err: d }) => {
+                a.unify(b, params, bindings)?;
+                c.unify(d, params, bindings)
+            }
+            (Type::Tuple(xs), Type::Tuple(ys)) if xs.len() == ys.len() => {
+                for (x, y) in xs.iter().zip(ys) {
+                    x.unify(y, params, bindings)?;
+                }
+                Ok(())
+            }
+            (Type::App { path: p1, args: a1 }, Type::App { path: p2, args: a2 })
+                if p1 == p2 && a1.len() == a2.len() =>
+            {
+                for (x, y) in a1.iter().zip(a2) {
+                    x.unify(y, params, bindings)?;
+                }
+                Ok(())
+            }
+            // Non-parameter constructs (primitives, nominal refs) must be equal.
+            (a, b) if a == b => Ok(()),
+            (a, b) => Err(format!("cannot unify {a:?} with {b:?}")),
+        }
+    }
+
     /// Check if this type is Unit.
     pub fn is_unit(&self) -> bool {
         matches!(self, Type::Unit)
@@ -875,5 +939,88 @@ mod tests {
             TypePath::absolute(vec!["wasi".into(), "cli".into()]).to_string(),
             "::wasi::cli"
         );
+    }
+
+    // ========================================================================
+    // Generic unification (M4b): infer parameter bindings, then substitute
+    // ========================================================================
+
+    fn params(names: &[&str]) -> HashSet<String> {
+        names.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn unify_binds_bare_param() {
+        let p = params(&["s"]);
+        let mut b = std::collections::HashMap::new();
+        Type::named("s").unify(&Type::U32, &p, &mut b).unwrap();
+        assert_eq!(b.get("s"), Some(&Type::U32));
+    }
+
+    #[test]
+    fn unify_recurses_into_containers_and_apps() {
+        let p = params(&["s"]);
+
+        let mut b = std::collections::HashMap::new();
+        Type::list(Type::named("s"))
+            .unify(&Type::list(Type::U32), &p, &mut b)
+            .unwrap();
+        assert_eq!(b.get("s"), Some(&Type::U32));
+
+        // The mesh shape: state<s> unifies with a concrete state<chat-state>.
+        let mut b = std::collections::HashMap::new();
+        Type::app("state", vec![Type::named("s")])
+            .unify(
+                &Type::app("state", vec![Type::named("chat-state")]),
+                &p,
+                &mut b,
+            )
+            .unwrap();
+        assert_eq!(b.get("s"), Some(&Type::named("chat-state")));
+
+        let mut b = std::collections::HashMap::new();
+        Type::tuple(vec![Type::named("s"), Type::String])
+            .unify(&Type::tuple(vec![Type::U32, Type::String]), &p, &mut b)
+            .unwrap();
+        assert_eq!(b.get("s"), Some(&Type::U32));
+    }
+
+    #[test]
+    fn unify_rejects_inconsistent_binding() {
+        let p = params(&["s"]);
+        let mut b = std::collections::HashMap::new();
+        // tuple<s, s> cannot unify with tuple<u32, string>.
+        assert!(Type::tuple(vec![Type::named("s"), Type::named("s")])
+            .unify(&Type::tuple(vec![Type::U32, Type::String]), &p, &mut b)
+            .is_err());
+    }
+
+    #[test]
+    fn unify_rejects_structural_mismatch() {
+        let p = params(&[]);
+        let mut b = std::collections::HashMap::new();
+        assert!(Type::U32.unify(&Type::String, &p, &mut b).is_err());
+        let mut b = std::collections::HashMap::new();
+        assert!(Type::app("a", vec![Type::U32])
+            .unify(&Type::app("b", vec![Type::U32]), &p, &mut b)
+            .is_err());
+    }
+
+    #[test]
+    fn unify_then_substitute_reproduces_concrete() {
+        // The compose contract: infer by unifying, monomorphize by substituting,
+        // and the result equals the concrete side (so their hashes agree).
+        let p = params(&["s"]);
+        let generic = Type::tuple(vec![
+            Type::app("state", vec![Type::named("s")]),
+            Type::String,
+        ]);
+        let concrete = Type::tuple(vec![
+            Type::app("state", vec![Type::named("chat-state")]),
+            Type::String,
+        ]);
+        let mut b = std::collections::HashMap::new();
+        generic.unify(&concrete, &p, &mut b).unwrap();
+        assert_eq!(generic.substitute(&b), concrete);
     }
 }
