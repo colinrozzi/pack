@@ -432,3 +432,78 @@ fn forward_compat_tuple_append_only() {
     let v2: TupV2 = value2.try_into().unwrap();
     assert_eq!(v2, TupV2(9, 0));
 }
+
+// ============================================================================
+// Generic type tests (user-defined generics, M2)
+// ============================================================================
+
+#[derive(Debug, Clone, PartialEq, GraphValue)]
+struct GenPair<A, B> {
+    first: A,
+    second: B,
+}
+
+#[test]
+fn generic_struct_roundtrip() {
+    let original = GenPair {
+        first: 7u32,
+        second: "hi".to_string(),
+    };
+    let value: Value = original.clone().into();
+    let back: GenPair<u32, String> = value.try_into().unwrap();
+    assert_eq!(original, back);
+}
+
+#[test]
+fn generic_struct_distinct_instantiation_roundtrip() {
+    // A different instantiation of the same generic type.
+    let original = GenPair {
+        first: true,
+        second: vec![1i64, 2, 3],
+    };
+    let value: Value = original.clone().into();
+    let back: GenPair<bool, Vec<i64>> = value.try_into().unwrap();
+    assert_eq!(original, back);
+}
+
+// Generic parameter used inside a built-in container (`Vec<T>`). Note: a
+// generic `Option<T>` field is not yet supported by the derive — packr's
+// `Option<T>` decode goes through the `FromValue` trait (to avoid a coherence
+// clash) rather than `TryFrom<Value>`, which the derive relies on. That's a
+// pre-existing library limitation, tracked as an M2 follow-up.
+#[derive(Debug, Clone, PartialEq, GraphValue)]
+struct GenWrapper<T> {
+    items: Vec<T>,
+    label: String,
+}
+
+#[test]
+fn generic_container_fields_roundtrip() {
+    let original = GenWrapper {
+        items: vec![1i64, 2, 3],
+        label: "xs".to_string(),
+    };
+    let value: Value = original.clone().into();
+    let back: GenWrapper<i64> = value.try_into().unwrap();
+    assert_eq!(original, back);
+}
+
+// Generic enum.
+#[derive(Debug, Clone, PartialEq, GraphValue)]
+enum GenChoice<T> {
+    Nothing,
+    Just(T),
+}
+
+#[test]
+fn generic_enum_roundtrip() {
+    let just: GenChoice<u32> = GenChoice::Just(5);
+    let value: Value = just.clone().into();
+    let back: GenChoice<u32> = value.try_into().unwrap();
+    assert_eq!(just, back);
+
+    let nothing: GenChoice<u32> = GenChoice::Nothing;
+    let value: Value = nothing.clone().into();
+    let back: GenChoice<u32> = value.try_into().unwrap();
+    assert_eq!(nothing, back);
+}
