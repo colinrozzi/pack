@@ -313,8 +313,18 @@ pub enum Type {
     },
     Tuple(Vec<Type>),
 
-    // Named reference (to another type)
+    // Named reference (to another type). Also used for a reference to an
+    // in-scope generic type parameter (e.g. `a` inside `record pair<a, b>`);
+    // both lower to a PascalCased Rust identifier, so codegen need not
+    // distinguish them.
     Named(String),
+
+    // Generic type application: a named generic type applied to type
+    // arguments, e.g. `pair<u32, string>` or the recursive `tree<t>`.
+    App {
+        name: String,
+        args: Vec<Type>,
+    },
 
     // Self-reference within a type definition (for recursion)
     SelfRef,
@@ -323,18 +333,24 @@ pub enum Type {
 /// A type definition
 #[derive(Debug, Clone)]
 pub enum TypeDef {
-    /// type foo = bar
-    Alias { name: String, ty: Type },
+    /// type foo = bar (optionally generic: `type foo<a> = ...`)
+    Alias {
+        name: String,
+        type_params: Vec<String>,
+        ty: Type,
+    },
 
-    /// record foo { field: type, ... }
+    /// record foo { field: type, ... } (optionally generic: `record foo<a, b>`)
     Record {
         name: String,
+        type_params: Vec<String>,
         fields: Vec<(String, Type)>,
     },
 
-    /// variant foo { case(payload), ... }
+    /// variant foo { case(payload), ... } (optionally generic: `variant foo<t>`)
     Variant {
         name: String,
+        type_params: Vec<String>,
         cases: Vec<VariantCase>,
     },
 
@@ -345,6 +361,29 @@ pub enum TypeDef {
     Flags { name: String, flags: Vec<String> },
 }
 
+impl Type {
+    /// Substitute in-scope generic parameters (matched by name against `env`)
+    /// with concrete types. This is the core of generic instantiation on the
+    /// guest side (see [`TypeDef::instantiate`]).
+    pub fn substitute(&self, env: &std::collections::HashMap<String, Type>) -> Type {
+        match self {
+            Type::Named(name) => env.get(name).cloned().unwrap_or_else(|| self.clone()),
+            Type::List(inner) => Type::List(Box::new(inner.substitute(env))),
+            Type::Option(inner) => Type::Option(Box::new(inner.substitute(env))),
+            Type::Result { ok, err } => Type::Result {
+                ok: ok.as_ref().map(|t| Box::new(t.substitute(env))),
+                err: err.as_ref().map(|t| Box::new(t.substitute(env))),
+            },
+            Type::Tuple(items) => Type::Tuple(items.iter().map(|t| t.substitute(env)).collect()),
+            Type::App { name, args } => Type::App {
+                name: name.clone(),
+                args: args.iter().map(|t| t.substitute(env)).collect(),
+            },
+            _ => self.clone(),
+        }
+    }
+}
+
 impl TypeDef {
     pub fn name(&self) -> &str {
         match self {
@@ -353,6 +392,55 @@ impl TypeDef {
             TypeDef::Variant { name, .. } => name,
             TypeDef::Enum { name, .. } => name,
             TypeDef::Flags { name, .. } => name,
+        }
+    }
+
+    /// Generic type parameters (empty for non-generic defs and enum/flags).
+    pub fn type_params(&self) -> &[String] {
+        match self {
+            TypeDef::Alias { type_params, .. }
+            | TypeDef::Record { type_params, .. }
+            | TypeDef::Variant { type_params, .. } => type_params,
+            TypeDef::Enum { .. } | TypeDef::Flags { .. } => &[],
+        }
+    }
+
+    /// Instantiate a generic definition by binding its type parameters to
+    /// concrete `args`, producing a monomorphic definition with every
+    /// parameter reference substituted away. Callers check arity first.
+    pub fn instantiate(&self, args: &[Type]) -> TypeDef {
+        let env: std::collections::HashMap<String, Type> = self
+            .type_params()
+            .iter()
+            .cloned()
+            .zip(args.iter().cloned())
+            .collect();
+        match self {
+            TypeDef::Alias { name, ty, .. } => TypeDef::Alias {
+                name: name.clone(),
+                type_params: Vec::new(),
+                ty: ty.substitute(&env),
+            },
+            TypeDef::Record { name, fields, .. } => TypeDef::Record {
+                name: name.clone(),
+                type_params: Vec::new(),
+                fields: fields
+                    .iter()
+                    .map(|(n, t)| (n.clone(), t.substitute(&env)))
+                    .collect(),
+            },
+            TypeDef::Variant { name, cases, .. } => TypeDef::Variant {
+                name: name.clone(),
+                type_params: Vec::new(),
+                cases: cases
+                    .iter()
+                    .map(|c| VariantCase {
+                        name: c.name.clone(),
+                        payload: c.payload.as_ref().map(|t| t.substitute(&env)),
+                    })
+                    .collect(),
+            },
+            TypeDef::Enum { .. } | TypeDef::Flags { .. } => self.clone(),
         }
     }
 }
@@ -881,6 +969,43 @@ pub fn try_parse_typedef_public(parser: &mut Parser) -> Result<Option<TypeDef>, 
     try_parse_typedef(parser)
 }
 
+/// Parse an optional generic parameter list following a type name: `<a, b>`.
+/// Returns an empty vec if no `<` follows.
+fn parse_type_param_list(parser: &mut Parser) -> Result<Vec<String>, ParseError> {
+    let mut params = Vec::new();
+    if !parser.accept_symbol('<') {
+        return Ok(params);
+    }
+    loop {
+        if parser.accept_symbol('>') {
+            break;
+        }
+        params.push(parser.expect_ident()?);
+        if parser.accept_symbol('>') {
+            break;
+        }
+        parser.expect_symbol(',')?;
+    }
+    Ok(params)
+}
+
+/// Parse `<t, u, ...>` as a list of type arguments (leading `<` required).
+fn parse_type_arg_list(parser: &mut Parser) -> Result<Vec<Type>, ParseError> {
+    parser.expect_symbol('<')?;
+    let mut args = Vec::new();
+    loop {
+        if parser.accept_symbol('>') {
+            break;
+        }
+        args.push(parse_type(parser)?);
+        if parser.accept_symbol('>') {
+            break;
+        }
+        parser.expect_symbol(',')?;
+    }
+    Ok(args)
+}
+
 fn try_parse_typedef(parser: &mut Parser) -> Result<Option<TypeDef>, ParseError> {
     let keyword = match parser.peek() {
         Token::Ident(s) => s.clone(),
@@ -891,13 +1016,19 @@ fn try_parse_typedef(parser: &mut Parser) -> Result<Option<TypeDef>, ParseError>
         "type" => {
             parser.next();
             let name = parser.expect_ident()?;
+            let type_params = parse_type_param_list(parser)?;
             parser.expect_symbol('=')?;
             let ty = parse_type(parser)?;
-            Ok(Some(TypeDef::Alias { name, ty }))
+            Ok(Some(TypeDef::Alias {
+                name,
+                type_params,
+                ty,
+            }))
         }
         "record" => {
             parser.next();
             let name = parser.expect_ident()?;
+            let type_params = parse_type_param_list(parser)?;
             parser.expect_symbol('{')?;
             let mut fields = Vec::new();
             while !parser.accept_symbol('}') {
@@ -907,11 +1038,16 @@ fn try_parse_typedef(parser: &mut Parser) -> Result<Option<TypeDef>, ParseError>
                 fields.push((field_name, field_type));
                 parser.accept_symbol(',');
             }
-            Ok(Some(TypeDef::Record { name, fields }))
+            Ok(Some(TypeDef::Record {
+                name,
+                type_params,
+                fields,
+            }))
         }
         "variant" => {
             parser.next();
             let name = parser.expect_ident()?;
+            let type_params = parse_type_param_list(parser)?;
             parser.expect_symbol('{')?;
             let mut cases = Vec::new();
             while !parser.accept_symbol('}') {
@@ -929,7 +1065,11 @@ fn try_parse_typedef(parser: &mut Parser) -> Result<Option<TypeDef>, ParseError>
                 });
                 parser.accept_symbol(',');
             }
-            Ok(Some(TypeDef::Variant { name, cases }))
+            Ok(Some(TypeDef::Variant {
+                name,
+                type_params,
+                cases,
+            }))
         }
         "enum" => {
             parser.next();
@@ -1170,7 +1310,16 @@ pub(crate) fn parse_type(parser: &mut Parser) -> Result<Type, ParseError> {
                 err: err.map(Box::new),
             })
         }
-        _ => Ok(Type::Named(ident)),
+        _ => {
+            // Generic type application `name<...>`, or a bare named reference
+            // (which also covers in-scope type-parameter references).
+            if matches!(parser.peek(), Token::Symbol('<')) {
+                let args = parse_type_arg_list(parser)?;
+                Ok(Type::App { name: ident, args })
+            } else {
+                Ok(Type::Named(ident))
+            }
+        }
     }
 }
 
@@ -1223,7 +1372,7 @@ mod tests {
 
         // Check the variant
         match &world.types[0] {
-            TypeDef::Variant { name, cases } => {
+            TypeDef::Variant { name, cases, .. } => {
                 assert_eq!(name, "sexpr");
                 assert_eq!(cases.len(), 4);
             }
@@ -1248,9 +1397,84 @@ mod tests {
         assert_eq!(world.types.len(), 1);
 
         match &world.types[0] {
-            TypeDef::Record { name, fields } => {
+            TypeDef::Record { name, fields, .. } => {
                 assert_eq!(name, "point");
                 assert_eq!(fields.len(), 2);
+            }
+            _ => panic!("expected record"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod generic_tests {
+    use super::*;
+
+    #[test]
+    fn parses_generic_typedefs_and_application() {
+        let src = r#"
+            record pair<a, b> {
+                first: a,
+                second: b,
+            }
+            variant tree<t> {
+                leaf(t),
+                branch(list<tree<t>>),
+            }
+            type boxed<t> = tree<t>
+        "#;
+        let reg = parse_wit(src).expect("parse generic wit");
+
+        let pair = reg.types.iter().find(|t| t.name() == "pair").unwrap();
+        assert_eq!(pair.type_params(), ["a", "b"]);
+        match pair {
+            TypeDef::Record { fields, .. } => {
+                assert_eq!(fields[0].1, Type::Named("a".into()));
+                assert_eq!(fields[1].1, Type::Named("b".into()));
+            }
+            _ => panic!("expected record"),
+        }
+
+        let tree = reg.types.iter().find(|t| t.name() == "tree").unwrap();
+        assert_eq!(tree.type_params(), ["t"]);
+        match tree {
+            TypeDef::Variant { cases, .. } => {
+                let branch = cases.iter().find(|c| c.name == "branch").unwrap();
+                assert_eq!(
+                    branch.payload,
+                    Some(Type::List(Box::new(Type::App {
+                        name: "tree".into(),
+                        args: vec![Type::Named("t".into())],
+                    })))
+                );
+            }
+            _ => panic!("expected variant"),
+        }
+
+        let boxed = reg.types.iter().find(|t| t.name() == "boxed").unwrap();
+        assert_eq!(boxed.type_params(), ["t"]);
+    }
+
+    #[test]
+    fn instantiate_substitutes_params() {
+        let td = TypeDef::Record {
+            name: "pair".into(),
+            type_params: vec!["a".into(), "b".into()],
+            fields: vec![
+                ("first".into(), Type::Named("a".into())),
+                ("second".into(), Type::Named("b".into())),
+            ],
+        };
+        let inst = td.instantiate(&[Type::U32, Type::String]);
+        match inst {
+            TypeDef::Record {
+                type_params,
+                fields,
+                ..
+            } => {
+                assert!(type_params.is_empty());
+                assert_eq!(fields[0].1, Type::U32);
+                assert_eq!(fields[1].1, Type::String);
             }
             _ => panic!("expected record"),
         }

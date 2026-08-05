@@ -85,6 +85,15 @@ fn generate_type_ref(ty: &Type, self_type_name: Option<&str>) -> TokenStream {
             let rust_name = to_rust_type_name(name);
             quote! { #rust_name }
         }
+        Type::App { name, args } => {
+            // Generic type application, e.g. `pair<u32, string>` -> `Pair<u32, String>`.
+            let rust_name = to_rust_type_name(name);
+            let arg_tys: Vec<_> = args
+                .iter()
+                .map(|t| generate_type_ref(t, self_type_name))
+                .collect();
+            quote! { #rust_name<#(#arg_tys),*> }
+        }
         Type::SelfRef => {
             if let Some(name) = self_type_name {
                 let rust_name = to_rust_type_name(name);
@@ -95,6 +104,29 @@ fn generate_type_ref(ty: &Type, self_type_name: Option<&str>) -> TokenStream {
             }
         }
     }
+}
+
+/// Build the `<A, B>` generic clause and the trait-bound `where` clause for a
+/// generic type definition with the given WIT type-parameter names. Returns
+/// empty token streams for a non-generic definition, so existing (non-generic)
+/// codegen is unchanged. The bounds mirror what the hand-written `From`/
+/// `TryFrom` impls need of each parameter:
+///   - `A: Into<Value>`                             (encode)
+///   - `A: TryFrom<Value, Error = ConversionError>` (decode)
+fn generic_parts(type_params: &[String]) -> (TokenStream, TokenStream) {
+    if type_params.is_empty() {
+        return (quote! {}, quote! {});
+    }
+    let idents: Vec<syn::Ident> = type_params.iter().map(|p| to_rust_type_name(p)).collect();
+    let generics = quote! { <#(#idents),*> };
+    let bounds = idents.iter().map(|id| {
+        quote! {
+            #id: ::core::convert::Into<packr_guest::Value>
+                + ::core::convert::TryFrom<packr_guest::Value, Error = packr_guest::ConversionError>
+        }
+    });
+    let where_clause = quote! { where #(#bounds),* };
+    (generics, where_clause)
 }
 
 /// Generate Value conversion expression for a type (Rust value -> Value)
@@ -170,9 +202,13 @@ fn generate_to_value(ty: &Type, expr: TokenStream, self_type_name: Option<&str>)
                 }
             }
         }
-        Type::Named(_) | Type::SelfRef => {
-            // Named types and self-refs implement Into<Value>
-            quote! { packr_guest::Value::from(#expr) }
+        Type::Named(_) | Type::App { .. } | Type::SelfRef => {
+            // Named types, generic applications, and self-refs implement
+            // Into<Value>. Route through `Into::into` (rather than
+            // `Value::from`) so that a generic parameter's `A: Into<Value>`
+            // bound is never mis-selected for a concrete/container field whose
+            // own impl should apply.
+            quote! { ::core::convert::Into::<packr_guest::Value>::into(#expr) }
         }
     }
 }
@@ -444,6 +480,11 @@ fn generate_from_value(ty: &Type, expr: TokenStream, self_type_name: Option<&str
             let rust_name = to_rust_type_name(name);
             quote! { <#rust_name>::try_from(#expr)? }
         }
+        Type::App { .. } => {
+            // Generic application, e.g. `<Pair<u32, String>>::try_from(...)`.
+            let ty = generate_type_ref(ty, self_type_name);
+            quote! { <#ty>::try_from(#expr)? }
+        }
         Type::SelfRef => {
             if let Some(name) = self_type_name {
                 let rust_name = to_rust_type_name(name);
@@ -458,25 +499,39 @@ fn generate_from_value(ty: &Type, expr: TokenStream, self_type_name: Option<&str
 /// Generate a complete Rust type definition with From/TryFrom impls
 pub fn generate_type_def(typedef: &TypeDef) -> TokenStream {
     match typedef {
-        TypeDef::Alias { name, ty } => generate_alias(name, ty),
-        TypeDef::Record { name, fields } => generate_record(name, fields),
-        TypeDef::Variant { name, cases } => generate_variant(name, cases),
+        TypeDef::Alias {
+            name,
+            type_params,
+            ty,
+        } => generate_alias(name, type_params, ty),
+        TypeDef::Record {
+            name,
+            type_params,
+            fields,
+        } => generate_record(name, type_params, fields),
+        TypeDef::Variant {
+            name,
+            type_params,
+            cases,
+        } => generate_variant(name, type_params, cases),
         TypeDef::Enum { name, cases } => generate_enum(name, cases),
         TypeDef::Flags { name, flags } => generate_flags(name, flags),
     }
 }
 
-fn generate_alias(name: &str, ty: &Type) -> TokenStream {
+fn generate_alias(name: &str, type_params: &[String], ty: &Type) -> TokenStream {
     let rust_name = to_rust_type_name(name);
+    let (generics, _) = generic_parts(type_params);
     let rust_ty = generate_type_ref(ty, None);
 
     quote! {
-        pub type #rust_name = #rust_ty;
+        pub type #rust_name #generics = #rust_ty;
     }
 }
 
-fn generate_record(name: &str, fields: &[(String, Type)]) -> TokenStream {
+fn generate_record(name: &str, type_params: &[String], fields: &[(String, Type)]) -> TokenStream {
     let rust_name = to_rust_type_name(name);
+    let (generics, where_clause) = generic_parts(type_params);
 
     let field_defs: Vec<_> = fields
         .iter()
@@ -517,17 +572,17 @@ fn generate_record(name: &str, fields: &[(String, Type)]) -> TokenStream {
 
     quote! {
         #[derive(Debug, Clone, PartialEq)]
-        pub struct #rust_name {
+        pub struct #rust_name #generics {
             #(#field_defs),*
         }
 
-        impl From<#rust_name> for packr_guest::Value {
-            fn from(value: #rust_name) -> packr_guest::Value {
+        impl #generics From<#rust_name #generics> for packr_guest::Value #where_clause {
+            fn from(value: #rust_name #generics) -> packr_guest::Value {
                 packr_guest::Value::Record(::alloc::vec![#(#field_to_value),*])
             }
         }
 
-        impl TryFrom<packr_guest::Value> for #rust_name {
+        impl #generics TryFrom<packr_guest::Value> for #rust_name #generics #where_clause {
             type Error = packr_guest::ConversionError;
 
             fn try_from(value: packr_guest::Value) -> Result<Self, Self::Error> {
@@ -546,8 +601,9 @@ fn generate_record(name: &str, fields: &[(String, Type)]) -> TokenStream {
     }
 }
 
-fn generate_variant(name: &str, cases: &[VariantCase]) -> TokenStream {
+fn generate_variant(name: &str, type_params: &[String], cases: &[VariantCase]) -> TokenStream {
     let rust_name = to_rust_type_name(name);
+    let (generics, where_clause) = generic_parts(type_params);
 
     let case_defs: Vec<_> = cases
         .iter()
@@ -614,19 +670,19 @@ fn generate_variant(name: &str, cases: &[VariantCase]) -> TokenStream {
 
     quote! {
         #[derive(Debug, Clone, PartialEq)]
-        pub enum #rust_name {
+        pub enum #rust_name #generics {
             #(#case_defs),*
         }
 
-        impl From<#rust_name> for packr_guest::Value {
-            fn from(value: #rust_name) -> packr_guest::Value {
+        impl #generics From<#rust_name #generics> for packr_guest::Value #where_clause {
+            fn from(value: #rust_name #generics) -> packr_guest::Value {
                 match value {
                     #(#to_value_arms),*
                 }
             }
         }
 
-        impl TryFrom<packr_guest::Value> for #rust_name {
+        impl #generics TryFrom<packr_guest::Value> for #rust_name #generics #where_clause {
             type Error = packr_guest::ConversionError;
 
             fn try_from(value: packr_guest::Value) -> Result<Self, Self::Error> {
@@ -1097,6 +1153,10 @@ fn format_wit_type(ty: &Type) -> String {
             format!("tuple<{}>", item_strs.join(", "))
         }
         Type::Named(name) => name.clone(),
+        Type::App { name, args } => {
+            let arg_strs: Vec<String> = args.iter().map(format_wit_type).collect();
+            format!("{}<{}>", name, arg_strs.join(", "))
+        }
         Type::SelfRef => "self".to_string(),
     }
 }
@@ -1241,4 +1301,82 @@ pub fn collect_exports(registry: &WitRegistry, world: &World) -> Vec<ExportInfo>
     }
 
     exports
+}
+
+#[cfg(test)]
+mod generic_tests {
+    use super::*;
+    use crate::wit_parser::{Type, TypeDef, VariantCase};
+
+    /// The generated code must at least be syntactically valid Rust.
+    fn assert_valid_rust(ts: &TokenStream) {
+        syn::parse2::<syn::File>(ts.clone())
+            .unwrap_or_else(|e| panic!("generated code is not valid Rust: {e}\n{ts}"));
+    }
+
+    #[test]
+    fn type_ref_application_lowers_to_generic() {
+        let ty = Type::App {
+            name: "pair".into(),
+            args: vec![Type::U32, Type::String],
+        };
+        let out = generate_type_ref(&ty, None);
+        assert_eq!(
+            out.to_string(),
+            "Pair < u32 , :: alloc :: string :: String >"
+        );
+    }
+
+    #[test]
+    fn generic_record_codegen_is_valid_and_parameterized() {
+        let td = TypeDef::Record {
+            name: "pair".into(),
+            type_params: vec!["a".into(), "b".into()],
+            fields: vec![
+                ("first".into(), Type::Named("a".into())),
+                ("second".into(), Type::Named("b".into())),
+            ],
+        };
+        let out = generate_type_def(&td);
+        assert_valid_rust(&out);
+        let s = out.to_string();
+        assert!(s.contains("struct Pair < A , B >"), "{s}");
+        assert!(s.contains("impl < A , B > From < Pair < A , B > >"), "{s}");
+        assert!(
+            s.contains("TryFrom < packr_guest :: Value > for Pair < A , B >"),
+            "{s}"
+        );
+        // The parameter bounds must be present on the impls.
+        assert!(s.contains("Into < packr_guest :: Value >"), "{s}");
+        assert!(s.contains("Error = packr_guest :: ConversionError"), "{s}");
+    }
+
+    #[test]
+    fn recursive_generic_variant_codegen_is_valid() {
+        // variant tree<t> { leaf(t), branch(tuple<tree<t>, tree<t>>) }
+        let app = || Type::App {
+            name: "tree".into(),
+            args: vec![Type::Named("t".into())],
+        };
+        let td = TypeDef::Variant {
+            name: "tree".into(),
+            type_params: vec!["t".into()],
+            cases: vec![
+                VariantCase {
+                    name: "leaf".into(),
+                    payload: Some(Type::Named("t".into())),
+                },
+                VariantCase {
+                    name: "branch".into(),
+                    payload: Some(Type::Tuple(vec![app(), app()])),
+                },
+            ],
+        };
+        let out = generate_type_def(&td);
+        assert_valid_rust(&out);
+        let s = out.to_string();
+        assert!(s.contains("enum Tree < T >"), "{s}");
+        // The recursive application lowers to the parameterized Rust type.
+        assert!(s.contains("Tree < T >"), "{s}");
+    }
 }
