@@ -152,13 +152,53 @@ fn has_forward_compatible(attrs: &[Attribute]) -> bool {
     false
 }
 
+/// Clone a type's generics and add the trait bounds that every generated impl
+/// needs on each generic type parameter, so `#[derive(GraphValue)]` works on
+/// generic types (e.g. `struct Pair<A, B>`). A parameter `A` must be able to
+/// round-trip through `Value` and describe itself, so we require:
+///   - `A: Into<Value>`                             (for `From<T> for Value`)
+///   - `A: TryFrom<Value, Error = ConversionError>` (for `TryFrom<Value> for T`)
+///   - `A: KnownValueType`                          (for tuple/enum `KnownValueType`)
+///
+/// These are exactly the bounds packr's blanket container impls require of an
+/// element type, so fields like `Vec<A>` also satisfy their impls. The encode
+/// direction is emitted as `Into::<Value>::into(field)` (not `Value::from`) so
+/// that a `A: Into<Value>` where-bound doesn't get mis-selected for a container
+/// or concrete field whose own `Into<Value>` impl should be used instead.
+///
+/// The same (superset) where-clause is shared by all three impls, which is why
+/// every bound is added even though a given impl may only use some of them.
+/// Non-generic inputs get no added predicates, so existing derives are
+/// byte-for-byte unchanged.
+fn augmented_generics(generics: &syn::Generics, krate: &proc_macro2::TokenStream) -> syn::Generics {
+    let mut generics = generics.clone();
+    let type_idents: Vec<syn::Ident> = generics.type_params().map(|tp| tp.ident.clone()).collect();
+    if type_idents.is_empty() {
+        return generics;
+    }
+    let where_clause = generics.make_where_clause();
+    for ident in type_idents {
+        where_clause
+            .predicates
+            .push(syn::parse_quote!(#ident: ::core::convert::Into<#krate::Value>));
+        where_clause.predicates.push(syn::parse_quote!(
+            #ident: #krate::__private::TryFrom<#krate::Value, Error = #krate::ConversionError>
+        ));
+        where_clause
+            .predicates
+            .push(syn::parse_quote!(#ident: #krate::KnownValueType));
+    }
+    generics
+}
+
 fn derive_struct(
     input: &DeriveInput,
     data: &syn::DataStruct,
     krate: &proc_macro2::TokenStream,
 ) -> proc_macro2::TokenStream {
     let name = &input.ident;
-    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+    let generics = augmented_generics(&input.generics, krate);
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
     let forward_compatible = has_forward_compatible(&input.attrs);
 
     match &data.fields {
@@ -218,7 +258,7 @@ fn derive_struct(
                     quote! {
                         (
                             #krate::__private::String::from(#field_name_str),
-                            #krate::Value::from(value.#field_name)
+                            ::core::convert::Into::<#krate::Value>::into(value.#field_name)
                         )
                     }
                 })
@@ -329,7 +369,7 @@ fn derive_struct(
                 impl #impl_generics #krate::__private::From<#name #ty_generics> for #krate::Value #where_clause {
                     fn from(value: #name #ty_generics) -> #krate::Value {
                         #krate::Value::Tuple(#krate::__private::vec![
-                            #(#krate::Value::from(value.#field_indices)),*
+                            #(::core::convert::Into::<#krate::Value>::into(value.#field_indices)),*
                         ])
                     }
                 }
@@ -408,7 +448,8 @@ fn derive_enum(
 ) -> proc_macro2::TokenStream {
     let name = &input.ident;
     let type_name_str = name.to_string();
-    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+    let generics = augmented_generics(&input.generics, krate);
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
 
     // Generate match arms for From<T> for Value
     let to_value_arms: Vec<_> = data
@@ -438,7 +479,7 @@ fn derive_enum(
                             quote! {
                                 (
                                     #krate::__private::String::from(#field_name_str),
-                                    #krate::Value::from(#field_name)
+                                    ::core::convert::Into::<#krate::Value>::into(#field_name)
                                 )
                             }
                         })
@@ -473,7 +514,7 @@ fn derive_enum(
                                 case_name: #krate::__private::String::from(#case_name_str),
                                 tag: #tag,
                                 payload: #krate::__private::vec![
-                                    #(#krate::Value::from(#field_names)),*
+                                    #(::core::convert::Into::<#krate::Value>::into(#field_names)),*
                                 ],
                             }
                         }
