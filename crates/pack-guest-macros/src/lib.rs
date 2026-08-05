@@ -1633,8 +1633,27 @@ fn parse_and_encode_metadata(input: &str) -> Result<Vec<u8>, String> {
     let mut imports = Vec::new();
     let mut exports = Vec::new();
     let mut types = Vec::new();
+    let mut type_params: Vec<metadata::TypeParam> = Vec::new();
 
     while !parser.is_eof() {
+        // Interface-level generic parameter: `type s: constraint`. Distinguished
+        // from a `type s = ...` alias by the `:` in third position (a generic
+        // alias `type s<a> = ...` has `<` there instead). We define this syntax
+        // to mirror the host pact convention.
+        if parser.peek_n_is_ident(0, "type") && parser.peek_n_is_symbol(2, ':') {
+            parser.accept_ident("type");
+            let name = parser.expect_ident().map_err(|e| e.to_string())?;
+            parser.expect_symbol(':').map_err(|e| e.to_string())?;
+            let constraint = parser.expect_ident().map_err(|e| e.to_string())?;
+            type_params.push(metadata::TypeParam {
+                name,
+                constraint: Some(constraint),
+            });
+            parser.accept_symbol(',');
+            parser.accept_symbol(';');
+            continue;
+        }
+
         // Try to parse a type definition (record, variant, enum, flags, type alias)
         if let Some(td) = wit_parser::try_parse_typedef_public(&mut parser)
             .map_err(|e| format!("type definition error: {}", e))?
@@ -1658,7 +1677,7 @@ fn parse_and_encode_metadata(input: &str) -> Result<Vec<u8>, String> {
         }
     }
 
-    Ok(metadata::encode_metadata(&imports, &exports))
+    Ok(metadata::encode_metadata(&imports, &exports, &type_params))
 }
 
 /// Parse an interface path like "theater:simple/runtime" or just "math".
@@ -1994,5 +2013,80 @@ mod tests {
         );
         let iface_hashes = metadata::compute_interface_hashes(&sigs);
         assert_eq!(iface_hashes[0].hash, expected);
+    }
+
+    // ========================================================================
+    // Interface-level generics (M4-guest): embed type_params in __pack_types
+    // ========================================================================
+
+    /// The decoded `type-params` field, as a list of (name, constraint) pairs,
+    /// mirroring exactly what the host `decode_type_param_list` reads.
+    fn decoded_type_params(bytes: &[u8]) -> Vec<(String, String)> {
+        let val = packr_abi::decode(bytes).expect("decode metadata");
+        let packr_abi::Value::Record { fields, .. } = val else {
+            panic!("expected record");
+        };
+        let mut out = Vec::new();
+        for (name, v) in fields {
+            if name != "type-params" {
+                continue;
+            }
+            let packr_abi::Value::List { items, .. } = v else {
+                panic!("type-params must be a list");
+            };
+            for item in items {
+                if let packr_abi::Value::Record { fields, .. } = item {
+                    let mut n = String::new();
+                    let mut c = String::new();
+                    for (fname, fval) in fields {
+                        if let packr_abi::Value::String(s) = fval {
+                            match fname.as_str() {
+                                "name" => n = s,
+                                "constraint" => c = s,
+                                _ => {}
+                            }
+                        }
+                    }
+                    out.push((n, c));
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn embeds_interface_type_params() {
+        // `type s: serializable` at the top level declares an interface-level
+        // generic; a function signature then uses it.
+        let src = "type s: serializable\nexports { get: func() -> s }";
+        let bytes = parse_and_encode_metadata(src).expect("parse generic interface");
+        assert_eq!(
+            decoded_type_params(&bytes),
+            vec![("s".to_string(), "serializable".to_string())]
+        );
+    }
+
+    #[test]
+    fn non_generic_omits_type_params_field() {
+        // No interface parameter => no `type-params` field at all, so a
+        // non-generic package is byte-identical to before this change.
+        let src = "exports { ping: func() -> bool }";
+        let bytes = parse_and_encode_metadata(src).expect("parse plain interface");
+        assert!(decoded_type_params(&bytes).is_empty());
+        assert!(
+            !String::from_utf8_lossy(&bytes).contains("type-params"),
+            "non-generic metadata must not carry a type-params field"
+        );
+    }
+
+    #[test]
+    fn interface_param_is_not_confused_with_alias() {
+        // `type s = u32` is an ALIAS (a type def), not an interface parameter.
+        let src = "type s = u32\nexports { get: func() -> s }";
+        let bytes = parse_and_encode_metadata(src).expect("parse alias");
+        assert!(
+            decoded_type_params(&bytes).is_empty(),
+            "a `type x = ...` alias must not be read as an interface parameter"
+        );
     }
 }

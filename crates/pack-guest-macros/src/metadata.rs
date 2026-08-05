@@ -19,6 +19,15 @@ pub struct FuncSig {
     pub results: Vec<TypeDesc>,
 }
 
+/// An interface-level generic type parameter (e.g. `type s: serializable`),
+/// embedded so composition can tell which signature type-references are generic
+/// parameters. The constraint is an interface name the concrete type must
+/// satisfy (carried, not yet enforced).
+pub struct TypeParam {
+    pub name: String,
+    pub constraint: Option<String>,
+}
+
 /// A type descriptor for metadata encoding.
 pub enum TypeDesc {
     Bool,
@@ -340,46 +349,80 @@ fn interface_hash_to_value(ih: &InterfaceHash) -> Value {
 }
 
 /// Encode metadata (imports, exports, and interface hashes) into CGRF bytes.
-pub fn encode_metadata(imports: &[FuncSig], exports: &[FuncSig]) -> Vec<u8> {
+pub fn encode_metadata(
+    imports: &[FuncSig],
+    exports: &[FuncSig],
+    type_params: &[TypeParam],
+) -> Vec<u8> {
     // Compute interface hashes
     let import_hashes = compute_interface_hashes(imports);
     let export_hashes = compute_interface_hashes(exports);
 
+    let mut fields = vec![
+        (
+            "imports".into(),
+            Value::List {
+                elem_type: ValueType::Record("".into()),
+                items: imports.iter().map(func_sig_to_value).collect(),
+            },
+        ),
+        (
+            "exports".into(),
+            Value::List {
+                elem_type: ValueType::Record("".into()),
+                items: exports.iter().map(func_sig_to_value).collect(),
+            },
+        ),
+        (
+            "import-hashes".into(),
+            Value::List {
+                elem_type: ValueType::Record("".into()),
+                items: import_hashes.iter().map(interface_hash_to_value).collect(),
+            },
+        ),
+        (
+            "export-hashes".into(),
+            Value::List {
+                elem_type: ValueType::Record("".into()),
+                items: export_hashes.iter().map(interface_hash_to_value).collect(),
+            },
+        ),
+    ];
+
+    // Interface-level generic parameters. Emitted only when present, so a
+    // non-generic package encodes byte-identically to before this field existed.
+    // Format matches the host decoder (`decode_type_param_list` in
+    // pack/src/metadata.rs): a list of `{name, constraint}` records with an
+    // empty constraint string meaning "none".
+    if !type_params.is_empty() {
+        fields.push((
+            "type-params".into(),
+            Value::List {
+                elem_type: ValueType::Record("".into()),
+                items: type_params.iter().map(type_param_to_value).collect(),
+            },
+        ));
+    }
+
     let metadata = Value::Record {
         type_name: "package-metadata".into(),
-        fields: vec![
-            (
-                "imports".into(),
-                Value::List {
-                    elem_type: ValueType::Record("".into()),
-                    items: imports.iter().map(func_sig_to_value).collect(),
-                },
-            ),
-            (
-                "exports".into(),
-                Value::List {
-                    elem_type: ValueType::Record("".into()),
-                    items: exports.iter().map(func_sig_to_value).collect(),
-                },
-            ),
-            (
-                "import-hashes".into(),
-                Value::List {
-                    elem_type: ValueType::Record("".into()),
-                    items: import_hashes.iter().map(interface_hash_to_value).collect(),
-                },
-            ),
-            (
-                "export-hashes".into(),
-                Value::List {
-                    elem_type: ValueType::Record("".into()),
-                    items: export_hashes.iter().map(interface_hash_to_value).collect(),
-                },
-            ),
-        ],
+        fields,
     };
 
     encode(&metadata).expect("failed to encode metadata")
+}
+
+fn type_param_to_value(tp: &TypeParam) -> Value {
+    Value::Record {
+        type_name: "type-param".into(),
+        fields: vec![
+            ("name".into(), Value::String(tp.name.clone())),
+            (
+                "constraint".into(),
+                Value::String(tp.constraint.clone().unwrap_or_default()),
+            ),
+        ],
+    }
 }
 
 /// Convert a WIT parser Type to a TypeDesc.

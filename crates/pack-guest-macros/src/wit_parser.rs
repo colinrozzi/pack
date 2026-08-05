@@ -691,6 +691,10 @@ impl Parser {
     pub(crate) fn peek_n_is_ident(&self, n: usize, expected: &str) -> bool {
         matches!(self.peek_n(n), Token::Ident(s) if s == expected)
     }
+
+    pub(crate) fn peek_n_is_symbol(&self, n: usize, expected: char) -> bool {
+        matches!(self.peek_n(n), Token::Symbol(c) if *c == expected)
+    }
 }
 
 // ============================================================================
