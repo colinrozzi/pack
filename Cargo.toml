@@ -30,6 +30,8 @@ exclude = [
     "packages/sexpr",
     "packages/typed-actor",
     "packages/typed-math",
+    "packages/gen-node",
+    "packages/gen-sm",
 ]
 
 [workspace.package]
