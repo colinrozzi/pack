@@ -1,5 +1,43 @@
 # Changelog
 
+## v0.13.0 (2026-08-05)
+
+### Added
+
+- **User-defined generics.** Pact now supports first-order, fully-applied generic
+  types — parameterized `record`/`variant`/`type` (`record pair<a, b>`, recursive
+  `variant tree<t>`, `type boxed<t> = list<t>`) — with arity checking and argument
+  substitution in the resolver, on both the host pact parser and the guest WIT+
+  code generator. See [`docs/generics.md`](docs/generics.md).
+- **`#[derive(GraphValue)]` on generic types.** The derive now injects the bounds
+  each type parameter needs to round-trip through the ABI, so deriving on a generic
+  `struct Pair<A, B>` (or enum) works directly. packr ships the machinery, not a
+  CRDT/data-structure library — define your own `OrSet<T>` etc. and derive.
+- **Generic interfaces + compose-time unification.** An interface can be
+  parameterized (`type s: constraint`), and composition can wire a generic side to
+  a concrete one — e.g. an RSM node generic over its SM `state<s>` composed with a
+  concrete SM that pins `s`. On an interface-hash mismatch, compose structurally
+  unifies the generic signatures against the concrete side, binds every parameter
+  consistently, and reconciles the link. Only generic↔concrete is supported.
+- Interface-level `type_params` are embedded into `__pack_types` metadata (host and
+  guest), so composition can identify which signature type-references are generic
+  parameters. Emitted only for generic interfaces, so non-generic packages are
+  byte-identical.
+- End-to-end test (`tests/compose_generic.rs`) composing a real generic node with a
+  concrete state machine on real wasm and asserting the value crosses the reconciled
+  generic boundary.
+
+### Notes
+
+- **Type-parameter erasure keeps this wire-compatible.** Because the ABI is
+  structural, a generic instantiation encodes byte-identically to the equivalent
+  monomorphic type — there is no wire-format change and no monomorphization, so
+  this ships as a backward-compatible minor and existing packages are unaffected.
+- Not yet implemented: higher-kinded/const generics, constraint *enforcement*
+  (constraints are carried but not checked), `wit!`-macro codegen of a generic
+  component trait (hand-written components work today), and a generic `Option<T>`
+  field in the derive.
+
 ## v0.12.7 (2026-08-02)
 
 ### Fixed

@@ -209,6 +209,13 @@ variant lit {
 
 ### Type parameters
 
+> **Implemented (v0.13.0):** first-order, fully-applied generics on records,
+> variants, and aliases (`pair<A, B>`, recursive `tree<T>`), generic interfaces
+> (`type s: constraint`), and compose-time unification of a generic interface
+> against a concrete one. See [`generics.md`](generics.md) for the shipped
+> feature. The higher-kinded (`<F: * -> *>`) and const-generic forms below
+> remain design, not implementation.
+
 Types and interfaces can be parameterized over types of any kind:
 
 ```pact

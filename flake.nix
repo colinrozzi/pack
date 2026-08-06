@@ -72,7 +72,7 @@
 
         packages.default = pkgs.rustPlatform.buildRustPackage {
           pname = "packr";
-          version = "0.12.7";
+          version = "0.13.0";
 
           src = ./.;
 
