@@ -1665,12 +1665,14 @@ fn parse_and_encode_metadata(input: &str) -> Result<Vec<u8>, String> {
         }
 
         if parser.accept_ident("imports") {
+            let param_names: Vec<String> = type_params.iter().map(|tp| tp.name.clone()).collect();
             parser.expect_symbol('{').map_err(|e| e.to_string())?;
-            parse_import_sigs(&mut parser, &mut imports, &types)?;
+            parse_import_sigs(&mut parser, &mut imports, &types, &param_names)?;
             parser.expect_symbol('}').map_err(|e| e.to_string())?;
         } else if parser.accept_ident("exports") {
+            let param_names: Vec<String> = type_params.iter().map(|tp| tp.name.clone()).collect();
             parser.expect_symbol('{').map_err(|e| e.to_string())?;
-            parse_func_sigs_into(&mut parser, "", &mut exports, &types)?;
+            parse_func_sigs_into(&mut parser, "", &mut exports, &types, &param_names)?;
             parser.expect_symbol('}').map_err(|e| e.to_string())?;
         } else {
             return Err("expected type definition, 'imports', or 'exports'".into());
@@ -1705,11 +1707,12 @@ fn parse_import_sigs(
     parser: &mut wit_parser::Parser,
     sigs: &mut Vec<metadata::FuncSig>,
     types: &[wit_parser::TypeDef],
+    params: &[String],
 ) -> Result<(), String> {
     while !parser.peek_is_symbol('}') && !parser.is_eof() {
         let iface_name = parse_interface_path(parser)?;
         parser.expect_symbol('{').map_err(|e| e.to_string())?;
-        parse_func_sigs_into(parser, &iface_name, sigs, types)?;
+        parse_func_sigs_into(parser, &iface_name, sigs, types, params)?;
         parser.expect_symbol('}').map_err(|e| e.to_string())?;
         parser.accept_symbol(',');
     }
@@ -1762,6 +1765,7 @@ fn parse_func_sigs_into(
     interface: &str,
     sigs: &mut Vec<metadata::FuncSig>,
     types: &[wit_parser::TypeDef],
+    params: &[String],
 ) -> Result<(), String> {
     // Typedefs declared inside this block (e.g. `record foo { ... }`) shadow
     // and extend the outer `types` slice for ref resolution within the block.
@@ -1788,7 +1792,7 @@ fn parse_func_sigs_into(
         // was a group name, not a function.
         if parser.peek_is_symbol('{') {
             parser.expect_symbol('{').map_err(|e| e.to_string())?;
-            parse_func_sigs_into(parser, &name, sigs, &local_types)?;
+            parse_func_sigs_into(parser, &name, sigs, &local_types, params)?;
             parser.expect_symbol('}').map_err(|e| e.to_string())?;
             parser.accept_symbol(',');
             parser.accept_symbol(';');
@@ -1800,22 +1804,27 @@ fn parse_func_sigs_into(
 
         let func = wit_parser::parse_func_signature(parser, name).map_err(|e| e.to_string())?;
 
-        let params: Vec<(String, metadata::TypeDesc)> = func
+        let sig_params: Vec<(String, metadata::TypeDesc)> = func
             .params
             .iter()
-            .map(|(n, t)| (n.clone(), metadata::wit_type_to_type_desc(t, &local_types)))
+            .map(|(n, t)| {
+                (
+                    n.clone(),
+                    metadata::wit_type_to_type_desc_scoped(t, &local_types, params),
+                )
+            })
             .collect();
 
         let results: Vec<metadata::TypeDesc> = func
             .results
             .iter()
-            .map(|t| metadata::wit_type_to_type_desc(t, &local_types))
+            .map(|t| metadata::wit_type_to_type_desc_scoped(t, &local_types, params))
             .collect();
 
         sigs.push(metadata::FuncSig {
             interface: iface,
             name: func.name,
-            params,
+            params: sig_params,
             results,
         });
 
@@ -1874,7 +1883,7 @@ mod tests {
         let mut parser = wit_parser::make_parser(tokens);
         parser.accept_ident("imports");
         parser.expect_symbol('{').expect("imports {");
-        parse_import_sigs(&mut parser, &mut sigs, &[]).expect("import sigs");
+        parse_import_sigs(&mut parser, &mut sigs, &[], &[]).expect("import sigs");
 
         let iface_hashes = metadata::compute_interface_hashes(&sigs);
         assert_eq!(iface_hashes.len(), 1);
@@ -1902,9 +1911,9 @@ mod tests {
             p.expect_symbol('{').unwrap();
             let mut out = Vec::new();
             if grouped {
-                parse_import_sigs(&mut p, &mut out, &[]).unwrap();
+                parse_import_sigs(&mut p, &mut out, &[], &[]).unwrap();
             } else {
-                parse_func_sigs_into(&mut p, "", &mut out, &[]).unwrap();
+                parse_func_sigs_into(&mut p, "", &mut out, &[], &[]).unwrap();
             }
             out
         };
@@ -1952,7 +1961,7 @@ mod tests {
         let mut parser = wit_parser::make_parser(tokens);
         parser.accept_ident("imports");
         parser.expect_symbol('{').expect("imports {");
-        parse_import_sigs(&mut parser, &mut sigs, &[]).expect("import sigs");
+        parse_import_sigs(&mut parser, &mut sigs, &[], &[]).expect("import sigs");
 
         let iface_hashes = metadata::compute_interface_hashes(&sigs);
         let h_a = iface_hashes.iter().find(|h| h.name == "ns:pkg/a").unwrap();
@@ -1999,7 +2008,7 @@ mod tests {
         let mut parser = wit_parser::make_parser(tokens);
         parser.accept_ident("imports");
         parser.expect_symbol('{').expect("imports {");
-        parse_import_sigs(&mut parser, &mut sigs, &[]).expect("import sigs");
+        parse_import_sigs(&mut parser, &mut sigs, &[], &[]).expect("import sigs");
 
         use packr_abi::HASH_BOOL;
         let func_hash = hash_function(&[], &[hash_result(&HASH_BOOL, &HASH_STRING)]);

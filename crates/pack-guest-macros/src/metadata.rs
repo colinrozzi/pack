@@ -59,6 +59,10 @@ pub enum TypeDesc {
         cases: Vec<(std::string::String, Option<TypeDesc>)>,
     },
     Tuple(Vec<TypeDesc>),
+    /// A named type reference — used for interface-level generic parameters
+    /// (e.g. `s`). The host decodes this as `Type::Ref(name)`; compose then
+    /// binds it if `name` is a declared type parameter.
+    Ref(std::string::String),
     Value,
 }
 
@@ -176,6 +180,18 @@ impl TypeDesc {
                     items: items.iter().map(|t| t.to_value()).collect(),
                 }],
             },
+            // Mirrors the host's `Type::Ref` encoding exactly (TAG_VARIANT with a
+            // `TypeRef` record carrying just the name), so the host decodes it
+            // back as `Type::Ref(name)`.
+            TypeDesc::Ref(name) => Value::Variant {
+                type_name: "type-desc".into(),
+                case_name: "ref".into(),
+                tag: 18,
+                payload: vec![Value::Record {
+                    type_name: "TypeRef".into(),
+                    fields: vec![("name".into(), Value::String(name.clone()))],
+                }],
+            },
             TypeDesc::Value => variant_no_payload("value", 20),
         }
     }
@@ -225,6 +241,11 @@ impl TypeDesc {
                 sorted.sort_by(|a, b| a.0.cmp(b.0));
                 hash_variant(&sorted)
             }
+            // A generic parameter reference — a stable placeholder hash. The
+            // guest's generic interface hash is EXPECTED to differ from the
+            // concrete side (that mismatch is what triggers compose-time
+            // reconciliation, which is unify-based and does not use this hash).
+            TypeDesc::Ref(_) => HASH_SELF_REF,
             TypeDesc::Value => HASH_SELF_REF, // Treat 'value' as self-ref for now
         }
     }
@@ -425,10 +446,23 @@ fn type_param_to_value(tp: &TypeParam) -> Value {
     }
 }
 
-/// Convert a WIT parser Type to a TypeDesc.
+/// Convert a WIT parser Type to a TypeDesc (no generic parameters in scope).
 pub fn wit_type_to_type_desc(
     ty: &crate::wit_parser::Type,
     types: &[crate::wit_parser::TypeDef],
+) -> TypeDesc {
+    wit_type_to_type_desc_scoped(ty, types, &[])
+}
+
+/// Like [`wit_type_to_type_desc`], but a `Named` whose name is one of `params`
+/// (the enclosing interface's generic parameters) becomes a `TypeDesc::Ref`
+/// preserving the name — so the host decodes it as `Type::Ref(name)` and
+/// compose-time unification can bind it. Non-parameter names are unchanged, so
+/// this is transparent for non-generic signatures.
+pub fn wit_type_to_type_desc_scoped(
+    ty: &crate::wit_parser::Type,
+    types: &[crate::wit_parser::TypeDef],
+    params: &[std::string::String],
 ) -> TypeDesc {
     match ty {
         crate::wit_parser::Type::Bool => TypeDesc::Bool,
@@ -445,31 +479,33 @@ pub fn wit_type_to_type_desc(
         crate::wit_parser::Type::Char => TypeDesc::Char,
         crate::wit_parser::Type::String => TypeDesc::String,
         crate::wit_parser::Type::List(inner) => {
-            TypeDesc::List(Box::new(wit_type_to_type_desc(inner, types)))
+            TypeDesc::List(Box::new(wit_type_to_type_desc_scoped(inner, types, params)))
         }
         crate::wit_parser::Type::Option(inner) => {
-            TypeDesc::Option(Box::new(wit_type_to_type_desc(inner, types)))
+            TypeDesc::Option(Box::new(wit_type_to_type_desc_scoped(inner, types, params)))
         }
         crate::wit_parser::Type::Result { ok, err } => TypeDesc::Result {
             // `_` maps to Bool for ok / String for err to match the handler-side
             // pact parser's convention (see `parse_result` in pack/src/parser/pact.rs).
             // Semantically odd, but the two sides must agree on the hash.
-            ok: Box::new(
-                ok.as_ref()
-                    .map_or(TypeDesc::Bool, |t| wit_type_to_type_desc(t, types)),
-            ),
-            err: Box::new(
-                err.as_ref()
-                    .map_or(TypeDesc::String, |t| wit_type_to_type_desc(t, types)),
-            ),
+            ok: Box::new(ok.as_ref().map_or(TypeDesc::Bool, |t| {
+                wit_type_to_type_desc_scoped(t, types, params)
+            })),
+            err: Box::new(err.as_ref().map_or(TypeDesc::String, |t| {
+                wit_type_to_type_desc_scoped(t, types, params)
+            })),
         },
         crate::wit_parser::Type::Tuple(items) => TypeDesc::Tuple(
             items
                 .iter()
-                .map(|t| wit_type_to_type_desc(t, types))
+                .map(|t| wit_type_to_type_desc_scoped(t, types, params))
                 .collect(),
         ),
         crate::wit_parser::Type::Named(name) => {
+            // An in-scope generic parameter survives as a named ref.
+            if params.iter().any(|p| p == name) {
+                return TypeDesc::Ref(name.clone());
+            }
             if name == "value" {
                 return TypeDesc::Value;
             }
