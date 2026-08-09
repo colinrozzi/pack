@@ -52,7 +52,19 @@ fn generate_type_ref(ty: &Type, self_type_name: Option<&str>) -> TokenStream {
         Type::Char => quote! { char },
         Type::String => quote! { ::alloc::string::String },
         Type::List(inner) => {
-            let inner_ty = generate_type_ref(inner, self_type_name);
+            // A `list<self>` needs no Box — the Vec already provides the
+            // indirection, and `Vec<Self>` round-trips (whereas `Vec<Box<Self>>`
+            // could not: `Box<T>` has no decode impl).
+            let inner_ty = match inner.as_ref() {
+                Type::SelfRef => match self_type_name {
+                    Some(name) => {
+                        let rust_name = to_rust_type_name(name);
+                        quote! { #rust_name }
+                    }
+                    None => quote! { Self },
+                },
+                other => generate_type_ref(other, self_type_name),
+            };
             quote! { ::alloc::vec::Vec<#inner_ty> }
         }
         Type::Option(inner) => {

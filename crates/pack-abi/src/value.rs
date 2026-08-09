@@ -892,6 +892,15 @@ impl<T: FromValue> FromValue for Option<T> {
     }
 }
 
+// NOTE: `Box<T>` intentionally has no `FromValue`/`TryFrom<Value>` decode impl.
+// `Box` is `#[fundamental]`, so a `FromValue for Box<T>` blanket conflicts with
+// the `TryFrom`-based `FromValue` blanket (E0119) and a `TryFrom<Value> for
+// Box<T>` impl is orphan-illegal (E0210). A boxed self-reference (a directly
+// recursive variant/record) is instead decoded field-by-field in the derive
+// (`decode_field`), which handles a top-level `Box<Inner>` by decoding `Inner`
+// and re-boxing. `Box` nested inside a container (`Option<Box<T>>`) is not
+// supported for the same coherence reasons.
+
 /// FromValue implementation for Result<T, E> - uses FromValue bounds to support nested Option types
 impl<T: FromValue, E: FromValue> FromValue for core::result::Result<T, E> {
     fn from_value(v: Value) -> Result<Self, ConversionError> {
