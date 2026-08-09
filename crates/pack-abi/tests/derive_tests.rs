@@ -507,3 +507,55 @@ fn generic_enum_roundtrip() {
     let back: GenChoice<u32> = value.try_into().unwrap();
     assert_eq!(nothing, back);
 }
+
+// ============================================================================
+// Option fields (decode via FromValue) — previously unsupported
+// ============================================================================
+
+#[derive(Debug, Clone, PartialEq, GraphValue)]
+struct WithOption {
+    id: u32,
+    label: Option<String>,
+    tags: Vec<i64>,
+}
+
+#[test]
+fn option_field_roundtrip() {
+    for label in [Some("hi".to_string()), None] {
+        let original = WithOption {
+            id: 7,
+            label,
+            tags: vec![1, 2, 3],
+        };
+        let value: Value = original.clone().into();
+        let back: WithOption = value.try_into().unwrap();
+        assert_eq!(original, back);
+    }
+}
+
+// A GENERIC option field — the case the derive could not handle before the
+// switch from TryFrom to FromValue for field decode.
+#[derive(Debug, Clone, PartialEq, GraphValue)]
+struct GenOpt<T> {
+    val: Option<T>,
+    also: Vec<T>,
+}
+
+#[test]
+fn generic_option_field_roundtrip() {
+    let original = GenOpt {
+        val: Some(42u32),
+        also: vec![1u32, 2],
+    };
+    let value: Value = original.clone().into();
+    let back: GenOpt<u32> = value.try_into().unwrap();
+    assert_eq!(original, back);
+
+    let none: GenOpt<u32> = GenOpt {
+        val: None,
+        also: vec![],
+    };
+    let value: Value = none.clone().into();
+    let back: GenOpt<u32> = value.try_into().unwrap();
+    assert_eq!(none, back);
+}

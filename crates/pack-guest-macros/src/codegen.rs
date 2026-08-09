@@ -146,21 +146,10 @@ fn generate_to_value(ty: &Type, expr: TokenStream, self_type_name: Option<&str>)
         Type::F64 => quote! { packr_guest::Value::F64(#expr) },
         Type::Char => quote! { packr_guest::Value::Char(#expr) },
         Type::String => quote! { packr_guest::Value::String(#expr) },
-        Type::List(inner) => {
-            let inner_conversion = generate_to_value(inner, quote! { item }, self_type_name);
-            quote! {
-                packr_guest::Value::List(
-                    #expr.into_iter().map(|item| #inner_conversion).collect()
-                )
-            }
-        }
-        Type::Option(inner) => {
-            let inner_conversion = generate_to_value(inner, quote! { v }, self_type_name);
-            quote! {
-                packr_guest::Value::Option(
-                    #expr.map(|v| ::alloc::boxed::Box::new(#inner_conversion))
-                )
-            }
+        Type::List(_) | Type::Option(_) => {
+            // Vec<T> / Option<T> encode via their packr_abi `From` impls, which
+            // build the correct struct-form Value (elem_type / inner_type).
+            quote! { ::core::convert::Into::<packr_guest::Value>::into(#expr) }
         }
         Type::Result { ok, err } => {
             let ok_conversion = ok
@@ -171,15 +160,21 @@ fn generate_to_value(ty: &Type, expr: TokenStream, self_type_name: Option<&str>)
                 .as_ref()
                 .map(|t| generate_to_value(t, quote! { e }, self_type_name))
                 .unwrap_or_else(|| quote! { packr_guest::Value::Tuple(::alloc::vec![]) });
+            // Build the (struct-form) Variant encoding of a result that
+            // `FromValue for Result` decodes (its legacy-variant branch).
             quote! {
                 match #expr {
                     Ok(v) => packr_guest::Value::Variant {
+                        type_name: ::alloc::string::String::from("result"),
+                        case_name: ::alloc::string::String::from("ok"),
                         tag: 0,
-                        payload: Some(::alloc::boxed::Box::new(#ok_conversion)),
+                        payload: ::alloc::vec![#ok_conversion],
                     },
                     Err(e) => packr_guest::Value::Variant {
+                        type_name: ::alloc::string::String::from("result"),
+                        case_name: ::alloc::string::String::from("err"),
                         tag: 1,
-                        payload: Some(::alloc::boxed::Box::new(#err_conversion)),
+                        payload: ::alloc::vec![#err_conversion],
                     },
                 }
             }
@@ -209,289 +204,6 @@ fn generate_to_value(ty: &Type, expr: TokenStream, self_type_name: Option<&str>)
             // bound is never mis-selected for a concrete/container field whose
             // own impl should apply.
             quote! { ::core::convert::Into::<packr_guest::Value>::into(#expr) }
-        }
-    }
-}
-
-/// Generate Value extraction expression for a type (Value -> Rust value)
-fn generate_from_value(ty: &Type, expr: TokenStream, self_type_name: Option<&str>) -> TokenStream {
-    match ty {
-        Type::Bool => quote! {
-            match #expr {
-                packr_guest::Value::Bool(v) => v,
-                _ => return Err(packr_guest::ConversionError::TypeMismatch {
-                    expected: "Bool".into(),
-                    got: ::alloc::format!("{:?}", #expr),
-                }),
-            }
-        },
-        Type::U8 => quote! {
-            match #expr {
-                packr_guest::Value::U8(v) => v,
-                _ => return Err(packr_guest::ConversionError::TypeMismatch {
-                    expected: "U8".into(),
-                    got: ::alloc::format!("{:?}", #expr),
-                }),
-            }
-        },
-        Type::U16 => quote! {
-            match #expr {
-                packr_guest::Value::U16(v) => v,
-                _ => return Err(packr_guest::ConversionError::TypeMismatch {
-                    expected: "U16".into(),
-                    got: ::alloc::format!("{:?}", #expr),
-                }),
-            }
-        },
-        Type::U32 => quote! {
-            match #expr {
-                packr_guest::Value::U32(v) => v,
-                _ => return Err(packr_guest::ConversionError::TypeMismatch {
-                    expected: "U32".into(),
-                    got: ::alloc::format!("{:?}", #expr),
-                }),
-            }
-        },
-        Type::U64 => quote! {
-            match #expr {
-                packr_guest::Value::U64(v) => v,
-                _ => return Err(packr_guest::ConversionError::TypeMismatch {
-                    expected: "U64".into(),
-                    got: ::alloc::format!("{:?}", #expr),
-                }),
-            }
-        },
-        Type::S8 => quote! {
-            match #expr {
-                packr_guest::Value::S8(v) => v,
-                _ => return Err(packr_guest::ConversionError::TypeMismatch {
-                    expected: "S8".into(),
-                    got: ::alloc::format!("{:?}", #expr),
-                }),
-            }
-        },
-        Type::S16 => quote! {
-            match #expr {
-                packr_guest::Value::S16(v) => v,
-                _ => return Err(packr_guest::ConversionError::TypeMismatch {
-                    expected: "S16".into(),
-                    got: ::alloc::format!("{:?}", #expr),
-                }),
-            }
-        },
-        Type::S32 => quote! {
-            match #expr {
-                packr_guest::Value::S32(v) => v,
-                _ => return Err(packr_guest::ConversionError::TypeMismatch {
-                    expected: "S32".into(),
-                    got: ::alloc::format!("{:?}", #expr),
-                }),
-            }
-        },
-        Type::S64 => quote! {
-            match #expr {
-                packr_guest::Value::S64(v) => v,
-                _ => return Err(packr_guest::ConversionError::TypeMismatch {
-                    expected: "S64".into(),
-                    got: ::alloc::format!("{:?}", #expr),
-                }),
-            }
-        },
-        Type::F32 => quote! {
-            match #expr {
-                packr_guest::Value::F32(v) => v,
-                _ => return Err(packr_guest::ConversionError::TypeMismatch {
-                    expected: "F32".into(),
-                    got: ::alloc::format!("{:?}", #expr),
-                }),
-            }
-        },
-        Type::F64 => quote! {
-            match #expr {
-                packr_guest::Value::F64(v) => v,
-                _ => return Err(packr_guest::ConversionError::TypeMismatch {
-                    expected: "F64".into(),
-                    got: ::alloc::format!("{:?}", #expr),
-                }),
-            }
-        },
-        Type::Char => quote! {
-            match #expr {
-                packr_guest::Value::Char(v) => v,
-                _ => return Err(packr_guest::ConversionError::TypeMismatch {
-                    expected: "Char".into(),
-                    got: ::alloc::format!("{:?}", #expr),
-                }),
-            }
-        },
-        Type::String => quote! {
-            match #expr {
-                packr_guest::Value::String(v) => v,
-                _ => return Err(packr_guest::ConversionError::TypeMismatch {
-                    expected: "String".into(),
-                    got: ::alloc::format!("{:?}", #expr),
-                }),
-            }
-        },
-        Type::List(inner) => {
-            // For list<self>, we need to handle Box wrapping specially
-            let item_conversion = if matches!(inner.as_ref(), Type::SelfRef) {
-                if let Some(name) = self_type_name {
-                    let rust_name = to_rust_type_name(name);
-                    quote! { ::alloc::boxed::Box::new(<#rust_name>::try_from(item)?) }
-                } else {
-                    quote! { ::alloc::boxed::Box::new(Self::try_from(item)?) }
-                }
-            } else {
-                let inner_ty = generate_type_ref(inner, self_type_name);
-                quote! { <#inner_ty>::try_from(item)? }
-            };
-            quote! {
-                match #expr {
-                    packr_guest::Value::List(items) => {
-                        let mut result = ::alloc::vec::Vec::with_capacity(items.len());
-                        for item in items {
-                            result.push(#item_conversion);
-                        }
-                        result
-                    }
-                    _ => return Err(packr_guest::ConversionError::ExpectedList(
-                        ::alloc::format!("{:?}", #expr)
-                    )),
-                }
-            }
-        }
-        Type::Option(inner) => {
-            // For option<self>, we need to handle Box wrapping specially
-            let some_conversion = if matches!(inner.as_ref(), Type::SelfRef) {
-                if let Some(name) = self_type_name {
-                    let rust_name = to_rust_type_name(name);
-                    quote! { Some(::alloc::boxed::Box::new(<#rust_name>::try_from(*boxed)?)) }
-                } else {
-                    quote! { Some(::alloc::boxed::Box::new(Self::try_from(*boxed)?)) }
-                }
-            } else {
-                let inner_ty = generate_type_ref(inner, self_type_name);
-                quote! { Some(<#inner_ty>::try_from(*boxed)?) }
-            };
-            quote! {
-                match #expr {
-                    packr_guest::Value::Option(opt) => {
-                        match opt {
-                            Some(boxed) => #some_conversion,
-                            None => None,
-                        }
-                    }
-                    _ => return Err(packr_guest::ConversionError::ExpectedOption(
-                        ::alloc::format!("{:?}", #expr)
-                    )),
-                }
-            }
-        }
-        Type::Result { ok, err } => {
-            // Handle SelfRef specially for ok/err types
-            let ok_conversion = if ok
-                .as_ref()
-                .map(|t| matches!(t.as_ref(), Type::SelfRef))
-                .unwrap_or(false)
-            {
-                if let Some(name) = self_type_name {
-                    let rust_name = to_rust_type_name(name);
-                    quote! { Ok(::alloc::boxed::Box::new(<#rust_name>::try_from(*p)?)) }
-                } else {
-                    quote! { Ok(::alloc::boxed::Box::new(Self::try_from(*p)?)) }
-                }
-            } else {
-                let ok_ty = ok
-                    .as_ref()
-                    .map(|t| generate_type_ref(t, self_type_name))
-                    .unwrap_or_else(|| quote! { () });
-                quote! { Ok(<#ok_ty>::try_from(*p)?) }
-            };
-            let err_conversion = if err
-                .as_ref()
-                .map(|t| matches!(t.as_ref(), Type::SelfRef))
-                .unwrap_or(false)
-            {
-                if let Some(name) = self_type_name {
-                    let rust_name = to_rust_type_name(name);
-                    quote! { Err(::alloc::boxed::Box::new(<#rust_name>::try_from(*p)?)) }
-                } else {
-                    quote! { Err(::alloc::boxed::Box::new(Self::try_from(*p)?)) }
-                }
-            } else {
-                let err_ty = err
-                    .as_ref()
-                    .map(|t| generate_type_ref(t, self_type_name))
-                    .unwrap_or_else(|| quote! { () });
-                quote! { Err(<#err_ty>::try_from(*p)?) }
-            };
-            quote! {
-                match #expr {
-                    packr_guest::Value::Variant { tag: 0, payload } => {
-                        let p = payload.ok_or(packr_guest::ConversionError::MissingPayload)?;
-                        #ok_conversion
-                    }
-                    packr_guest::Value::Variant { tag: 1, payload } => {
-                        let p = payload.ok_or(packr_guest::ConversionError::MissingPayload)?;
-                        #err_conversion
-                    }
-                    _ => return Err(packr_guest::ConversionError::ExpectedVariant(
-                        ::alloc::format!("{:?}", #expr)
-                    )),
-                }
-            }
-        }
-        Type::Tuple(items) => {
-            if items.is_empty() {
-                quote! { () }
-            } else {
-                let extractions: Vec<_> = items.iter()
-                    .map(|t| {
-                        // Handle SelfRef specially to avoid Box<Self>::try_from issue
-                        if matches!(t, Type::SelfRef) {
-                            if let Some(name) = self_type_name {
-                                let rust_name = to_rust_type_name(name);
-                                quote! { ::alloc::boxed::Box::new(<#rust_name>::try_from(iter.next().unwrap())?) }
-                            } else {
-                                quote! { ::alloc::boxed::Box::new(Self::try_from(iter.next().unwrap())?) }
-                            }
-                        } else {
-                            let ty = generate_type_ref(t, self_type_name);
-                            quote! { <#ty>::try_from(iter.next().unwrap())? }
-                        }
-                    })
-                    .collect();
-                let len = items.len();
-                quote! {
-                    match #expr {
-                        packr_guest::Value::Tuple(items) if items.len() == #len => {
-                            let mut iter = items.into_iter();
-                            (#(#extractions),*)
-                        }
-                        _ => return Err(packr_guest::ConversionError::ExpectedTuple(
-                            ::alloc::format!("{:?}", #expr)
-                        )),
-                    }
-                }
-            }
-        }
-        Type::Named(name) => {
-            let rust_name = to_rust_type_name(name);
-            quote! { <#rust_name>::try_from(#expr)? }
-        }
-        Type::App { .. } => {
-            // Generic application, e.g. `<Pair<u32, String>>::try_from(...)`.
-            let ty = generate_type_ref(ty, self_type_name);
-            quote! { <#ty>::try_from(#expr)? }
-        }
-        Type::SelfRef => {
-            if let Some(name) = self_type_name {
-                let rust_name = to_rust_type_name(name);
-                quote! { ::alloc::boxed::Box::new(<#rust_name>::try_from(#expr)?) }
-            } else {
-                quote! { Self::try_from(#expr)? }
-            }
         }
     }
 }
@@ -531,7 +243,9 @@ fn generate_alias(name: &str, type_params: &[String], ty: &Type) -> TokenStream 
 
 fn generate_record(name: &str, type_params: &[String], fields: &[(String, Type)]) -> TokenStream {
     let rust_name = to_rust_type_name(name);
-    let (generics, where_clause) = generic_parts(type_params);
+    // Only the generic parameter list is needed on the type; the GraphValue
+    // derive supplies the trait bounds on its own generated impls.
+    let (generics, _where_clause) = generic_parts(type_params);
 
     let field_defs: Vec<_> = fields
         .iter()
@@ -542,68 +256,22 @@ fn generate_record(name: &str, type_params: &[String], fields: &[(String, Type)]
         })
         .collect();
 
-    let field_to_value: Vec<_> = fields
-        .iter()
-        .map(|(fname, ftype)| {
-            let rust_fname = to_rust_field_name(fname);
-            let wit_fname = fname.clone();
-            let to_val = generate_to_value(ftype, quote! { value.#rust_fname }, Some(name));
-            quote! { (#wit_fname.into(), #to_val) }
-        })
-        .collect();
-
-    let field_from_value: Vec<_> = fields
-        .iter()
-        .map(|(fname, ftype)| {
-            let rust_fname = to_rust_field_name(fname);
-            let wit_fname = fname.clone();
-            let from_val = generate_from_value(ftype, quote! { field_value }, Some(name));
-            quote! {
-                #rust_fname: {
-                    let field_value = fields.iter()
-                        .find(|(n, _)| n == #wit_fname)
-                        .map(|(_, v)| v.clone())
-                        .ok_or(packr_guest::ConversionError::MissingField(#wit_fname.into()))?;
-                    #from_val
-                }
-            }
-        })
-        .collect();
-
+    // Marshal via the GraphValue derive (the same path src/codegen.rs uses),
+    // rather than hand-written From/TryFrom impls — the derive builds the
+    // correct struct-form Value and decodes via FromValue (so option/recursive
+    // fields work), and it stays in lockstep with the tested derive.
     quote! {
-        #[derive(Debug, Clone, PartialEq)]
+        #[derive(Debug, Clone, PartialEq, packr_guest::GraphValue)]
+        #[graph(crate = "packr_guest::composite_abi")]
         pub struct #rust_name #generics {
             #(#field_defs),*
-        }
-
-        impl #generics From<#rust_name #generics> for packr_guest::Value #where_clause {
-            fn from(value: #rust_name #generics) -> packr_guest::Value {
-                packr_guest::Value::Record(::alloc::vec![#(#field_to_value),*])
-            }
-        }
-
-        impl #generics TryFrom<packr_guest::Value> for #rust_name #generics #where_clause {
-            type Error = packr_guest::ConversionError;
-
-            fn try_from(value: packr_guest::Value) -> Result<Self, Self::Error> {
-                match value {
-                    packr_guest::Value::Record(fields) => {
-                        Ok(Self {
-                            #(#field_from_value),*
-                        })
-                    }
-                    _ => Err(packr_guest::ConversionError::ExpectedRecord(
-                        ::alloc::format!("{:?}", value)
-                    )),
-                }
-            }
         }
     }
 }
 
 fn generate_variant(name: &str, type_params: &[String], cases: &[VariantCase]) -> TokenStream {
     let rust_name = to_rust_type_name(name);
-    let (generics, where_clause) = generic_parts(type_params);
+    let (generics, _where_clause) = generic_parts(type_params);
 
     let case_defs: Vec<_> = cases
         .iter()
@@ -619,88 +287,13 @@ fn generate_variant(name: &str, type_params: &[String], cases: &[VariantCase]) -
         })
         .collect();
 
-    let to_value_arms: Vec<_> = cases
-        .iter()
-        .enumerate()
-        .map(|(tag, case)| {
-            let case_name = to_rust_variant_name(&case.name);
-            match &case.payload {
-                Some(ty) => {
-                    let payload_conv = generate_to_value(ty, quote! { payload }, Some(name));
-                    quote! {
-                        #rust_name::#case_name(payload) => packr_guest::Value::Variant {
-                            tag: #tag,
-                            payload: Some(::alloc::boxed::Box::new(#payload_conv)),
-                        }
-                    }
-                }
-                None => quote! {
-                    #rust_name::#case_name => packr_guest::Value::Variant {
-                        tag: #tag,
-                        payload: None,
-                    }
-                },
-            }
-        })
-        .collect();
-
-    let from_value_arms: Vec<_> = cases
-        .iter()
-        .enumerate()
-        .map(|(tag, case)| {
-            let case_name = to_rust_variant_name(&case.name);
-            match &case.payload {
-                Some(ty) => {
-                    let payload_conv = generate_from_value(ty, quote! { (*p) }, Some(name));
-                    quote! {
-                        #tag => {
-                            let p = payload.ok_or(packr_guest::ConversionError::MissingPayload)?;
-                            Ok(#rust_name::#case_name(#payload_conv))
-                        }
-                    }
-                }
-                None => quote! {
-                    #tag => Ok(#rust_name::#case_name)
-                },
-            }
-        })
-        .collect();
-
-    let max_tag = cases.len();
-
+    // As with records, marshal via the GraphValue derive (case order = tag
+    // order) instead of hand-written impls.
     quote! {
-        #[derive(Debug, Clone, PartialEq)]
+        #[derive(Debug, Clone, PartialEq, packr_guest::GraphValue)]
+        #[graph(crate = "packr_guest::composite_abi")]
         pub enum #rust_name #generics {
             #(#case_defs),*
-        }
-
-        impl #generics From<#rust_name #generics> for packr_guest::Value #where_clause {
-            fn from(value: #rust_name #generics) -> packr_guest::Value {
-                match value {
-                    #(#to_value_arms),*
-                }
-            }
-        }
-
-        impl #generics TryFrom<packr_guest::Value> for #rust_name #generics #where_clause {
-            type Error = packr_guest::ConversionError;
-
-            fn try_from(value: packr_guest::Value) -> Result<Self, Self::Error> {
-                match value {
-                    packr_guest::Value::Variant { tag, payload } => {
-                        match tag {
-                            #(#from_value_arms),*
-                            _ => Err(packr_guest::ConversionError::UnknownTag {
-                                tag,
-                                max: #max_tag,
-                            }),
-                        }
-                    }
-                    _ => Err(packr_guest::ConversionError::ExpectedVariant(
-                        ::alloc::format!("{:?}", value)
-                    )),
-                }
-            }
         }
     }
 }
@@ -713,64 +306,12 @@ fn generate_enum(name: &str, cases: &[String]) -> TokenStream {
         .map(|case| to_rust_variant_name(case))
         .collect();
 
-    let to_value_arms: Vec<_> = cases
-        .iter()
-        .enumerate()
-        .map(|(tag, case)| {
-            let case_name = to_rust_variant_name(case);
-            quote! {
-                #rust_name::#case_name => packr_guest::Value::Variant {
-                    tag: #tag,
-                    payload: None,
-                }
-            }
-        })
-        .collect();
-
-    let from_value_arms: Vec<_> = cases
-        .iter()
-        .enumerate()
-        .map(|(tag, case)| {
-            let case_name = to_rust_variant_name(case);
-            quote! { #tag => Ok(#rust_name::#case_name) }
-        })
-        .collect();
-
-    let max_tag = cases.len();
-
+    // A C-like enum marshals via the derive too (matching src/codegen.rs).
     quote! {
-        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, packr_guest::GraphValue)]
+        #[graph(crate = "packr_guest::composite_abi")]
         pub enum #rust_name {
             #(#case_defs),*
-        }
-
-        impl From<#rust_name> for packr_guest::Value {
-            fn from(value: #rust_name) -> packr_guest::Value {
-                match value {
-                    #(#to_value_arms),*
-                }
-            }
-        }
-
-        impl TryFrom<packr_guest::Value> for #rust_name {
-            type Error = packr_guest::ConversionError;
-
-            fn try_from(value: packr_guest::Value) -> Result<Self, Self::Error> {
-                match value {
-                    packr_guest::Value::Variant { tag, payload: _ } => {
-                        match tag {
-                            #(#from_value_arms),*
-                            _ => Err(packr_guest::ConversionError::UnknownTag {
-                                tag,
-                                max: #max_tag,
-                            }),
-                        }
-                    }
-                    _ => Err(packr_guest::ConversionError::ExpectedVariant(
-                        ::alloc::format!("{:?}", value)
-                    )),
-                }
-            }
         }
     }
 }
@@ -1341,14 +882,13 @@ mod generic_tests {
         assert_valid_rust(&out);
         let s = out.to_string();
         assert!(s.contains("struct Pair < A , B >"), "{s}");
-        assert!(s.contains("impl < A , B > From < Pair < A , B > >"), "{s}");
+        // Marshalling comes from the GraphValue derive (not hand-written impls),
+        // pointed at the guest ABI crate.
+        assert!(s.contains("GraphValue"), "must derive GraphValue: {s}");
         assert!(
-            s.contains("TryFrom < packr_guest :: Value > for Pair < A , B >"),
-            "{s}"
+            s.contains("composite_abi"),
+            "must set the graph crate path: {s}"
         );
-        // The parameter bounds must be present on the impls.
-        assert!(s.contains("Into < packr_guest :: Value >"), "{s}");
-        assert!(s.contains("Error = packr_guest :: ConversionError"), "{s}");
     }
 
     #[test]
