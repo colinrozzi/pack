@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.13.1 (2026-08-05)
+
+### Fixed
+
+- **`wit!` (and host) codegen for user-defined records/variants/enums.** The
+  generated code built tuple-form values (`Value::Record(vec)`,
+  `Value::Variant { tag, payload }`) against the struct-variant `Value` enum and
+  failed to compile once the types were used. Records/variants/enums are now
+  generated with `#[derive(GraphValue)]` (the same path the host codegen uses),
+  so their marshalling comes from the tested derive.
+- **`option<...>` fields.** The derive now decodes fields via `FromValue` instead
+  of `TryFrom`, so `Option<T>` fields work — including a generic `Option<T>`
+  field (the gap left in v0.13.0). Behaviour is unchanged for every other type.
+- **`packr-guest`'s `derive` feature is now on by default**, since generated code
+  emits `#[derive(GraphValue)]` and so needs the derive to always be available.
+
 ## v0.13.0 (2026-08-05)
 
 ### Added
