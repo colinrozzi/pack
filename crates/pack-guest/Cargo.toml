@@ -10,7 +10,10 @@ description = "Guest-side helpers for Pack WASM packages"
 name = "packr_guest"
 
 [features]
-default = []
+# `derive` is on by default: the `wit!` and host codegen emit
+# `#[derive(GraphValue)]` for generated records/variants/enums, so the derive
+# must be available to any guest that uses generated types.
+default = ["derive"]
 derive = ["dep:packr-derive"]
 # Building the guest as a PIC side module (relocation-model=pic + -shared, the
 # package-composition recipe). Newer rustc (>1.92) injects

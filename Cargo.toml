@@ -32,6 +32,7 @@ exclude = [
     "packages/typed-math",
     "packages/gen-node",
     "packages/gen-sm",
+    "packages/wit-types",
 ]
 
 [workspace.package]

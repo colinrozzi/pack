@@ -204,46 +204,51 @@ fn derive_struct(
     match &data.fields {
         Fields::Named(fields) => {
             // Generate TryFrom<Value> for T
-            let field_from_value: Vec<_> = fields.named.iter().map(|f| {
-                let field_name = f.ident.as_ref().unwrap();
-                let field_name_str = get_rename(&f.attrs).unwrap_or_else(|| field_name.to_string());
-                let field_type = &f.ty;
-                if forward_compatible {
-                    // A missing field defaults instead of erroring (extra fields are
-                    // simply never looked up, since decode is by name).
-                    quote! {
-                        #field_name: match fields.iter()
-                            .find(|(name, _)| name == #field_name_str)
-                            .map(|(_, v)| v.clone())
-                        {
-                            #krate::__private::Some(field_value) =>
-                                <#field_type as #krate::__private::TryFrom<#krate::Value>>::try_from(field_value)
+            let field_from_value: Vec<_> = fields
+                .named
+                .iter()
+                .map(|f| {
+                    let field_name = f.ident.as_ref().unwrap();
+                    let field_name_str =
+                        get_rename(&f.attrs).unwrap_or_else(|| field_name.to_string());
+                    let field_type = &f.ty;
+                    if forward_compatible {
+                        // A missing field defaults instead of erroring (extra fields are
+                        // simply never looked up, since decode is by name).
+                        quote! {
+                            #field_name: match fields.iter()
+                                .find(|(name, _)| name == #field_name_str)
+                                .map(|(_, v)| v.clone())
+                            {
+                                #krate::__private::Some(field_value) =>
+                                    <#field_type as #krate::FromValue>::from_value(field_value)
+                                        .map_err(|e| #krate::ConversionError::FieldError(
+                                            #krate::__private::String::from(#field_name_str),
+                                            #krate::__private::Box::new(e)
+                                        ))?,
+                                #krate::__private::None =>
+                                    <#field_type as ::core::default::Default>::default(),
+                            }
+                        }
+                    } else {
+                        quote! {
+                            #field_name: {
+                                let field_value = fields.iter()
+                                    .find(|(name, _)| name == #field_name_str)
+                                    .map(|(_, v)| v.clone())
+                                    .ok_or_else(|| #krate::ConversionError::MissingField(
+                                        #krate::__private::String::from(#field_name_str)
+                                    ))?;
+                                <#field_type as #krate::FromValue>::from_value(field_value)
                                     .map_err(|e| #krate::ConversionError::FieldError(
                                         #krate::__private::String::from(#field_name_str),
                                         #krate::__private::Box::new(e)
-                                    ))?,
-                            #krate::__private::None =>
-                                <#field_type as ::core::default::Default>::default(),
+                                    ))?
+                            }
                         }
                     }
-                } else {
-                    quote! {
-                        #field_name: {
-                            let field_value = fields.iter()
-                                .find(|(name, _)| name == #field_name_str)
-                                .map(|(_, v)| v.clone())
-                                .ok_or_else(|| #krate::ConversionError::MissingField(
-                                    #krate::__private::String::from(#field_name_str)
-                                ))?;
-                            <#field_type as #krate::__private::TryFrom<#krate::Value>>::try_from(field_value)
-                                .map_err(|e| #krate::ConversionError::FieldError(
-                                    #krate::__private::String::from(#field_name_str),
-                                    #krate::__private::Box::new(e)
-                                ))?
-                        }
-                    }
-                }
-            }).collect();
+                })
+                .collect();
 
             let field_count = fields.named.len();
 
@@ -334,7 +339,7 @@ fn derive_struct(
                     quote! {
                         match fields.get(#i).cloned() {
                             #krate::__private::Some(field_value) =>
-                                <#field_type as #krate::__private::TryFrom<#krate::Value>>::try_from(field_value)
+                                <#field_type as #krate::FromValue>::from_value(field_value)
                                     .map_err(|e| #krate::ConversionError::IndexError(#i, #krate::__private::Box::new(e)))?,
                             #krate::__private::None =>
                                 <#field_type as ::core::default::Default>::default(),
@@ -342,7 +347,7 @@ fn derive_struct(
                     }
                 } else {
                     quote! {
-                        <#field_type as #krate::__private::TryFrom<#krate::Value>>::try_from(
+                        <#field_type as #krate::FromValue>::from_value(
                             fields.get(#i).cloned().ok_or_else(|| #krate::ConversionError::MissingIndex(#i))?
                         ).map_err(|e| #krate::ConversionError::IndexError(#i, #krate::__private::Box::new(e)))?
                     }
@@ -555,7 +560,7 @@ fn derive_enum(
                                 .ok_or_else(|| #krate::ConversionError::MissingField(
                                     #krate::__private::String::from(#field_name_str)
                                 ))?;
-                            <#field_type as #krate::__private::TryFrom<#krate::Value>>::try_from(field_value)
+                            <#field_type as #krate::FromValue>::from_value(field_value)
                                 .map_err(|e| #krate::ConversionError::FieldError(
                                     #krate::__private::String::from(#field_name_str),
                                     #krate::__private::Box::new(e)
@@ -591,7 +596,7 @@ fn derive_enum(
                 let field_conversions: Vec<_> = fields.unnamed.iter().enumerate().map(|(i, f)| {
                     let field_type = &f.ty;
                     quote! {
-                        <#field_type as #krate::__private::TryFrom<#krate::Value>>::try_from(
+                        <#field_type as #krate::FromValue>::from_value(
                             payload.get(#i).cloned().ok_or_else(|| #krate::ConversionError::MissingIndex(#i))?
                         ).map_err(|e| #krate::ConversionError::IndexError(#i, #krate::__private::Box::new(e)))?
                     }
