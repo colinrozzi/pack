@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.14.0 (2026-08-09)
+
+### Added
+
+- **Recursive types.** A type can refer to itself with `self`, and it now
+  round-trips. Recursion through a list needs no wrapper (`list<self>` →
+  `Vec<Self>`); a direct self-reference uses the new `Rec<T>` indirection
+  (`neg(self)` → `Rec<Sexpr>`, `option<self>` → `Option<Rec<Cons>>`).
+- **`Rec<T>`** (`packr_abi::Rec`, re-exported from `packr_guest`) — a heap
+  indirection that round-trips through `Value`. `std::boxed::Box<T>` is
+  `#[fundamental]` and so can never carry the ABI codec traits; `Rec<T>` is a
+  packr-owned transparent wrapper over `Box<T>` that can, and unlike a bare
+  `Box` it works in every position, including nested inside a container — which
+  is what a **recursive struct** needs (`Option<Rec<Self>>`). It derefs to `T`,
+  constructs with `Rec::new`/`From<T>`, and encodes byte-identically to the inner
+  value (no wire cost). The `wit!` codegen emits it automatically.
+- The `GraphValue` derive also handles a direct `Box<Self>` field (a boxed
+  self-reference) by decoding the inner value and re-boxing.
+
+### Notes
+
+- Wire-compatible: `Rec<T>` is transparent, so recursive values encode exactly as
+  their structure. No format change.
+- A `Box` nested inside a container (`Option<Box<Self>>`) is still not supported —
+  `Box` is `#[fundamental]`. Use `Rec<T>` there (the codegen does this for you).
+
 ## v0.13.1 (2026-08-05)
 
 ### Fixed
