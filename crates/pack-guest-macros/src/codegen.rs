@@ -107,9 +107,13 @@ fn generate_type_ref(ty: &Type, self_type_name: Option<&str>) -> TokenStream {
             quote! { #rust_name<#(#arg_tys),*> }
         }
         Type::SelfRef => {
+            // A self-reference uses `Rec<Self>` (a decodable heap indirection),
+            // not `Box<Self>`: `Box` is `#[fundamental]` and cannot round-trip
+            // when nested in a container, so `Box<Self>` breaks a recursive
+            // struct's `option<self>` field. `Rec<Self>` works in every position.
             if let Some(name) = self_type_name {
                 let rust_name = to_rust_type_name(name);
-                quote! { ::alloc::boxed::Box<#rust_name> }
+                quote! { packr_guest::Rec<#rust_name> }
             } else {
                 // Shouldn't happen in valid WIT+
                 quote! { Self }

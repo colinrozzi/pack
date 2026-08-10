@@ -4,7 +4,7 @@
 
 #![cfg(feature = "derive")]
 
-use packr_abi::{GraphValue, Value};
+use packr_abi::{GraphValue, Rec, Value};
 
 // ============================================================================
 // Struct tests
@@ -583,7 +583,53 @@ fn boxed_recursive_enum_roundtrip() {
     assert_eq!(original, back);
 }
 
-// NOTE: a `Box` nested inside a container (e.g. `Option<Box<Self>>`, the shape a
-// recursive *struct* needs) is not supported — `Box` is `#[fundamental]`, so no
-// `Box<T>` decode impl is possible (see value.rs). Direct `Box<Self>` in a
-// variant/tuple field, as `Expr` above, is handled by the derive.
+// A recursive STRUCT needs an `Option<_<Self>>` field (the base case), which a
+// bare `Box` cannot decode (see value.rs). `Rec<T>` — a packr-owned indirection
+// — works in every position, including nested in a container, so recursive
+// structs round-trip.
+#[derive(Debug, Clone, PartialEq, GraphValue)]
+struct RecCons {
+    head: i64,
+    tail: Option<Rec<RecCons>>,
+}
+
+#[test]
+fn recursive_struct_via_rec_roundtrip() {
+    // 1 -> 2 -> 3
+    let list = RecCons {
+        head: 1,
+        tail: Some(Rec::new(RecCons {
+            head: 2,
+            tail: Some(Rec::new(RecCons {
+                head: 3,
+                tail: None,
+            })),
+        })),
+    };
+    let value: Value = list.clone().into();
+    let back: RecCons = value.try_into().unwrap();
+    assert_eq!(list, back);
+    // Deref reaches the inner value.
+    assert_eq!(list.tail.as_ref().unwrap().head, 2);
+}
+
+// `Rec<T>` also works for a variant self-reference (and nested in a Vec).
+#[derive(Debug, Clone, PartialEq, GraphValue)]
+enum RecTree {
+    Leaf(i64),
+    Node(Rec<RecTree>, Vec<RecTree>),
+}
+
+#[test]
+fn recursive_enum_via_rec_roundtrip() {
+    let original = RecTree::Node(
+        Rec::new(RecTree::Leaf(1)),
+        vec![
+            RecTree::Leaf(2),
+            RecTree::Node(Rec::new(RecTree::Leaf(3)), vec![]),
+        ],
+    );
+    let value: Value = original.clone().into();
+    let back: RecTree = value.try_into().unwrap();
+    assert_eq!(original, back);
+}

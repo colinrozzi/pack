@@ -38,9 +38,8 @@ packr_guest::wit! {
         blue,
     }
 
-    // Recursive variant: a direct self-reference (neg -> Box<Sexpr>, handled by
-    // the derive's Box field decode) and a list self-reference (lst ->
-    // Vec<Sexpr>, no Box needed).
+    // Recursive variant: a direct self-reference (neg -> Rec<Sexpr>) and a list
+    // self-reference (lst -> Vec<Sexpr>, no indirection wrapper needed).
     variant sexpr {
         sym(string),
         num(s64),
@@ -48,9 +47,17 @@ packr_guest::wit! {
         lst(list<self>),
     }
 
+    // Recursive STRUCT: the self-reference is optional (the base case), so the
+    // field is `Option<Rec<Cons>>` — the shape a bare `Box` could never decode.
+    record cons {
+        head: s64,
+        tail: option<self>,
+    }
+
     world wit-types {
         export identity: func(p: point) -> point
         export eval: func(e: sexpr) -> sexpr
+        export cons-id: func(c: cons) -> cons
     }
 }
 
@@ -66,11 +73,18 @@ fn identity(p: Point) -> Point {
     }
 }
 
-/// Forces the recursive `Sexpr` marshalling (Box<Sexpr> for `neg`, Vec<Sexpr>
+/// Forces the recursive `Sexpr` marshalling (Rec<Sexpr> for `neg`, Vec<Sexpr>
 /// for `lst`) to compile.
 #[export]
 fn eval(e: Sexpr) -> Sexpr {
     e
+}
+
+/// Forces the recursive-STRUCT `Cons` marshalling (Option<Rec<Cons>>) to
+/// compile — the case a bare `Box` could not handle.
+#[export]
+fn cons_id(c: Cons) -> Cons {
+    c
 }
 
 // Reference `Shape`/`Color` so their generated impls are compiled too.
