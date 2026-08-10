@@ -131,10 +131,48 @@ The guest embeds the parameter (and the references to it in signatures) into the
 package's `__pack_types` metadata, which is what composition reads to reconcile
 the link. A hand-written generic component needs nothing more than this.
 
+## Recursive types
+
+A type can refer to itself with `self`. Recursion through a list needs no
+wrapper (the `Vec` already provides the indirection); a *direct* self-reference
+is wrapped in `Rec<T>` — a packr-owned heap indirection that round-trips through
+`Value`:
+
+```pact
+variant sexpr {
+    sym(string),
+    num(s64),
+    neg(self),          // -> Rec<Sexpr>
+    lst(list<self>),    // -> Vec<Sexpr>
+}
+
+record cons {
+    head: s64,
+    tail: option<self>, // -> Option<Rec<Cons>>  (a recursive struct)
+}
+```
+
+`Rec<T>` exists because std `Box<T>` is `#[fundamental]` and can therefore never
+carry the ABI codec traits — so it cannot round-trip when nested in a container
+(the shape a recursive *struct* needs). `Rec<T>` is a transparent wrapper over
+`Box<T>`: it derefs to `T`, constructs with `Rec::new(x)` or `x.into()`, and
+encodes byte-identically to the inner value (no wire cost). The `wit!` codegen
+emits it for you; a hand-written `#[derive(GraphValue)]` type uses it directly:
+
+```rust
+#[derive(GraphValue)]
+struct Cons {
+    head: i64,
+    tail: Option<Rec<Cons>>,
+}
+```
+
+(A *direct* `Box<Self>` field also works, via a special case in the derive; but
+`Box` nested in a container does not — use `Rec<T>`.)
+
 ## What is not (yet) implemented
 
 - Higher-kinded parameters (`<f: * -> *>`) and const generics.
 - Constraint *enforcement* — constraints are parsed and carried, not checked.
 - `wit!`-macro codegen of a generic component *trait* (hand-written components
   work today; macro-generated ones do not).
-- A generic `Option<T>` field in the `GraphValue` derive (see above).

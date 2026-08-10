@@ -895,11 +895,71 @@ impl<T: FromValue> FromValue for Option<T> {
 // NOTE: `Box<T>` intentionally has no `FromValue`/`TryFrom<Value>` decode impl.
 // `Box` is `#[fundamental]`, so a `FromValue for Box<T>` blanket conflicts with
 // the `TryFrom`-based `FromValue` blanket (E0119) and a `TryFrom<Value> for
-// Box<T>` impl is orphan-illegal (E0210). A boxed self-reference (a directly
-// recursive variant/record) is instead decoded field-by-field in the derive
-// (`decode_field`), which handles a top-level `Box<Inner>` by decoding `Inner`
-// and re-boxing. `Box` nested inside a container (`Option<Box<T>>`) is not
-// supported for the same coherence reasons.
+// Box<T>` impl is orphan-illegal (E0210). The derive handles a *top-level*
+// `Box<Inner>` field itself (decode `Inner`, re-box), but `Box` nested inside a
+// container (`Option<Box<T>>`) cannot be decoded for the same reasons — use
+// `Rec<T>` below for that (and for recursive structs generally).
+
+/// A heap indirection that round-trips through `Value` — use it for recursive
+/// types.
+///
+/// `Box<T>` is `#[fundamental]`, so it can never carry the codec traits (see the
+/// note above). `Rec<T>` is a packr-owned transparent wrapper over `Box<T>`, so
+/// it *can* — and unlike a bare `Box` it works in every position, including
+/// nested inside a container (`Option<Rec<T>>`, `Vec<Rec<T>>`), which is exactly
+/// what a recursive *struct* needs. It derefs to `T` and encodes byte-identically
+/// to the inner value (and to `Box<T>`), so it costs nothing on the wire.
+#[repr(transparent)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Rec<T>(pub Box<T>);
+
+impl<T> Rec<T> {
+    /// Wrap a value.
+    pub fn new(value: T) -> Self {
+        Rec(Box::new(value))
+    }
+    /// Unwrap to the inner value.
+    pub fn into_inner(self) -> T {
+        *self.0
+    }
+}
+
+impl<T> core::ops::Deref for Rec<T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<T> core::ops::DerefMut for Rec<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.0
+    }
+}
+
+impl<T> From<T> for Rec<T> {
+    fn from(value: T) -> Self {
+        Rec::new(value)
+    }
+}
+
+impl<T: Into<Value>> From<Rec<T>> for Value {
+    fn from(r: Rec<T>) -> Value {
+        (*r.0).into()
+    }
+}
+
+impl<T: FromValue> FromValue for Rec<T> {
+    fn from_value(v: Value) -> Result<Self, ConversionError> {
+        Ok(Rec(Box::new(T::from_value(v)?)))
+    }
+}
+
+impl<T: KnownValueType> KnownValueType for Rec<T> {
+    fn known_value_type() -> ValueType {
+        T::known_value_type()
+    }
+}
 
 /// FromValue implementation for Result<T, E> - uses FromValue bounds to support nested Option types
 impl<T: FromValue, E: FromValue> FromValue for core::result::Result<T, E> {
