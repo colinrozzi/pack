@@ -38,8 +38,19 @@ packr_guest::wit! {
         blue,
     }
 
+    // Recursive variant: a direct self-reference (neg -> Box<Sexpr>, handled by
+    // the derive's Box field decode) and a list self-reference (lst ->
+    // Vec<Sexpr>, no Box needed).
+    variant sexpr {
+        sym(string),
+        num(s64),
+        neg(self),
+        lst(list<self>),
+    }
+
     world wit-types {
         export identity: func(p: point) -> point
+        export eval: func(e: sexpr) -> sexpr
     }
 }
 
@@ -53,6 +64,13 @@ fn identity(p: Point) -> Point {
         label: p.label,
         tags: p.tags,
     }
+}
+
+/// Forces the recursive `Sexpr` marshalling (Box<Sexpr> for `neg`, Vec<Sexpr>
+/// for `lst`) to compile.
+#[export]
+fn eval(e: Sexpr) -> Sexpr {
+    e
 }
 
 // Reference `Shape`/`Color` so their generated impls are compiled too.

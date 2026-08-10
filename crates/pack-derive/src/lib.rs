@@ -191,6 +191,48 @@ fn augmented_generics(generics: &syn::Generics, krate: &proc_macro2::TokenStream
     generics
 }
 
+/// If `ty` is `Box<Inner>` (by any path — `Box`, `::alloc::boxed::Box`, etc.),
+/// return `Inner`.
+fn box_inner(ty: &syn::Type) -> Option<&syn::Type> {
+    let syn::Type::Path(tp) = ty else {
+        return None;
+    };
+    let seg = tp.path.segments.last()?;
+    if seg.ident != "Box" {
+        return None;
+    }
+    let syn::PathArguments::AngleBracketed(args) = &seg.arguments else {
+        return None;
+    };
+    args.args.iter().find_map(|a| match a {
+        syn::GenericArgument::Type(t) => Some(t),
+        _ => None,
+    })
+}
+
+/// Decode a field's `Value` into `field_type`, yielding `Result<field_type,
+/// ConversionError>` so the caller's `.map_err(..)?` still applies.
+///
+/// A `Box<Inner>` field decodes its inner type and re-boxes: packr has no
+/// `FromValue for Box<T>` (a blanket impl conflicts with the `TryFrom`-based
+/// blanket at `Box<Value>`), so a boxed self-reference — the shape a directly
+/// recursive variant or record produces — is handled here instead.
+fn decode_field(
+    field_type: &syn::Type,
+    value: proc_macro2::TokenStream,
+    krate: &proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
+    if let Some(inner) = box_inner(field_type) {
+        quote! {
+            <#inner as #krate::FromValue>::from_value(#value).map(#krate::__private::Box::new)
+        }
+    } else {
+        quote! {
+            <#field_type as #krate::FromValue>::from_value(#value)
+        }
+    }
+}
+
 fn derive_struct(
     input: &DeriveInput,
     data: &syn::DataStruct,
@@ -212,6 +254,7 @@ fn derive_struct(
                     let field_name_str =
                         get_rename(&f.attrs).unwrap_or_else(|| field_name.to_string());
                     let field_type = &f.ty;
+                    let decode = decode_field(field_type, quote! { field_value }, krate);
                     if forward_compatible {
                         // A missing field defaults instead of erroring (extra fields are
                         // simply never looked up, since decode is by name).
@@ -221,7 +264,7 @@ fn derive_struct(
                                 .map(|(_, v)| v.clone())
                             {
                                 #krate::__private::Some(field_value) =>
-                                    <#field_type as #krate::FromValue>::from_value(field_value)
+                                    #decode
                                         .map_err(|e| #krate::ConversionError::FieldError(
                                             #krate::__private::String::from(#field_name_str),
                                             #krate::__private::Box::new(e)
@@ -239,7 +282,7 @@ fn derive_struct(
                                     .ok_or_else(|| #krate::ConversionError::MissingField(
                                         #krate::__private::String::from(#field_name_str)
                                     ))?;
-                                <#field_type as #krate::FromValue>::from_value(field_value)
+                                #decode
                                     .map_err(|e| #krate::ConversionError::FieldError(
                                         #krate::__private::String::from(#field_name_str),
                                         #krate::__private::Box::new(e)
@@ -336,20 +379,24 @@ fn derive_struct(
                     // Decode is positional: a missing trailing index defaults, an
                     // extra trailing element is ignored (below). Only APPENDING a
                     // trailing field is safe for a tuple struct.
+                    let decode = decode_field(field_type, quote! { field_value }, krate);
                     quote! {
                         match fields.get(#i).cloned() {
                             #krate::__private::Some(field_value) =>
-                                <#field_type as #krate::FromValue>::from_value(field_value)
+                                #decode
                                     .map_err(|e| #krate::ConversionError::IndexError(#i, #krate::__private::Box::new(e)))?,
                             #krate::__private::None =>
                                 <#field_type as ::core::default::Default>::default(),
                         }
                     }
                 } else {
+                    let decode = decode_field(
+                        field_type,
+                        quote! { fields.get(#i).cloned().ok_or_else(|| #krate::ConversionError::MissingIndex(#i))? },
+                        krate,
+                    );
                     quote! {
-                        <#field_type as #krate::FromValue>::from_value(
-                            fields.get(#i).cloned().ok_or_else(|| #krate::ConversionError::MissingIndex(#i))?
-                        ).map_err(|e| #krate::ConversionError::IndexError(#i, #krate::__private::Box::new(e)))?
+                        #decode.map_err(|e| #krate::ConversionError::IndexError(#i, #krate::__private::Box::new(e)))?
                     }
                 }
             }).collect();
@@ -552,6 +599,7 @@ fn derive_enum(
                     let field_name = f.ident.as_ref().unwrap();
                     let field_name_str = get_rename(&f.attrs).unwrap_or_else(|| field_name.to_string());
                     let field_type = &f.ty;
+                    let decode = decode_field(field_type, quote! { field_value }, krate);
                     quote! {
                         #field_name: {
                             let field_value = record_fields.iter()
@@ -560,7 +608,7 @@ fn derive_enum(
                                 .ok_or_else(|| #krate::ConversionError::MissingField(
                                     #krate::__private::String::from(#field_name_str)
                                 ))?;
-                            <#field_type as #krate::FromValue>::from_value(field_value)
+                            #decode
                                 .map_err(|e| #krate::ConversionError::FieldError(
                                     #krate::__private::String::from(#field_name_str),
                                     #krate::__private::Box::new(e)
@@ -595,10 +643,13 @@ fn derive_enum(
                 let field_count = fields.unnamed.len();
                 let field_conversions: Vec<_> = fields.unnamed.iter().enumerate().map(|(i, f)| {
                     let field_type = &f.ty;
+                    let decode = decode_field(
+                        field_type,
+                        quote! { payload.get(#i).cloned().ok_or_else(|| #krate::ConversionError::MissingIndex(#i))? },
+                        krate,
+                    );
                     quote! {
-                        <#field_type as #krate::FromValue>::from_value(
-                            payload.get(#i).cloned().ok_or_else(|| #krate::ConversionError::MissingIndex(#i))?
-                        ).map_err(|e| #krate::ConversionError::IndexError(#i, #krate::__private::Box::new(e)))?
+                        #decode.map_err(|e| #krate::ConversionError::IndexError(#i, #krate::__private::Box::new(e)))?
                     }
                 }).collect();
 

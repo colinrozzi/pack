@@ -559,3 +559,31 @@ fn generic_option_field_roundtrip() {
     let back: GenOpt<u32> = value.try_into().unwrap();
     assert_eq!(none, back);
 }
+
+// ============================================================================
+// Directly-recursive types via Box (a boxed self-reference)
+// ============================================================================
+
+#[derive(Debug, Clone, PartialEq, GraphValue)]
+enum Expr {
+    Lit(i64),
+    Neg(Box<Expr>),
+    Add(Box<Expr>, Box<Expr>),
+}
+
+#[test]
+fn boxed_recursive_enum_roundtrip() {
+    // Add(Neg(Lit(2)), Lit(3))
+    let original = Expr::Add(
+        Box::new(Expr::Neg(Box::new(Expr::Lit(2)))),
+        Box::new(Expr::Lit(3)),
+    );
+    let value: Value = original.clone().into();
+    let back: Expr = value.try_into().unwrap();
+    assert_eq!(original, back);
+}
+
+// NOTE: a `Box` nested inside a container (e.g. `Option<Box<Self>>`, the shape a
+// recursive *struct* needs) is not supported — `Box` is `#[fundamental]`, so no
+// `Box<T>` decode impl is possible (see value.rs). Direct `Box<Self>` in a
+// variant/tuple field, as `Expr` above, is handled by the derive.
