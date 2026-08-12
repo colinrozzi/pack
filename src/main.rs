@@ -366,6 +366,9 @@ fn format_type(ty: &Type) -> String {
                 )
             }
         }
+        Type::Map { key, value } => {
+            format!("map<{}, {}>", format_type(key), format_type(value))
+        }
         Type::Ref(path) => path.to_string(),
         Type::App { path, args } => format!(
             "{}<{}>",

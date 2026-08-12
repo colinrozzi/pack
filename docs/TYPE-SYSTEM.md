@@ -123,7 +123,14 @@ list<T>
 option<T>
 result<T, E>
 tuple<T, U, ...>
+map<K, V>
 ```
+
+`map<K, V>` is *front-end sugar*: it lowers to `BTreeMap<K, V>` on the Rust side
+and erases to `list<tuple<K, V>>` on the wire and in metadata. It introduces no
+new ABI value kind — a map is exactly a key-sorted list of key/value pairs, so
+it hashes and validates identically to that list, and its encoding is canonical
+(deterministic key order) for free.
 
 ### Function types
 

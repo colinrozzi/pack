@@ -401,6 +401,7 @@ fn hash_type_inner(ty: &Type, types: &[TypeDef], stack: &mut Vec<String>) -> Typ
                 .collect();
             hash_tuple(&hashes)
         }
+        Type::Map { .. } => hash_type_inner(&ty.desugar_map(), types, stack),
         Type::Ref(path) => hash_ref(path, types, stack),
         Type::App { path, args } => hash_app(path, args, types, stack),
         Type::Value => HASH_SELF_REF,
@@ -1425,6 +1426,11 @@ fn decode_type_param_list(val: Value) -> Result<Vec<crate::types::TypeParam>, Me
 }
 
 fn encode_type_value(ty: &Type) -> Value {
+    // `map<K, V>` is front-end sugar: it erases to `list<tuple<K, V>>` on the
+    // wire and in metadata, so it hashes/marshals identically to a list of pairs.
+    if let Type::Map { .. } = ty {
+        return encode_type_value(&ty.desugar_map());
+    }
     let (tag, payload) = match ty {
         Type::Unit => (TAG_UNIT as usize, vec![]),
         Type::Bool => (TAG_BOOL as usize, vec![]),
@@ -1485,6 +1491,8 @@ fn encode_type_value(ty: &Type) -> Value {
             )
         }
         Type::Value => (TAG_VALUE as usize, vec![]),
+        // Desugared to `list<tuple<K, V>>` by the guard at the top of this fn.
+        Type::Map { .. } => unreachable!("map desugared before match"),
     };
 
     Value::Variant {
@@ -1707,6 +1715,10 @@ pub fn validate_value_in_type_space(
     expected: &Type,
     type_defs: &[TypeDef],
 ) -> Result<(), TypeValidationError> {
+    // `map<K, V>` erases to `list<tuple<K, V>>`; validate against that shape.
+    if let Type::Map { .. } = expected {
+        return validate_value_in_type_space(value, &expected.desugar_map(), type_defs);
+    }
     match expected {
         // Escape hatch — anything goes
         Type::Value => Ok(()),
@@ -1906,6 +1918,8 @@ pub fn validate_value_in_type_space(
                 }),
             }
         }
+        // Desugared to `list<tuple<K, V>>` by the guard at the top of this fn.
+        Type::Map { .. } => unreachable!("map desugared before match"),
     }
 }
 

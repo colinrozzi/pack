@@ -54,10 +54,18 @@ packr_guest::wit! {
         tail: option<self>,
     }
 
+    // `map<K, V>` field: lowers to `BTreeMap<K, V>` and marshals as a
+    // key-sorted `list<tuple<K, V>>`.
+    record dict {
+        name: string,
+        entries: map<string, s32>,
+    }
+
     world wit-types {
         export identity: func(p: point) -> point
         export eval: func(e: sexpr) -> sexpr
         export cons-id: func(c: cons) -> cons
+        export dict-id: func(d: dict) -> dict
     }
 }
 
@@ -85,6 +93,18 @@ fn eval(e: Sexpr) -> Sexpr {
 #[export]
 fn cons_id(c: Cons) -> Cons {
     c
+}
+
+/// Forces the `map<string, s32>` -> `BTreeMap<String, i32>` field marshalling to
+/// compile (encodes/decodes as a key-sorted list<tuple<string, s32>>).
+#[export]
+fn dict_id(d: Dict) -> Dict {
+    let mut entries = d.entries;
+    entries.entry(alloc::string::String::from("_count")).or_insert(0);
+    Dict {
+        name: d.name,
+        entries,
+    }
 }
 
 // Reference `Shape`/`Color` so their generated impls are compiled too.

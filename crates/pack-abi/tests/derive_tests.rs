@@ -633,3 +633,65 @@ fn recursive_enum_via_rec_roundtrip() {
     let back: RecTree = value.try_into().unwrap();
     assert_eq!(original, back);
 }
+
+// ============================================================================
+// map<K, V> -> BTreeMap field tests
+// ============================================================================
+
+// A `map<K, V>` pact field lowers to a `BTreeMap<K, V>` field, which encodes as
+// a key-sorted `list<tuple<K, V>>` (no wire change, no new Value variant).
+#[derive(Debug, Clone, PartialEq, GraphValue)]
+struct Dict {
+    name: String,
+    entries: std::collections::BTreeMap<String, i32>,
+}
+
+#[test]
+fn map_field_encodes_as_list_of_pairs() {
+    let mut entries = std::collections::BTreeMap::new();
+    entries.insert("b".to_string(), 2);
+    entries.insert("a".to_string(), 1);
+    let dict = Dict {
+        name: "d".to_string(),
+        entries,
+    };
+
+    let value: Value = dict.into();
+    match value {
+        Value::Record { fields, .. } => {
+            let (_, entries_val) = fields.iter().find(|(n, _)| n == "entries").unwrap();
+            match entries_val {
+                Value::List { items, .. } => {
+                    assert_eq!(items.len(), 2);
+                    // BTreeMap iterates sorted, so "a" precedes "b" — canonical.
+                    assert_eq!(
+                        items[0],
+                        Value::Tuple(vec![Value::String("a".to_string()), Value::S32(1)])
+                    );
+                    assert_eq!(
+                        items[1],
+                        Value::Tuple(vec![Value::String("b".to_string()), Value::S32(2)])
+                    );
+                }
+                other => panic!("expected List for map field, got {other:?}"),
+            }
+        }
+        other => panic!("expected Record, got {other:?}"),
+    }
+}
+
+#[test]
+fn map_field_roundtrip() {
+    let mut entries = std::collections::BTreeMap::new();
+    entries.insert("alpha".to_string(), 10);
+    entries.insert("beta".to_string(), -20);
+    entries.insert("gamma".to_string(), 30);
+    let original = Dict {
+        name: "config".to_string(),
+        entries,
+    };
+
+    let value: Value = original.clone().into();
+    let back: Dict = value.try_into().unwrap();
+    assert_eq!(original, back);
+}

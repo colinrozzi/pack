@@ -449,6 +449,17 @@ impl<T: KnownValueType> KnownValueType for Vec<T> {
     }
 }
 
+// A `map<K, V>` erases to `list<tuple<K, V>>` on the wire, so its known value
+// type is a list of key/value pairs — matching `From<BTreeMap>` above.
+impl<K: KnownValueType + Ord, V: KnownValueType> KnownValueType for BTreeMap<K, V> {
+    fn known_value_type() -> ValueType {
+        ValueType::List(Box::new(ValueType::Tuple(alloc::vec![
+            K::known_value_type(),
+            V::known_value_type(),
+        ])))
+    }
+}
+
 impl<T: KnownValueType> KnownValueType for Option<T> {
     fn known_value_type() -> ValueType {
         ValueType::Option(Box::new(T::known_value_type()))
