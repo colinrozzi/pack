@@ -1080,8 +1080,56 @@ pub fn import(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///     }
 /// }
 /// ```
+///
+/// # Alternative: a shared definition file
+///
+/// Point the macro at a specific file so several crates can share ONE WIT+
+/// definition instead of copying (or symlinking) it into each repo:
+///
+/// ```ignore
+/// wit!(from "../shared/api.wit+");   // or the shorthand: wit!("../shared/api.wit+")
+/// ```
+///
+/// A relative path resolves against `CARGO_MANIFEST_DIR` (the crate root); an
+/// absolute path is used as-is. The file is registered as a build dependency,
+/// so editing the shared definition triggers a rebuild.
 #[proc_macro]
 pub fn wit(input: TokenStream) -> TokenStream {
+    // Form 1: `wit!(from "path")` / `wit!("path")` — read a specific file so
+    // multiple crates can share one definition instead of symlinking a copy
+    // into each repo.
+    if let Ok(file_ref) = syn::parse2::<WitFileRef>(input.clone().into()) {
+        let (content, abs_path) = match read_wit_file(&file_ref.path.value()) {
+            Ok(v) => v,
+            Err(e) => {
+                return syn::Error::new(file_ref.path.span(), e)
+                    .to_compile_error()
+                    .into();
+            }
+        };
+        let world = match wit_parser::parse_world(&content) {
+            Ok(w) => w,
+            Err(e) => {
+                return syn::Error::new(
+                    file_ref.path.span(),
+                    format!("Failed to parse WIT from {}: {}", abs_path.display(), e),
+                )
+                .to_compile_error()
+                .into();
+            }
+        };
+        let generated = codegen::generate_world_types(&world);
+        let abs_str = abs_path.to_string_lossy();
+        let abs_str = abs_str.as_ref();
+        return quote! {
+            // Register the source file as a build dependency so editing the
+            // shared definition triggers recompilation of this crate.
+            const _: &[u8] = include_bytes!(#abs_str);
+            #generated
+        }
+        .into();
+    }
+
     // Check if we have inline content or should read from files
     let input_str = input.to_string();
 
@@ -1121,6 +1169,55 @@ pub fn wit(input: TokenStream) -> TokenStream {
     let generated = codegen::generate_world_types(&world);
 
     generated.into()
+}
+
+/// A `wit!` invocation that points at an external definition file:
+/// `wit!(from "path/to/api.wit+")`, or the shorthand `wit!("path/to/api.wit+")`.
+///
+/// This lets several crates share ONE WIT+ file instead of copying (or
+/// symlinking) it into each repo. A relative path is resolved against
+/// `CARGO_MANIFEST_DIR` (the crate root); an absolute path is used as-is.
+struct WitFileRef {
+    path: LitStr,
+}
+
+impl Parse for WitFileRef {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        // Optional leading `from` keyword (a plain ident, not a real Rust kw).
+        // Inline WIT starts with `interface`/`world`/`record`/… so it fails this
+        // parse and the caller falls back to treating the input as inline WIT.
+        if input.peek(Ident) {
+            let kw: Ident = input.parse()?;
+            if kw != "from" {
+                return Err(syn::Error::new(
+                    kw.span(),
+                    "expected `from` followed by a string literal, or a string literal",
+                ));
+            }
+        }
+        let path: LitStr = input.parse()?;
+        if !input.is_empty() {
+            return Err(input.error("unexpected tokens after the WIT file path"));
+        }
+        Ok(WitFileRef { path })
+    }
+}
+
+/// Read a WIT+ definition from a specific file. Returns the file contents and
+/// the resolved absolute path (so the caller can register it as a build
+/// dependency). Relative paths resolve against `CARGO_MANIFEST_DIR`.
+fn read_wit_file(path_str: &str) -> Result<(String, std::path::PathBuf), String> {
+    let path = std::path::Path::new(path_str);
+    let full = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        let manifest_dir =
+            std::env::var("CARGO_MANIFEST_DIR").map_err(|_| "CARGO_MANIFEST_DIR not set")?;
+        std::path::Path::new(&manifest_dir).join(path)
+    };
+    let content = std::fs::read_to_string(&full)
+        .map_err(|e| format!("Failed to read WIT file {:?}: {}", full, e))?;
+    Ok((content, full))
 }
 
 /// Parse the WIT+ world and generate types, imports, and export metadata.

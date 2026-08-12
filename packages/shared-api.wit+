@@ -1,0 +1,13 @@
+// Shared WIT+ definition consumed by the `wit-from-file` fixture via
+// `wit!(from "../shared-api.wit+")`. The point of this file is that it lives
+// OUTSIDE the consuming crate — several crates could point at this one file
+// instead of each vendoring/symlinking a copy.
+
+record greeting {
+    to: string,
+    times: u32,
+}
+
+world shared-api {
+    export greet: func(g: greeting) -> greeting
+}
