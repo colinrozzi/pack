@@ -1404,6 +1404,7 @@ fn parse_type(parser: &mut Parser) -> Result<Type, ParseError> {
         "option" => parse_generic_type(parser, Type::option),
         "tuple" => parse_tuple(parser),
         "result" => parse_result(parser),
+        "map" => parse_map(parser),
         _ => {
             // Generic type application: `name<T, ...>`. A bare name with no
             // angle brackets is an ordinary named reference (which the
@@ -1479,6 +1480,15 @@ fn parse_result(parser: &mut Parser) -> Result<Type, ParseError> {
     };
     parser.expect_symbol('>')?;
     Ok(Type::result(ok, err))
+}
+
+fn parse_map(parser: &mut Parser) -> Result<Type, ParseError> {
+    parser.expect_symbol('<')?;
+    let key = parse_type(parser)?;
+    parser.expect_symbol(',')?;
+    let value = parse_type(parser)?;
+    parser.expect_symbol('>')?;
+    Ok(Type::map(key, value))
 }
 
 // ============================================================================

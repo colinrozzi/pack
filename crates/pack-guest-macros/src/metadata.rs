@@ -501,6 +501,15 @@ pub fn wit_type_to_type_desc_scoped(
                 .map(|t| wit_type_to_type_desc_scoped(t, types, params))
                 .collect(),
         ),
+        crate::wit_parser::Type::Map { key, value } => {
+            // `map<K, V>` erases to `list<tuple<K, V>>` in metadata so it hashes
+            // identically to a list of pairs (matching the host's desugaring).
+            let pair = TypeDesc::Tuple(vec![
+                wit_type_to_type_desc_scoped(key, types, params),
+                wit_type_to_type_desc_scoped(value, types, params),
+            ]);
+            TypeDesc::List(Box::new(pair))
+        }
         crate::wit_parser::Type::Named(name) => {
             // An in-scope generic parameter survives as a named ref.
             if params.iter().any(|p| p == name) {

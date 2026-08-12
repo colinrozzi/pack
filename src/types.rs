@@ -513,6 +513,12 @@ pub enum Type {
     Result { ok: Box<Type>, err: Box<Type> },
     Tuple(Vec<Type>),
 
+    // Map type `map<K, V>`. A front-end convenience that lowers to a
+    // `BTreeMap<K, V>` in Rust and marshals as a `list<tuple<K, V>>` on the wire
+    // (canonical, key-sorted). Distinct only at the source/codegen level; for
+    // hashing, metadata, and validation it is treated as its desugared list form.
+    Map { key: Box<Type>, value: Box<Type> },
+
     // Named type reference (with qualified path).
     //
     // Also used for references to an in-scope generic type parameter: a bare
@@ -573,6 +579,28 @@ impl Type {
         }
     }
 
+    /// Create a map type `map<key, value>`.
+    pub fn map(key: Type, value: Type) -> Self {
+        Type::Map {
+            key: Box::new(key),
+            value: Box::new(value),
+        }
+    }
+
+    /// The desugared wire form of a `map<K, V>`: `list<tuple<K, V>>`. A map
+    /// marshals, hashes, and validates exactly as this list of key/value pairs,
+    /// so the erased paths (metadata, hashing, validation) delegate to it.
+    /// Returns `self` unchanged for a non-map type.
+    pub fn desugar_map(&self) -> Type {
+        match self {
+            Type::Map { key, value } => Type::List(Box::new(Type::Tuple(vec![
+                (**key).clone(),
+                (**value).clone(),
+            ]))),
+            other => other.clone(),
+        }
+    }
+
     /// Substitute in-scope type parameters with concrete types.
     ///
     /// A `Ref` whose simple name is bound in `env` is replaced by the bound
@@ -599,6 +627,10 @@ impl Type {
             Type::App { path, args } => Type::App {
                 path: path.clone(),
                 args: args.iter().map(|t| t.substitute(env)).collect(),
+            },
+            Type::Map { key, value } => Type::Map {
+                key: Box::new(key.substitute(env)),
+                value: Box::new(value.substitute(env)),
             },
             _ => self.clone(),
         }
@@ -662,6 +694,10 @@ impl Type {
                 }
                 Ok(())
             }
+            (Type::Map { key: k1, value: v1 }, Type::Map { key: k2, value: v2 }) => {
+                k1.unify(k2, params, bindings)?;
+                v1.unify(v2, params, bindings)
+            }
             // Non-parameter constructs (primitives, nominal refs) must be equal.
             (a, b) if a == b => Ok(()),
             (a, b) => Err(format!("cannot unify {a:?} with {b:?}")),
@@ -686,6 +722,7 @@ impl Type {
             Type::Result { ok, err } => ok.contains_recursion() || err.contains_recursion(),
             Type::Tuple(types) => types.iter().any(|t| t.contains_recursion()),
             Type::App { args, .. } => args.iter().any(|t| t.contains_recursion()),
+            Type::Map { key, value } => key.contains_recursion() || value.contains_recursion(),
             _ => false,
         }
     }

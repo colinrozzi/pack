@@ -313,6 +313,13 @@ pub enum Type {
     },
     Tuple(Vec<Type>),
 
+    // `map<K, V>` — front-end sugar that lowers to `BTreeMap<K, V>` in Rust and
+    // erases to `list<tuple<K, V>>` on the wire / in metadata.
+    Map {
+        key: Box<Type>,
+        value: Box<Type>,
+    },
+
     // Named reference (to another type). Also used for a reference to an
     // in-scope generic type parameter (e.g. `a` inside `record pair<a, b>`);
     // both lower to a PascalCased Rust identifier, so codegen need not
@@ -375,6 +382,10 @@ impl Type {
                 err: err.as_ref().map(|t| Box::new(t.substitute(env))),
             },
             Type::Tuple(items) => Type::Tuple(items.iter().map(|t| t.substitute(env)).collect()),
+            Type::Map { key, value } => Type::Map {
+                key: Box::new(key.substitute(env)),
+                value: Box::new(value.substitute(env)),
+            },
             Type::App { name, args } => Type::App {
                 name: name.clone(),
                 args: args.iter().map(|t| t.substitute(env)).collect(),
@@ -1312,6 +1323,17 @@ pub(crate) fn parse_type(parser: &mut Parser) -> Result<Type, ParseError> {
             Ok(Type::Result {
                 ok: ok.map(Box::new),
                 err: err.map(Box::new),
+            })
+        }
+        "map" => {
+            parser.expect_symbol('<')?;
+            let key = parse_type(parser)?;
+            parser.expect_symbol(',')?;
+            let value = parse_type(parser)?;
+            parser.expect_symbol('>')?;
+            Ok(Type::Map {
+                key: Box::new(key),
+                value: Box::new(value),
             })
         }
         _ => {

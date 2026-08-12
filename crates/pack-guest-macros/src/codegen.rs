@@ -93,6 +93,13 @@ fn generate_type_ref(ty: &Type, self_type_name: Option<&str>) -> TokenStream {
                 quote! { (#(#item_tys),*) }
             }
         }
+        Type::Map { key, value } => {
+            // `map<K, V>` lowers to `BTreeMap<K, V>`, which round-trips through
+            // the ABI as `list<tuple<K, V>>` (key-sorted, so it's canonical).
+            let key_ty = generate_type_ref(key, self_type_name);
+            let value_ty = generate_type_ref(value, self_type_name);
+            quote! { ::alloc::collections::BTreeMap<#key_ty, #value_ty> }
+        }
         Type::Named(name) => {
             let rust_name = to_rust_type_name(name);
             quote! { #rust_name }
@@ -162,9 +169,10 @@ fn generate_to_value(ty: &Type, expr: TokenStream, self_type_name: Option<&str>)
         Type::F64 => quote! { packr_guest::Value::F64(#expr) },
         Type::Char => quote! { packr_guest::Value::Char(#expr) },
         Type::String => quote! { packr_guest::Value::String(#expr) },
-        Type::List(_) | Type::Option(_) => {
-            // Vec<T> / Option<T> encode via their packr_abi `From` impls, which
-            // build the correct struct-form Value (elem_type / inner_type).
+        Type::List(_) | Type::Option(_) | Type::Map { .. } => {
+            // Vec<T> / Option<T> / BTreeMap<K, V> encode via their packr_abi
+            // `From` impls, which build the correct struct-form Value (a map
+            // becomes a list<tuple<K, V>>).
             quote! { ::core::convert::Into::<packr_guest::Value>::into(#expr) }
         }
         Type::Result { ok, err } => {
@@ -708,6 +716,9 @@ fn format_wit_type(ty: &Type) -> String {
         Type::Tuple(items) => {
             let item_strs: Vec<String> = items.iter().map(format_wit_type).collect();
             format!("tuple<{}>", item_strs.join(", "))
+        }
+        Type::Map { key, value } => {
+            format!("map<{}, {}>", format_wit_type(key), format_wit_type(value))
         }
         Type::Named(name) => name.clone(),
         Type::App { name, args } => {

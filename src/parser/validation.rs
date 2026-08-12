@@ -92,6 +92,16 @@ fn validate_type(
     types: &HashMap<String, &TypeDef>,
     assigned: &mut HashMap<u32, String>,
 ) -> Result<(), ValidationError> {
+    // `map<K, V>` is sugar for `list<tuple<K, V>>`; desugar before validating so
+    // the memo key and node checks only ever see the erased list-of-pairs form.
+    let desugared;
+    let ty = if let Type::Map { .. } = ty {
+        desugared = ty.desugar_map();
+        &desugared
+    } else {
+        ty
+    };
+
     let type_key = type_key(ty, self_name);
     if let Some(existing) = assigned.get(&index) {
         if existing != &type_key {
@@ -282,6 +292,8 @@ fn validate_type(
             // Value type is a dynamic escape hatch - accept any node kind
             Ok(())
         }
+        // Desugared to `list<tuple<K, V>>` by the guard at the top of this fn.
+        Type::Map { .. } => unreachable!("map desugared before match"),
     }
 }
 
@@ -338,6 +350,15 @@ fn validate_value(
     self_name: Option<&str>,
     types: &HashMap<String, &TypeDef>,
 ) -> Result<(), ValidationError> {
+    // `map<K, V>` erases to `list<tuple<K, V>>`; validate against that shape.
+    let desugared;
+    let ty = if let Type::Map { .. } = ty {
+        desugared = ty.desugar_map();
+        &desugared
+    } else {
+        ty
+    };
+
     match (value, ty) {
         (_, Type::Unit) => {
             // Unit type has no runtime value representation

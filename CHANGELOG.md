@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.15.0 (2026-08-12)
+
+### Added
+
+- **`map<K, V>` type.** Front-end sugar for an associative map. It lowers to
+  `BTreeMap<K, V>` in Rust and marshals as a key-sorted `list<tuple<K, V>>` on
+  the wire — so it introduces **no new `Value` variant and no wire change**, and
+  a `map<K, V>` hashes/validates identically to the equivalent list of pairs
+  (type-parameter erasure, the same principle as generics). Because a
+  `BTreeMap` iterates in key order, the encoding is canonical (deterministic
+  key ordering) for free.
+  - Pact/WIT+: `map<string, u32>`, usable anywhere a type is (fields, params,
+    results, nested in `list`/`option`/generics).
+  - Guest: a `map<...>` field/param generates a `BTreeMap<...>`; encode/decode
+    come from `packr_abi`'s `From<BTreeMap>` / `TryFrom<Value>` impls (and a
+    matching `KnownValueType`), routed through the tested `GraphValue` derive.
+
+### Notes
+
+- Wire-compatible: a map is *exactly* a `list<tuple<K, V>>`, so existing
+  packages and consumers are byte-for-byte unaffected. Ships as a minor.
+
 ## v0.14.0 (2026-08-09)
 
 ### Added

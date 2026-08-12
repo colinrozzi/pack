@@ -250,6 +250,13 @@ fn type_to_rust(ty: &Type) -> String {
             let types: Vec<String> = items.iter().map(type_to_rust).collect();
             format!("({})", types.join(", "))
         }
+        Type::Map { key, value } => {
+            format!(
+                "std::collections::BTreeMap<{}, {}>",
+                type_to_rust(key),
+                type_to_rust(value)
+            )
+        }
         Type::Ref(path) => {
             // Named type reference
             to_pascal_case(&path.segments.join("::"))
