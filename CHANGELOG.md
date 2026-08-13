@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.16.0 (2026-08-13)
+
+### Added
+
+- **`wit!(from "path")` — source a definition from a file.** The `wit!` macro now
+  accepts a file path in addition to inline WIT+ and the `wit/` directory:
+
+  ```rust
+  packr_guest::wit!(from "../shared/api.wit+");   // or: wit!("../shared/api.wit+")
+  ```
+
+  This lets several crates share **one** WIT+ definition file instead of copying
+  (or symlinking) a duplicate into each repo. A relative path resolves against
+  `CARGO_MANIFEST_DIR` (the crate root); an absolute path is used as-is. The file
+  is registered as a build dependency (via `include_bytes!`), so editing the
+  shared definition triggers a rebuild of every crate that reads it — something a
+  symlinked copy does not reliably do.
+
 ## v0.15.0 (2026-08-12)
 
 ### Added

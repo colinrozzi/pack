@@ -33,6 +33,7 @@ exclude = [
     "packages/gen-node",
     "packages/gen-sm",
     "packages/wit-types",
+    "packages/wit-from-file",
 ]
 
 [workspace.package]
