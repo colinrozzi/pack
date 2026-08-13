@@ -156,7 +156,7 @@ record cons {
 carry the ABI codec traits — so it cannot round-trip when nested in a container
 (the shape a recursive *struct* needs). `Rec<T>` is a transparent wrapper over
 `Box<T>`: it derefs to `T`, constructs with `Rec::new(x)` or `x.into()`, and
-encodes byte-identically to the inner value (no wire cost). The `wit!` codegen
+encodes byte-identically to the inner value (no wire cost). The `pact!` codegen
 emits it for you; a hand-written `#[derive(GraphValue)]` type uses it directly:
 
 ```rust
@@ -174,5 +174,5 @@ struct Cons {
 
 - Higher-kinded parameters (`<f: * -> *>`) and const generics.
 - Constraint *enforcement* — constraints are parsed and carried, not checked.
-- `wit!`-macro codegen of a generic component *trait* (hand-written components
+- `pact!`-macro codegen of a generic component *trait* (hand-written components
   work today; macro-generated ones do not).

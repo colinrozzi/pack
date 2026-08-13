@@ -3,7 +3,8 @@
 //! Provides the `#[export]` and `#[import]` attribute macros for easily
 //! exporting and importing functions with the correct WASM calling convention.
 //!
-//! Also provides the `wit!()` macro for generating types from WIT+ definitions.
+//! Also provides the `pact!()` macro (formerly `wit!`, now a deprecated alias)
+//! for generating types from Pact (WIT+) definitions.
 
 use proc_macro::TokenStream;
 use quote::quote;
@@ -1023,52 +1024,17 @@ pub fn import(attr: TokenStream, item: TokenStream) -> TokenStream {
     expanded.into()
 }
 
-/// Generate types and bindings from WIT+ definitions.
+/// Generate types and bindings from a Pact (WIT+) definition.
 ///
-/// This macro reads WIT+ files from the `wit/` directory in your crate and generates:
+/// `pact!` reads a Pact definition — inline, from a shared file, or from the
+/// `wit/` directory — and generates:
 /// - Rust types for all type definitions (records, variants, enums, flags)
-/// - `From<T> for Value` implementations for converting to Value
-/// - `TryFrom<Value> for T` implementations for converting from Value
+/// - `From<T> for Value` / `TryFrom<Value> for T` implementations
 ///
-/// # Usage
-///
-/// Create a `wit/` directory in your crate root with `.wit` files:
-///
-/// ```wit
-/// // wit/world.wit
-/// variant sexpr {
-///     sym(string),
-///     num(s64),
-///     cons(list<sexpr>),
-///     nil,
-/// }
-///
-/// world my-actor {
-///     export eval: func(expr: sexpr) -> sexpr
-/// }
-/// ```
-///
-/// Then in your Rust code:
+/// # Inline
 ///
 /// ```ignore
-/// use packr_guest::wit;
-///
-/// // Generate types from wit/ directory
-/// wit!();
-///
-/// // Now you can use the generated types
-/// #[export]
-/// fn eval(expr: Sexpr) -> Sexpr {
-///     // ...
-/// }
-/// ```
-///
-/// # Alternative: Inline WIT
-///
-/// You can also provide WIT content directly:
-///
-/// ```ignore
-/// wit! {
+/// packr_guest::pact! {
 ///     variant sexpr {
 ///         sym(string),
 ///         num(s64),
@@ -1081,21 +1047,49 @@ pub fn import(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// }
 /// ```
 ///
-/// # Alternative: a shared definition file
+/// # From a shared file
 ///
-/// Point the macro at a specific file so several crates can share ONE WIT+
+/// Point the macro at a specific file so several crates can share ONE
 /// definition instead of copying (or symlinking) it into each repo:
 ///
 /// ```ignore
-/// wit!(from "../shared/api.wit+");   // or the shorthand: wit!("../shared/api.wit+")
+/// packr_guest::pact!(from "../shared/api.wit+");   // or: pact!("../shared/api.wit+")
 /// ```
 ///
 /// A relative path resolves against `CARGO_MANIFEST_DIR` (the crate root); an
 /// absolute path is used as-is. The file is registered as a build dependency,
 /// so editing the shared definition triggers a rebuild.
+///
+/// # From the `wit/` directory
+///
+/// With no argument, `pact!()` reads every `.wit`/`.wit+` file under `wit/`.
+///
+/// > **Note:** `pact!` was previously named `wit!`. The [`wit!`] alias still
+/// > works but is deprecated.
 #[proc_macro]
+pub fn pact(input: TokenStream) -> TokenStream {
+    expand_pact(input)
+}
+
+/// Deprecated alias for [`pact!`].
+///
+/// `wit!` was renamed to `pact!` to match the Pact interface format the runtime
+/// uses everywhere else (`parse_pact`, `.pact`, `PactInterface`). It forwards to
+/// the same implementation; migrate by replacing `wit!` with `pact!`.
+#[proc_macro]
+#[deprecated(
+    since = "0.17.0",
+    note = "`wit!` has been renamed to `pact!`; use `packr_guest::pact!` instead"
+)]
 pub fn wit(input: TokenStream) -> TokenStream {
-    // Form 1: `wit!(from "path")` / `wit!("path")` — read a specific file so
+    expand_pact(input)
+}
+
+/// Shared implementation behind [`pact!`] (and the deprecated [`wit!`] alias):
+/// resolve the Pact source (a specific file, inline content, or the `wit/`
+/// directory), parse it, and generate the world's types.
+fn expand_pact(input: TokenStream) -> TokenStream {
+    // Form 1: `pact!(from "path")` / `pact!("path")` — read a specific file so
     // multiple crates can share one definition instead of symlinking a copy
     // into each repo.
     if let Ok(file_ref) = syn::parse2::<WitFileRef>(input.clone().into()) {
@@ -1112,7 +1106,7 @@ pub fn wit(input: TokenStream) -> TokenStream {
             Err(e) => {
                 return syn::Error::new(
                     file_ref.path.span(),
-                    format!("Failed to parse WIT from {}: {}", abs_path.display(), e),
+                    format!("Failed to parse Pact from {}: {}", abs_path.display(), e),
                 )
                 .to_compile_error()
                 .into();
@@ -1140,7 +1134,7 @@ pub fn wit(input: TokenStream) -> TokenStream {
             Err(e) => {
                 return syn::Error::new(
                     proc_macro2::Span::call_site(),
-                    format!("Failed to read WIT files: {}", e),
+                    format!("Failed to read Pact files: {}", e),
                 )
                 .to_compile_error()
                 .into();
@@ -1148,17 +1142,17 @@ pub fn wit(input: TokenStream) -> TokenStream {
         }
     } else {
         // Use inline content - parse the token stream as a raw string
-        // The input is the raw WIT content between the braces
+        // The input is the raw Pact content between the braces
         input_str
     };
 
-    // Parse the WIT content
+    // Parse the Pact content
     let world = match wit_parser::parse_world(&wit_content) {
         Ok(w) => w,
         Err(e) => {
             return syn::Error::new(
                 proc_macro2::Span::call_site(),
-                format!("Failed to parse WIT: {}", e),
+                format!("Failed to parse Pact: {}", e),
             )
             .to_compile_error()
             .into();

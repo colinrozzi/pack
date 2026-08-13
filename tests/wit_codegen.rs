@@ -49,10 +49,11 @@ fn wit_generated_record_variant_enum_compile() {
     }
 }
 
-/// The `wit!(from "path")` file form: `packages/wit-from-file` sources its WIT+
-/// from a SHARED file outside the crate (`packages/shared-api.wit+`) rather than
-/// an inline block or a `wit/` dir. If it builds, the macro resolved the path
-/// (relative to `CARGO_MANIFEST_DIR`), read the file, and generated the types.
+/// The `pact!(from "path")` file form: `packages/wit-from-file` sources its Pact
+/// definition from a SHARED file outside the crate (`packages/shared-api.wit+`)
+/// rather than an inline block or a `wit/` dir. If it builds, the macro resolved
+/// the path (relative to `CARGO_MANIFEST_DIR`), read the file, generated the
+/// types.
 #[test]
 fn wit_from_file_path_compiles() {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
