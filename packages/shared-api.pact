@@ -1,5 +1,5 @@
-// Shared WIT+ definition consumed by the `wit-from-file` fixture via
-// `wit!(from "../shared-api.wit+")`. The point of this file is that it lives
+// Shared Pact definition consumed by the `pact-from-file` fixture via
+// `pact!(from "../shared-api.pact")`. The point of this file is that it lives
 // OUTSIDE the consuming crate — several crates could point at this one file
 // instead of each vendoring/symlinking a copy.
 

@@ -10,7 +10,7 @@ description = "Guest-side helpers for Pack WASM packages"
 name = "packr_guest"
 
 [features]
-# `derive` is on by default: the `wit!` and host codegen emit
+# `derive` is on by default: the `pact!` and host codegen emit
 # `#[derive(GraphValue)]` for generated records/variants/enums, so the derive
 # must be available to any guest that uses generated types.
 default = ["derive"]

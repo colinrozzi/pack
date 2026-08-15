@@ -1,5 +1,36 @@
 # Changelog
 
+## v0.18.0 (2026-08-15) — BREAKING
+
+Committed fully to the **Pact** name; **"wit" is gone** from the public surface.
+This is a breaking release — guest actors on the old names must migrate.
+
+### Breaking
+
+- **`wit!` removed.** The deprecated `wit!` alias (renamed to `pact!` in 0.17) is
+  deleted. Use `pact!`.
+- **`wit/` directory → `pact/`.** `pact!()` / `world!()` with no argument now read
+  a `pact/` directory (was `wit/`).
+- **`.wit` / `.wit+` extensions → `.pact`.** Definition files must use `.pact`.
+- **`#[export(wit = "…")]` / `#[import(wit = "…")]` → `pact = "…"`.** The
+  signature-string attribute argument was renamed.
+
+### Migration
+
+- Replace every `wit!` with `pact!`.
+- Rename each crate's `wit/` directory to `pact/` and its `*.wit`/`*.wit+` files
+  to `*.pact`.
+- Replace `wit =` with `pact =` in `#[export]` / `#[import]` attributes.
+- No wire/ABI/metadata change — regenerated code is byte-identical. This is a
+  source-level rename only.
+
+### Changed (internal)
+
+- Guest macro internals renamed (`wit_parser`→`pact_parser`, `parse_wit`→
+  `parse_pact`, `WitRegistry`→`PactRegistry`, etc.); the host `parser::wit`
+  module became `parser::world`. Docs debranded from "WIT+" to "Pact" (factual
+  references to the external Component Model WIT standard are retained).
+
 ## v0.17.0 (2026-08-15)
 
 ### Changed

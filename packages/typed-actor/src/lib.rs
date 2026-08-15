@@ -1,10 +1,10 @@
 //! Example actor using the world! macro for typed imports and exports.
 //!
 //! This demonstrates how to use the new `world!()` macro which:
-//! - Generates typed import modules from WIT+ interfaces
+//! - Generates typed import modules from Pact interfaces
 //! - Auto-discovers export names for the `#[export]` macro
 //!
-//! The WIT+ world is defined in `wit/world.wit+`.
+//! The Pact world is defined in `pact/world.pact`.
 
 #![no_std]
 extern crate alloc;
@@ -16,7 +16,7 @@ use packr_guest::export;
 // Set up panic handler and allocator
 packr_guest::setup_guest!();
 
-// Parse the WIT+ world and generate:
+// Parse the Pact world and generate:
 // - Typed import modules (runtime::log, runtime::get_time)
 // - Export metadata for #[export] validation
 packr_guest::world!();
@@ -24,7 +24,7 @@ packr_guest::world!();
 /// Initialize the actor.
 ///
 /// The `#[export]` macro automatically discovers that this function
-/// matches the `actor.init` export in the WIT+ world and uses the
+/// matches the `actor.init` export in the Pact world and uses the
 /// correct export name.
 #[export]
 fn init(state: Option<Vec<u8>>, actor_id: String) -> Result<Option<Vec<u8>>, String> {
@@ -43,7 +43,7 @@ fn init(state: Option<Vec<u8>>, actor_id: String) -> Result<Option<Vec<u8>>, Str
 
 /// Handle an incoming message.
 ///
-/// Again, the export name is auto-discovered from the WIT+ world.
+/// Again, the export name is auto-discovered from the Pact world.
 #[export]
 fn handle(state: Option<Vec<u8>>, msg: Vec<u8>) -> Option<Vec<u8>> {
     runtime::log(&alloc::format!("Received {} bytes", msg.len()));

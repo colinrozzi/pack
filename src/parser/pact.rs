@@ -1,6 +1,6 @@
 //! Pact Parser
 //!
-//! Parses Pact interface definitions - Theater's answer to WIT.
+//! Parses Pact interface definitions — Theater's typed interface format.
 //!
 //! Pact features:
 //! - First-class interfaces with imports/exports

@@ -1,11 +1,11 @@
-//! WIT+ and Pact Parser
+//! Pact Parser
 //!
-//! Parses WIT+ and Pact interface definitions.
+//! Parses Pact interface definitions.
 //! The module focuses on parsing; types are defined in `crate::types`.
 
 mod pact;
 mod validation;
-mod wit;
+mod world;
 
 pub use pact::{
     parse_pact, parse_pact_dir, parse_pact_dir_with_registry, parse_pact_file, InterfaceAlias,
@@ -13,14 +13,14 @@ pub use pact::{
     PactUse, ResolvedScope, ResolvedUse, TypeParam, TypeRegistry,
 };
 
-// WIT+ parser is deprecated - use parse_pact() instead.
+// The legacy world/interface parser is deprecated - use parse_pact() instead.
 // Kept for internal tests only.
 pub use validation::{
     decode_with_schema, encode_with_schema, validate_graph_against_type, ValidationError,
 };
 #[doc(hidden)]
 #[allow(deprecated)]
-pub use wit::{parse_interface, parse_world};
+pub use world::{parse_interface, parse_world};
 
 // Re-export types from crate::types for convenience
 pub use crate::types::{Arena, Case, Field, Function, Param, Type, TypeDef, TypePath};
@@ -47,14 +47,14 @@ pub enum ParseError {
 // World Definitions (kept here as they're parser-specific)
 // ============================================================================
 
-/// A parsed WIT+ world definition.
+/// A parsed Pact world definition.
 ///
 /// Worlds define the imports and exports for a component, specifying which
 /// interfaces it requires (imports) and provides (exports).
 ///
 /// # Example
 ///
-/// ```wit
+/// ```pact
 /// world my-component {
 ///     import wasi:cli/stdin
 ///     import wasi:cli/stdout
@@ -250,7 +250,7 @@ impl std::fmt::Display for InterfacePath {
 // Legacy Interface type (for backward compatibility)
 // ============================================================================
 
-/// A parsed WIT+ interface (legacy type).
+/// A parsed Pact interface (legacy type).
 ///
 /// This type is kept for backward compatibility during migration.
 /// New code should use `Arena` directly.

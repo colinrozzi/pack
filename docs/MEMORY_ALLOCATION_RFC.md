@@ -10,7 +10,7 @@
 
 3. **Owned tooling**: Full control over the stack enables better tooling, integration, and developer experience.
 
-Composite uses **Graph ABI** for encoding values (including recursive structures) and **WIT+** for type definitions that allow recursion.
+Composite uses **Graph ABI** for encoding values (including recursive structures) and **Pact** for type definitions that allow recursion.
 
 ## The Problem
 

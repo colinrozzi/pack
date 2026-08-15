@@ -1,6 +1,6 @@
 //! Interface enforcement tests
 //!
-//! Tests that validate WASM modules implement WIT interfaces correctly.
+//! Tests that validate WASM modules implement Pact interfaces correctly.
 
 use packr::parser::parse_interface;
 use packr::runtime::InterfaceError;

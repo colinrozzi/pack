@@ -1,6 +1,6 @@
-//! Regression test for `wit!` type codegen.
+//! Regression test for `pact!` type codegen.
 //!
-//! Builds the `wit-types` fixture, whose `wit!` block declares a record (with an
+//! Builds the `pact-types` fixture, whose `pact!` block declares a record (with an
 //! `option` and a `list` field), a variant (with a record payload), and a C-like
 //! enum, plus an exported function that uses the record. Before the codegen
 //! switched to `#[derive(GraphValue)]`, the generated code built tuple-form
@@ -12,11 +12,11 @@ use std::path::Path;
 use std::process::Command;
 
 #[test]
-fn wit_generated_record_variant_enum_compile() {
+fn pact_generated_record_variant_enum_compile() {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let manifest = Path::new(manifest_dir).join("packages/wit-types/Cargo.toml");
+    let manifest = Path::new(manifest_dir).join("packages/pact-types/Cargo.toml");
     let out = Path::new(manifest_dir)
-        .join("packages/wit-types/target/wasm32-unknown-unknown/release/wit_types.wasm");
+        .join("packages/pact-types/target/wasm32-unknown-unknown/release/pact_types.wasm");
 
     let status = Command::new("cargo")
         .args([
@@ -36,30 +36,30 @@ fn wit_generated_record_variant_enum_compile() {
     match status {
         Ok(s) if s.success() && out.exists() => {}
         Ok(s) if !s.success() => panic!(
-            "wit-types fixture failed to compile — the wit! codegen for \
+            "pact-types fixture failed to compile — the pact! codegen for \
              record/variant/enum is broken (exit {:?})",
             s.code()
         ),
         _ => {
             eprintln!(
-                "SKIP: could not build wit-types for wasm32-unknown-unknown \
+                "SKIP: could not build pact-types for wasm32-unknown-unknown \
                  (wasm target / cargo unavailable)."
             );
         }
     }
 }
 
-/// The `pact!(from "path")` file form: `packages/wit-from-file` sources its Pact
-/// definition from a SHARED file outside the crate (`packages/shared-api.wit+`)
-/// rather than an inline block or a `wit/` dir. If it builds, the macro resolved
+/// The `pact!(from "path")` file form: `packages/pact-from-file` sources its Pact
+/// definition from a SHARED file outside the crate (`packages/shared-api.pact`)
+/// rather than an inline block or a `pact/` dir. If it builds, the macro resolved
 /// the path (relative to `CARGO_MANIFEST_DIR`), read the file, generated the
 /// types.
 #[test]
-fn wit_from_file_path_compiles() {
+fn pact_from_file_path_compiles() {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let manifest = Path::new(manifest_dir).join("packages/wit-from-file/Cargo.toml");
+    let manifest = Path::new(manifest_dir).join("packages/pact-from-file/Cargo.toml");
     let out = Path::new(manifest_dir)
-        .join("packages/wit-from-file/target/wasm32-unknown-unknown/release/wit_from_file.wasm");
+        .join("packages/pact-from-file/target/wasm32-unknown-unknown/release/pact_from_file.wasm");
 
     let status = Command::new("cargo")
         .args([
@@ -79,13 +79,13 @@ fn wit_from_file_path_compiles() {
     match status {
         Ok(s) if s.success() && out.exists() => {}
         Ok(s) if !s.success() => panic!(
-            "wit-from-file fixture failed to compile — the wit!(from \"path\") \
+            "pact-from-file fixture failed to compile — the pact!(from \"path\") \
              file form is broken (exit {:?})",
             s.code()
         ),
         _ => {
             eprintln!(
-                "SKIP: could not build wit-from-file for wasm32-unknown-unknown \
+                "SKIP: could not build pact-from-file for wasm32-unknown-unknown \
                  (wasm target / cargo unavailable)."
             );
         }

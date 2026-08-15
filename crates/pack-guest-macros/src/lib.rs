@@ -3,8 +3,8 @@
 //! Provides the `#[export]` and `#[import]` attribute macros for easily
 //! exporting and importing functions with the correct WASM calling convention.
 //!
-//! Also provides the `pact!()` macro (formerly `wit!`, now a deprecated alias)
-//! for generating types from Pact (WIT+) definitions.
+//! Also provides the `pact!()` macro (formerly `pact!`, now a deprecated alias)
+//! for generating types from Pact (Pact) definitions.
 
 use proc_macro::TokenStream;
 use quote::quote;
@@ -14,14 +14,14 @@ use syn::{parse_macro_input, FnArg, Ident, ItemFn, LitStr, Pat, ReturnType, Toke
 
 mod codegen;
 mod metadata;
-mod wit_parser;
+mod pact_parser;
 
 /// Arguments for the #[export] attribute.
 struct ExportArgs {
     /// Custom export name (e.g., "theater:simple/actor.init")
     name: Option<String>,
-    /// WIT function name to validate/match against (e.g., "init")
-    wit: Option<String>,
+    /// Pact function name to validate/match against (e.g., "init")
+    pact: Option<String>,
     /// State type for Theater actor functions (e.g., "MyState")
     /// When set, the first parameter is treated as state that gets automatically
     /// extracted from Option<Value> and the return tuple's first element is
@@ -33,7 +33,7 @@ impl Parse for ExportArgs {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let mut args = ExportArgs {
             name: None,
-            wit: None,
+            pact: None,
             state: None,
         };
 
@@ -48,13 +48,13 @@ impl Parse for ExportArgs {
 
             match ident.to_string().as_str() {
                 "name" => args.name = Some(lit.value()),
-                "wit" => args.wit = Some(lit.value()),
+                "pact" => args.pact = Some(lit.value()),
                 "state" => args.state = Some(lit.value()),
                 other => {
                     return Err(syn::Error::new(
                         ident.span(),
                         format!(
-                            "unexpected attribute `{}`, expected `name`, `wit`, or `state`",
+                            "unexpected attribute `{}`, expected `name`, `pact`, or `state`",
                             other
                         ),
                     ));
@@ -81,7 +81,7 @@ impl Parse for ExportArgs {
 /// **Value mode** (single `Value` parameter): The raw `Value` is passed directly
 /// to your function. You handle all encoding/decoding manually.
 ///
-/// **Typed mode** (with `wit` attribute and typed parameters): The macro automatically
+/// **Typed mode** (with `pact` attribute and typed parameters): The macro automatically
 /// extracts typed parameters from the input and wraps the result. Parameters must
 /// implement `TryFrom<Value>` and return type must implement `Into<Value>`.
 ///
@@ -103,8 +103,8 @@ impl Parse for ExportArgs {
 ///     input
 /// }
 ///
-/// // Typed mode with WIT validation
-/// #[export(wit = "my:package/geo.translate")]
+/// // Typed mode with Pact validation
+/// #[export(pact = "my:package/geo.translate")]
 /// fn translate(p: Point, dx: i32, dy: i32) -> Point {
 ///     Point { x: p.x + dx, y: p.y + dy }
 /// }
@@ -145,12 +145,12 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let fn_name_str = input_fn.sig.ident.to_string();
 
-    // Try to derive export name from WIT:
-    // 1. If wit attribute is explicitly provided, use it
+    // Try to derive export name from Pact:
+    // 1. If pact attribute is explicitly provided, use it
     // 2. Otherwise, try to find the function in the world automatically
-    let derived_export_name = if let Some(ref wit_path) = args.wit {
-        // Explicit wit path provided
-        match validate_export_against_wit(wit_path) {
+    let derived_export_name = if let Some(ref pact_path) = args.pact {
+        // Explicit pact path provided
+        match validate_export_against_pact(pact_path) {
             Ok(result) => result.derived_name,
             Err(e) => {
                 return syn::Error::new(proc_macro2::Span::call_site(), e)
@@ -163,7 +163,7 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
         try_auto_discover_export(&fn_name_str)
     };
 
-    // Determine the export name: explicit name > derived from wit > function name
+    // Determine the export name: explicit name > derived from pact > function name
     let export_name = args.name.clone().or(derived_export_name);
 
     let fn_name = &input_fn.sig.ident;
@@ -531,31 +531,31 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
     expanded.into()
 }
 
-/// Result of validating an export against WIT
+/// Result of validating an export against Pact
 #[allow(dead_code)]
-struct WitValidationResult {
-    /// The derived export name (from the WIT path)
+struct PactValidationResult {
+    /// The derived export name (from the Pact path)
     pub derived_name: Option<String>,
-    /// The WIT function signature (params and results)
-    pub function: Option<wit_parser::Function>,
+    /// The Pact function signature (params and results)
+    pub function: Option<pact_parser::Function>,
 }
 
-/// Validate that a function exists in the WIT and optionally derive the export name.
+/// Validate that a function exists in the Pact and optionally derive the export name.
 ///
-/// The `wit_path` can be:
+/// The `pact_path` can be:
 /// - A simple function name: "init" (searches all exports)
 /// - A full path: "theater:simple/actor.init" (looks up specific interface)
-fn validate_export_against_wit(wit_path: &str) -> Result<WitValidationResult, String> {
-    // Read and parse WIT files
-    let wit_content = read_wit_files()?;
-    let registry =
-        wit_parser::parse_wit(&wit_content).map_err(|e| format!("Failed to parse WIT: {}", e))?;
+fn validate_export_against_pact(pact_path: &str) -> Result<PactValidationResult, String> {
+    // Read and parse Pact files
+    let pact_content = read_pact_files()?;
+    let registry = pact_parser::parse_pact(&pact_content)
+        .map_err(|e| format!("Failed to parse Pact: {}", e))?;
 
     // Check if this is a full path (contains '.' or '#')
-    if let Some(func_path) = wit_parser::FunctionPath::parse(wit_path) {
+    if let Some(func_path) = pact_parser::FunctionPath::parse(pact_path) {
         // Full path specified - look up the specific function
         if let Some(func) = registry.find_function(&func_path) {
-            return Ok(WitValidationResult {
+            return Ok(PactValidationResult {
                 derived_name: Some(func_path.export_name()),
                 function: Some(func.clone()),
             });
@@ -564,38 +564,38 @@ fn validate_export_against_wit(wit_path: &str) -> Result<WitValidationResult, St
         // Not found - provide helpful error
         let available = registry.available_exports();
         return Err(format!(
-            "Function '{}' not found in WIT interfaces. Available: {:?}",
-            wit_path, available
+            "Function '{}' not found in Pact interfaces. Available: {:?}",
+            pact_path, available
         ));
     }
 
     // Simple function name - search in exports and interfaces
-    let func_name = wit_path;
+    let func_name = pact_path;
 
     // First, check world exports
     for world in &registry.worlds {
         for export in &world.exports {
             match export {
-                wit_parser::WorldItem::Function(f) if f.name == func_name => {
+                pact_parser::WorldItem::Function(f) if f.name == func_name => {
                     // Found as a bare export
-                    return Ok(WitValidationResult {
+                    return Ok(PactValidationResult {
                         derived_name: Some(func_name.to_string()),
                         function: Some(f.clone()),
                     });
                 }
-                wit_parser::WorldItem::InlineInterface {
+                pact_parser::WorldItem::InlineInterface {
                     name: iface_name,
                     functions,
                 } => {
                     if let Some(f) = functions.iter().find(|f| f.name == func_name) {
                         // Found in inline interface
-                        return Ok(WitValidationResult {
+                        return Ok(PactValidationResult {
                             derived_name: Some(format!("{}.{}", iface_name, func_name)),
                             function: Some(f.clone()),
                         });
                     }
                 }
-                wit_parser::WorldItem::InterfacePath {
+                pact_parser::WorldItem::InterfacePath {
                     namespace,
                     package,
                     interface,
@@ -610,7 +610,7 @@ fn validate_export_against_wit(wit_path: &str) -> Result<WitValidationResult, St
                     if let Some(iface) = registry.interfaces.get(&iface_path) {
                         if let Some(f) = iface.functions.iter().find(|f| f.name == func_name) {
                             // Found in referenced interface
-                            return Ok(WitValidationResult {
+                            return Ok(PactValidationResult {
                                 derived_name: Some(format!("{}.{}", iface_path, func_name)),
                                 function: Some(f.clone()),
                             });
@@ -625,7 +625,7 @@ fn validate_export_against_wit(wit_path: &str) -> Result<WitValidationResult, St
     // Check top-level interfaces
     for (path, iface) in &registry.interfaces {
         if let Some(f) = iface.functions.iter().find(|f| f.name == func_name) {
-            return Ok(WitValidationResult {
+            return Ok(PactValidationResult {
                 derived_name: Some(format!("{}.{}", path, func_name)),
                 function: Some(f.clone()),
             });
@@ -635,7 +635,7 @@ fn validate_export_against_wit(wit_path: &str) -> Result<WitValidationResult, St
     // Not found
     let available = registry.available_exports();
     Err(format!(
-        "Function '{}' not found in WIT exports. Available: {:?}",
+        "Function '{}' not found in Pact exports. Available: {:?}",
         func_name, available
     ))
 }
@@ -643,20 +643,20 @@ fn validate_export_against_wit(wit_path: &str) -> Result<WitValidationResult, St
 /// Try to auto-discover the export name for a function by looking it up in the world.
 ///
 /// This is a "best effort" lookup - it returns None if:
-/// - No WIT files are found
+/// - No Pact files are found
 /// - No world is defined
 /// - The function is not found in exports
 ///
-/// This allows the macro to work both with and without a WIT world definition.
+/// This allows the macro to work both with and without a Pact world definition.
 fn try_auto_discover_export(fn_name: &str) -> Option<String> {
-    // Try to read WIT files, but don't error if not found
-    let wit_content = match read_wit_files() {
+    // Try to read Pact files, but don't error if not found
+    let pact_content = match read_pact_files() {
         Ok(c) => c,
         Err(_) => return None,
     };
 
-    // Try to parse the WIT, but don't error on failure
-    let registry = match wit_parser::parse_wit(&wit_content) {
+    // Try to parse the Pact, but don't error on failure
+    let registry = match pact_parser::parse_pact(&pact_content) {
         Ok(r) => r,
         Err(_) => return None,
     };
@@ -665,11 +665,11 @@ fn try_auto_discover_export(fn_name: &str) -> Option<String> {
     for world in &registry.worlds {
         for export in &world.exports {
             match export {
-                wit_parser::WorldItem::Function(f) if f.name == fn_name => {
+                pact_parser::WorldItem::Function(f) if f.name == fn_name => {
                     // Found as a bare export - use just the function name
                     return Some(fn_name.to_string());
                 }
-                wit_parser::WorldItem::InlineInterface {
+                pact_parser::WorldItem::InlineInterface {
                     name: iface_name,
                     functions,
                 } => {
@@ -678,7 +678,7 @@ fn try_auto_discover_export(fn_name: &str) -> Option<String> {
                         return Some(format!("{}.{}", iface_name, fn_name));
                     }
                 }
-                wit_parser::WorldItem::InterfacePath {
+                pact_parser::WorldItem::InterfacePath {
                     namespace,
                     package,
                     interface,
@@ -706,34 +706,34 @@ fn try_auto_discover_export(fn_name: &str) -> Option<String> {
     None
 }
 
-/// Result of validating an import against WIT
-struct WitImportValidationResult {
+/// Result of validating an import against Pact
+struct PactImportValidationResult {
     /// The derived module name (interface path)
     pub module: Option<String>,
     /// The derived import name (function name)
     pub import_name: Option<String>,
 }
 
-/// Validate that a function exists in the WIT imports and derive module/name.
+/// Validate that a function exists in the Pact imports and derive module/name.
 ///
-/// The `wit_path` should be a full path like "theater:simple/runtime.log"
-fn validate_import_against_wit(wit_path: &str) -> Result<WitImportValidationResult, String> {
-    // Read and parse WIT files
-    let wit_content = read_wit_files()?;
-    let registry =
-        wit_parser::parse_wit(&wit_content).map_err(|e| format!("Failed to parse WIT: {}", e))?;
+/// The `pact_path` should be a full path like "theater:simple/runtime.log"
+fn validate_import_against_pact(pact_path: &str) -> Result<PactImportValidationResult, String> {
+    // Read and parse Pact files
+    let pact_content = read_pact_files()?;
+    let registry = pact_parser::parse_pact(&pact_content)
+        .map_err(|e| format!("Failed to parse Pact: {}", e))?;
 
     // Parse the function path
-    let func_path = wit_parser::FunctionPath::parse(wit_path).ok_or_else(|| {
+    let func_path = pact_parser::FunctionPath::parse(pact_path).ok_or_else(|| {
         format!(
-            "Invalid WIT path '{}'. Expected format: 'namespace:package/interface.function'",
-            wit_path
+            "Invalid Pact path '{}'. Expected format: 'namespace:package/interface.function'",
+            pact_path
         )
     })?;
 
     // Look up the function in the registry
     if registry.find_import_function(&func_path).is_some() {
-        return Ok(WitImportValidationResult {
+        return Ok(PactImportValidationResult {
             module: Some(func_path.interface.to_string()),
             import_name: Some(func_path.function),
         });
@@ -741,7 +741,7 @@ fn validate_import_against_wit(wit_path: &str) -> Result<WitImportValidationResu
 
     // Also check if the function exists in any interface (even if not explicitly imported)
     if registry.find_function(&func_path).is_some() {
-        return Ok(WitImportValidationResult {
+        return Ok(PactImportValidationResult {
             module: Some(func_path.interface.to_string()),
             import_name: Some(func_path.function),
         });
@@ -750,8 +750,8 @@ fn validate_import_against_wit(wit_path: &str) -> Result<WitImportValidationResu
     // Not found - provide helpful error
     let available = registry.available_imports();
     Err(format!(
-        "Function '{}' not found in WIT interfaces. Available imports: {:?}",
-        wit_path, available
+        "Function '{}' not found in Pact interfaces. Available imports: {:?}",
+        pact_path, available
     ))
 }
 
@@ -761,15 +761,15 @@ struct ImportArgs {
     module: Option<String>,
     /// Function name override
     name: Option<String>,
-    /// WIT path for validation and auto-derivation (e.g., "theater:simple/runtime.log")
-    wit: Option<String>,
+    /// Pact path for validation and auto-derivation (e.g., "theater:simple/runtime.log")
+    pact: Option<String>,
 }
 
 impl Parse for ImportArgs {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let mut module = None;
         let mut name = None;
-        let mut wit = None;
+        let mut pact = None;
 
         while !input.is_empty() {
             let ident: Ident = input.parse()?;
@@ -779,12 +779,12 @@ impl Parse for ImportArgs {
             match ident.to_string().as_str() {
                 "module" => module = Some(lit.value()),
                 "name" => name = Some(lit.value()),
-                "wit" => wit = Some(lit.value()),
+                "pact" => pact = Some(lit.value()),
                 other => {
                     return Err(syn::Error::new(
                         ident.span(),
                         format!(
-                            "unexpected attribute `{}`, expected `module`, `name`, or `wit`",
+                            "unexpected attribute `{}`, expected `module`, `name`, or `pact`",
                             other
                         ),
                     ));
@@ -797,15 +797,15 @@ impl Parse for ImportArgs {
             }
         }
 
-        // Either module or wit must be specified
-        if module.is_none() && wit.is_none() {
+        // Either module or pact must be specified
+        if module.is_none() && pact.is_none() {
             return Err(syn::Error::new(
                 input.span(),
-                "either `module` or `wit` attribute is required",
+                "either `module` or `pact` attribute is required",
             ));
         }
 
-        Ok(ImportArgs { module, name, wit })
+        Ok(ImportArgs { module, name, pact })
     }
 }
 
@@ -856,8 +856,8 @@ impl Parse for ImportFnSignature {
 /// #[import(module = "theater:simple/runtime")]
 /// fn log(msg: String);
 ///
-/// // Import with WIT path - module and name derived automatically
-/// #[import(wit = "theater:simple/runtime.log")]
+/// // Import with Pact path - module and name derived automatically
+/// #[import(pact = "theater:simple/runtime.log")]
 /// fn log(msg: String);
 ///
 /// // Import with a custom function name
@@ -865,7 +865,7 @@ impl Parse for ImportFnSignature {
 /// fn my_log(msg: String);
 ///
 /// // Import a function that returns a value
-/// #[import(wit = "theater:simple/runtime.get-chain")]
+/// #[import(pact = "theater:simple/runtime.get-chain")]
 /// fn get_chain() -> Chain;
 /// ```
 ///
@@ -882,9 +882,9 @@ pub fn import(attr: TokenStream, item: TokenStream) -> TokenStream {
     let args = parse_macro_input!(attr as ImportArgs);
     let sig = parse_macro_input!(item as ImportFnSignature);
 
-    // If wit attribute is provided, validate and derive module/name
-    let (derived_module, derived_name) = if let Some(ref wit_path) = args.wit {
-        match validate_import_against_wit(wit_path) {
+    // If pact attribute is provided, validate and derive module/name
+    let (derived_module, derived_name) = if let Some(ref pact_path) = args.pact {
+        match validate_import_against_pact(pact_path) {
             Ok(result) => (result.module, result.import_name),
             Err(e) => {
                 return syn::Error::new(proc_macro2::Span::call_site(), e)
@@ -896,14 +896,14 @@ pub fn import(attr: TokenStream, item: TokenStream) -> TokenStream {
         (None, None)
     };
 
-    // Determine module: explicit > derived from wit
+    // Determine module: explicit > derived from pact
     let module = args
         .module
         .clone()
         .or(derived_module)
-        .expect("module should be set by either `module` or `wit` attribute");
+        .expect("module should be set by either `module` or `pact` attribute");
 
-    // Determine import name: explicit > derived from wit > function name
+    // Determine import name: explicit > derived from pact > function name
     let import_name = args
         .name
         .clone()
@@ -1024,10 +1024,10 @@ pub fn import(attr: TokenStream, item: TokenStream) -> TokenStream {
     expanded.into()
 }
 
-/// Generate types and bindings from a Pact (WIT+) definition.
+/// Generate types and bindings from a Pact (Pact) definition.
 ///
 /// `pact!` reads a Pact definition — inline, from a shared file, or from the
-/// `wit/` directory — and generates:
+/// `pact/` directory — and generates:
 /// - Rust types for all type definitions (records, variants, enums, flags)
 /// - `From<T> for Value` / `TryFrom<Value> for T` implementations
 ///
@@ -1053,47 +1053,30 @@ pub fn import(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// definition instead of copying (or symlinking) it into each repo:
 ///
 /// ```ignore
-/// packr_guest::pact!(from "../shared/api.wit+");   // or: pact!("../shared/api.wit+")
+/// packr_guest::pact!(from "../shared/api.pact");   // or: pact!("../shared/api.pact")
 /// ```
 ///
 /// A relative path resolves against `CARGO_MANIFEST_DIR` (the crate root); an
 /// absolute path is used as-is. The file is registered as a build dependency,
 /// so editing the shared definition triggers a rebuild.
 ///
-/// # From the `wit/` directory
+/// # From the `pact/` directory
 ///
-/// With no argument, `pact!()` reads every `.wit`/`.wit+` file under `wit/`.
-///
-/// > **Note:** `pact!` was previously named `wit!`. The [`wit!`] alias still
-/// > works but is deprecated.
+/// With no argument, `pact!()` reads every `.pact` file under `pact/`.
 #[proc_macro]
 pub fn pact(input: TokenStream) -> TokenStream {
     expand_pact(input)
 }
 
-/// Deprecated alias for [`pact!`].
-///
-/// `wit!` was renamed to `pact!` to match the Pact interface format the runtime
-/// uses everywhere else (`parse_pact`, `.pact`, `PactInterface`). It forwards to
-/// the same implementation; migrate by replacing `wit!` with `pact!`.
-#[proc_macro]
-#[deprecated(
-    since = "0.17.0",
-    note = "`wit!` has been renamed to `pact!`; use `packr_guest::pact!` instead"
-)]
-pub fn wit(input: TokenStream) -> TokenStream {
-    expand_pact(input)
-}
-
-/// Shared implementation behind [`pact!`] (and the deprecated [`wit!`] alias):
-/// resolve the Pact source (a specific file, inline content, or the `wit/`
-/// directory), parse it, and generate the world's types.
+/// Shared implementation behind [`pact!`]: resolve the Pact source (a specific
+/// file, inline content, or the `pact/` directory), parse it, and generate the
+/// world's types.
 fn expand_pact(input: TokenStream) -> TokenStream {
     // Form 1: `pact!(from "path")` / `pact!("path")` — read a specific file so
     // multiple crates can share one definition instead of symlinking a copy
     // into each repo.
-    if let Ok(file_ref) = syn::parse2::<WitFileRef>(input.clone().into()) {
-        let (content, abs_path) = match read_wit_file(&file_ref.path.value()) {
+    if let Ok(file_ref) = syn::parse2::<PactFileRef>(input.clone().into()) {
+        let (content, abs_path) = match read_pact_file(&file_ref.path.value()) {
             Ok(v) => v,
             Err(e) => {
                 return syn::Error::new(file_ref.path.span(), e)
@@ -1101,7 +1084,7 @@ fn expand_pact(input: TokenStream) -> TokenStream {
                     .into();
             }
         };
-        let world = match wit_parser::parse_world(&content) {
+        let world = match pact_parser::parse_world(&content) {
             Ok(w) => w,
             Err(e) => {
                 return syn::Error::new(
@@ -1127,9 +1110,9 @@ fn expand_pact(input: TokenStream) -> TokenStream {
     // Check if we have inline content or should read from files
     let input_str = input.to_string();
 
-    let wit_content = if input_str.trim().is_empty() {
-        // Read from wit/ directory
-        match read_wit_files() {
+    let pact_content = if input_str.trim().is_empty() {
+        // Read from pact/ directory
+        match read_pact_files() {
             Ok(content) => content,
             Err(e) => {
                 return syn::Error::new(
@@ -1147,7 +1130,7 @@ fn expand_pact(input: TokenStream) -> TokenStream {
     };
 
     // Parse the Pact content
-    let world = match wit_parser::parse_world(&wit_content) {
+    let world = match pact_parser::parse_world(&pact_content) {
         Ok(w) => w,
         Err(e) => {
             return syn::Error::new(
@@ -1165,21 +1148,21 @@ fn expand_pact(input: TokenStream) -> TokenStream {
     generated.into()
 }
 
-/// A `wit!` invocation that points at an external definition file:
-/// `wit!(from "path/to/api.wit+")`, or the shorthand `wit!("path/to/api.wit+")`.
+/// A `pact!` invocation that points at an external definition file:
+/// `pact!(from "path/to/api.pact")`, or the shorthand `pact!("path/to/api.pact")`.
 ///
-/// This lets several crates share ONE WIT+ file instead of copying (or
+/// This lets several crates share ONE Pact file instead of copying (or
 /// symlinking) it into each repo. A relative path is resolved against
 /// `CARGO_MANIFEST_DIR` (the crate root); an absolute path is used as-is.
-struct WitFileRef {
+struct PactFileRef {
     path: LitStr,
 }
 
-impl Parse for WitFileRef {
+impl Parse for PactFileRef {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         // Optional leading `from` keyword (a plain ident, not a real Rust kw).
-        // Inline WIT starts with `interface`/`world`/`record`/… so it fails this
-        // parse and the caller falls back to treating the input as inline WIT.
+        // Inline Pact starts with `interface`/`world`/`record`/… so it fails this
+        // parse and the caller falls back to treating the input as inline Pact.
         if input.peek(Ident) {
             let kw: Ident = input.parse()?;
             if kw != "from" {
@@ -1191,16 +1174,16 @@ impl Parse for WitFileRef {
         }
         let path: LitStr = input.parse()?;
         if !input.is_empty() {
-            return Err(input.error("unexpected tokens after the WIT file path"));
+            return Err(input.error("unexpected tokens after the Pact file path"));
         }
-        Ok(WitFileRef { path })
+        Ok(PactFileRef { path })
     }
 }
 
-/// Read a WIT+ definition from a specific file. Returns the file contents and
+/// Read a Pact definition from a specific file. Returns the file contents and
 /// the resolved absolute path (so the caller can register it as a build
 /// dependency). Relative paths resolve against `CARGO_MANIFEST_DIR`.
-fn read_wit_file(path_str: &str) -> Result<(String, std::path::PathBuf), String> {
+fn read_pact_file(path_str: &str) -> Result<(String, std::path::PathBuf), String> {
     let path = std::path::Path::new(path_str);
     let full = if path.is_absolute() {
         path.to_path_buf()
@@ -1210,23 +1193,23 @@ fn read_wit_file(path_str: &str) -> Result<(String, std::path::PathBuf), String>
         std::path::Path::new(&manifest_dir).join(path)
     };
     let content = std::fs::read_to_string(&full)
-        .map_err(|e| format!("Failed to read WIT file {:?}: {}", full, e))?;
+        .map_err(|e| format!("Failed to read Pact file {:?}: {}", full, e))?;
     Ok((content, full))
 }
 
-/// Parse the WIT+ world and generate types, imports, and export metadata.
+/// Parse the Pact world and generate types, imports, and export metadata.
 ///
-/// This macro reads WIT+ files from the `wit/` directory in your crate and generates:
+/// This macro reads Pact files from the `pact/` directory in your crate and generates:
 /// - Rust types for all type definitions (records, variants, enums, flags)
 /// - Import modules with fully typed functions
 /// - Export metadata for `#[export]` validation
 ///
 /// # Usage
 ///
-/// Create a `wit/` directory in your crate root with `.wit` or `.wit+` files:
+/// Create a `pact/` directory in your crate root with `.pact` files:
 ///
-/// ```wit
-/// // wit/world.wit+
+/// ```pact
+/// // pact/world.pact
 /// interface runtime {
 ///     log: func(msg: string)
 ///     get-time: func() -> u64
@@ -1266,14 +1249,14 @@ fn read_wit_file(path_str: &str) -> Result<(String, std::path::PathBuf), String>
 pub fn world(input: TokenStream) -> TokenStream {
     let input_str = input.to_string();
 
-    let wit_content = if input_str.trim().is_empty() {
-        // Read from wit/ directory
-        match read_wit_files() {
+    let pact_content = if input_str.trim().is_empty() {
+        // Read from pact/ directory
+        match read_pact_files() {
             Ok(content) => content,
             Err(e) => {
                 return syn::Error::new(
                     proc_macro2::Span::call_site(),
-                    format!("Failed to read WIT files: {}", e),
+                    format!("Failed to read Pact files: {}", e),
                 )
                 .to_compile_error()
                 .into();
@@ -1284,13 +1267,13 @@ pub fn world(input: TokenStream) -> TokenStream {
         input_str
     };
 
-    // Parse the full WIT registry
-    let registry = match wit_parser::parse_wit(&wit_content) {
+    // Parse the full Pact registry
+    let registry = match pact_parser::parse_pact(&pact_content) {
         Ok(r) => r,
         Err(e) => {
             return syn::Error::new(
                 proc_macro2::Span::call_site(),
-                format!("Failed to parse WIT: {}", e),
+                format!("Failed to parse Pact: {}", e),
             )
             .to_compile_error()
             .into();
@@ -1303,7 +1286,7 @@ pub fn world(input: TokenStream) -> TokenStream {
         None => {
             return syn::Error::new(
                 proc_macro2::Span::call_site(),
-                "No world definition found in WIT files",
+                "No world definition found in Pact files",
             )
             .to_compile_error()
             .into();
@@ -1335,32 +1318,32 @@ pub fn world(input: TokenStream) -> TokenStream {
     .into()
 }
 
-/// Read all WIT files from the wit/ directory and wit/deps/ subdirectories
-fn read_wit_files() -> Result<String, String> {
+/// Read all Pact files from the pact/ directory and pact/deps/ subdirectories
+fn read_pact_files() -> Result<String, String> {
     // Get the manifest directory (crate root)
     let manifest_dir =
         std::env::var("CARGO_MANIFEST_DIR").map_err(|_| "CARGO_MANIFEST_DIR not set")?;
 
-    let wit_dir = std::path::Path::new(&manifest_dir).join("wit");
+    let pact_dir = std::path::Path::new(&manifest_dir).join("pact");
 
-    if !wit_dir.exists() {
-        return Err(format!("wit/ directory not found at {:?}", wit_dir));
+    if !pact_dir.exists() {
+        return Err(format!("pact/ directory not found at {:?}", pact_dir));
     }
 
     let mut content = String::new();
 
-    // Read WIT files recursively (includes wit/deps/)
-    read_wit_files_recursive(&wit_dir, &mut content)?;
+    // Read Pact files recursively (includes pact/deps/)
+    read_pact_files_recursive(&pact_dir, &mut content)?;
 
     if content.is_empty() {
-        return Err("No .wit or .wit+ files found in wit/ directory".to_string());
+        return Err("No .pact files found in pact/ directory".to_string());
     }
 
     Ok(content)
 }
 
-/// Recursively read WIT files from a directory
-fn read_wit_files_recursive(dir: &std::path::Path, content: &mut String) -> Result<(), String> {
+/// Recursively read Pact files from a directory
+fn read_pact_files_recursive(dir: &std::path::Path, content: &mut String) -> Result<(), String> {
     let entries =
         std::fs::read_dir(dir).map_err(|e| format!("Failed to read directory {:?}: {}", dir, e))?;
 
@@ -1370,9 +1353,9 @@ fn read_wit_files_recursive(dir: &std::path::Path, content: &mut String) -> Resu
 
         if path.is_dir() {
             // Recurse into subdirectories (including deps/)
-            read_wit_files_recursive(&path, content)?;
+            read_pact_files_recursive(&path, content)?;
         } else if let Some(ext) = path.extension() {
-            if ext == "wit" || ext == "wit+" {
+            if ext == "pact" {
                 let file_content = std::fs::read_to_string(&path)
                     .map_err(|e| format!("Failed to read {:?}: {}", path, e))?;
                 content.push_str(&file_content);
@@ -1718,8 +1701,8 @@ fn parse_file_reference(input: &str) -> Result<String, String> {
 }
 
 fn parse_and_encode_metadata(input: &str) -> Result<Vec<u8>, String> {
-    let tokens = wit_parser::tokenize(input).map_err(|e| format!("tokenize error: {}", e))?;
-    let mut parser = wit_parser::make_parser(tokens);
+    let tokens = pact_parser::tokenize(input).map_err(|e| format!("tokenize error: {}", e))?;
+    let mut parser = pact_parser::make_parser(tokens);
 
     let mut imports = Vec::new();
     let mut exports = Vec::new();
@@ -1746,7 +1729,7 @@ fn parse_and_encode_metadata(input: &str) -> Result<Vec<u8>, String> {
         }
 
         // Try to parse a type definition (record, variant, enum, flags, type alias)
-        if let Some(td) = wit_parser::try_parse_typedef_public(&mut parser)
+        if let Some(td) = pact_parser::try_parse_typedef_public(&mut parser)
             .map_err(|e| format!("type definition error: {}", e))?
         {
             types.push(td);
@@ -1775,7 +1758,7 @@ fn parse_and_encode_metadata(input: &str) -> Result<Vec<u8>, String> {
 
 /// Parse an interface path like "theater:simple/runtime" or just "math".
 /// Collects identifiers and the symbols `:` and `/` until it hits a `{`.
-fn parse_interface_path(parser: &mut wit_parser::Parser) -> Result<String, String> {
+fn parse_interface_path(parser: &mut pact_parser::Parser) -> Result<String, String> {
     let mut path = parser.expect_ident().map_err(|e| e.to_string())?;
 
     // Continue collecting path components: namespace:package/interface
@@ -1795,9 +1778,9 @@ fn parse_interface_path(parser: &mut wit_parser::Parser) -> Result<String, Strin
 }
 
 fn parse_import_sigs(
-    parser: &mut wit_parser::Parser,
+    parser: &mut pact_parser::Parser,
     sigs: &mut Vec<metadata::FuncSig>,
-    types: &[wit_parser::TypeDef],
+    types: &[pact_parser::TypeDef],
     params: &[String],
 ) -> Result<(), String> {
     while !parser.peek_is_symbol('}') && !parser.is_eof() {
@@ -1816,7 +1799,7 @@ fn parse_import_sigs(
 /// Handles the tricky case where "name: func" needs to NOT consume the colon,
 /// but "namespace:package/interface.name" SHOULD consume the colon as part of the path.
 fn parse_function_path(
-    parser: &mut wit_parser::Parser,
+    parser: &mut pact_parser::Parser,
     default_interface: &str,
 ) -> Result<(String, String), String> {
     let mut path = parser.expect_ident().map_err(|e| e.to_string())?;
@@ -1852,20 +1835,20 @@ fn parse_function_path(
 }
 
 fn parse_func_sigs_into(
-    parser: &mut wit_parser::Parser,
+    parser: &mut pact_parser::Parser,
     interface: &str,
     sigs: &mut Vec<metadata::FuncSig>,
-    types: &[wit_parser::TypeDef],
+    types: &[pact_parser::TypeDef],
     params: &[String],
 ) -> Result<(), String> {
     // Typedefs declared inside this block (e.g. `record foo { ... }`) shadow
     // and extend the outer `types` slice for ref resolution within the block.
-    let mut local_types: Vec<wit_parser::TypeDef> = types.to_vec();
+    let mut local_types: Vec<pact_parser::TypeDef> = types.to_vec();
 
     while !parser.peek_is_symbol('}') && !parser.is_eof() {
         // Try a typedef first — records/variants/etc declared inside an
         // interface block are scoped to that block and resolve refs structurally.
-        if let Some(td) = wit_parser::try_parse_typedef_public(parser)
+        if let Some(td) = pact_parser::try_parse_typedef_public(parser)
             .map_err(|e| format!("type definition error: {}", e))?
         {
             local_types.push(td);
@@ -1893,7 +1876,7 @@ fn parse_func_sigs_into(
         parser.expect_symbol(':').map_err(|e| e.to_string())?;
         parser.accept_ident("func");
 
-        let func = wit_parser::parse_func_signature(parser, name).map_err(|e| e.to_string())?;
+        let func = pact_parser::parse_func_signature(parser, name).map_err(|e| e.to_string())?;
 
         let sig_params: Vec<(String, metadata::TypeDesc)> = func
             .params
@@ -1901,7 +1884,7 @@ fn parse_func_sigs_into(
             .map(|(n, t)| {
                 (
                     n.clone(),
-                    metadata::wit_type_to_type_desc_scoped(t, &local_types, params),
+                    metadata::pact_type_to_type_desc_scoped(t, &local_types, params),
                 )
             })
             .collect();
@@ -1909,7 +1892,7 @@ fn parse_func_sigs_into(
         let results: Vec<metadata::TypeDesc> = func
             .results
             .iter()
-            .map(|t| metadata::wit_type_to_type_desc_scoped(t, &local_types, params))
+            .map(|t| metadata::pact_type_to_type_desc_scoped(t, &local_types, params))
             .collect();
 
         sigs.push(metadata::FuncSig {
@@ -1970,8 +1953,8 @@ mod tests {
 
         // Re-derive via the public path used by the metadata encoder.
         let mut sigs = Vec::new();
-        let tokens = wit_parser::tokenize(src).expect("tokenize");
-        let mut parser = wit_parser::make_parser(tokens);
+        let tokens = pact_parser::tokenize(src).expect("tokenize");
+        let mut parser = pact_parser::make_parser(tokens);
         parser.accept_ident("imports");
         parser.expect_symbol('{').expect("imports {");
         parse_import_sigs(&mut parser, &mut sigs, &[], &[]).expect("import sigs");
@@ -1996,8 +1979,8 @@ mod tests {
             .is_empty());
 
         let sigs = |src: &str, kw: &str, grouped: bool| {
-            let tokens = wit_parser::tokenize(src).expect("tokenize");
-            let mut p = wit_parser::make_parser(tokens);
+            let tokens = pact_parser::tokenize(src).expect("tokenize");
+            let mut p = pact_parser::make_parser(tokens);
             p.accept_ident(kw);
             p.expect_symbol('{').unwrap();
             let mut out = Vec::new();
@@ -2048,8 +2031,8 @@ mod tests {
         "#;
 
         let mut sigs = Vec::new();
-        let tokens = wit_parser::tokenize(src).expect("tokenize");
-        let mut parser = wit_parser::make_parser(tokens);
+        let tokens = pact_parser::tokenize(src).expect("tokenize");
+        let mut parser = pact_parser::make_parser(tokens);
         parser.accept_ident("imports");
         parser.expect_symbol('{').expect("imports {");
         parse_import_sigs(&mut parser, &mut sigs, &[], &[]).expect("import sigs");
@@ -2095,8 +2078,8 @@ mod tests {
             }
         "#;
         let mut sigs = Vec::new();
-        let tokens = wit_parser::tokenize(src).expect("tokenize");
-        let mut parser = wit_parser::make_parser(tokens);
+        let tokens = pact_parser::tokenize(src).expect("tokenize");
+        let mut parser = pact_parser::make_parser(tokens);
         parser.accept_ident("imports");
         parser.expect_symbol('{').expect("imports {");
         parse_import_sigs(&mut parser, &mut sigs, &[], &[]).expect("import sigs");

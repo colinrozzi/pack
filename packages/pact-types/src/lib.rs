@@ -1,5 +1,5 @@
-//! Regression fixture for `wit!` type codegen. Exercises exactly the shapes that
-//! were broken before the switch to `#[derive(GraphValue)]`:
+//! Regression fixture for `pact!` type codegen. Exercises exactly the shapes
+//! that were broken before the switch to `#[derive(GraphValue)]`:
 //!   - a RECORD (was `Value::Record(vec)`, a tuple variant — didn't compile),
 //!     including an `option<...>` field (needs FromValue decode) and a `list`,
 //!   - a VARIANT (was `Value::Variant { tag, payload }`, missing type_name/
@@ -9,13 +9,8 @@
 //! An exported function uses the record so the derive's From/TryFrom impls are
 //! actually instantiated and compiled. If this package builds, the codegen and
 //! its marshalling are correct.
-//!
-//! This fixture deliberately still calls the deprecated `wit!` alias (rather
-//! than `pact!`) so it also pins that the alias keeps forwarding to `pact!` —
-//! hence the crate-level `#![allow(deprecated)]`.
 
 #![no_std]
-#![allow(deprecated)]
 
 extern crate alloc;
 
@@ -23,7 +18,7 @@ use packr_guest::export;
 
 packr_guest::setup_guest!();
 
-packr_guest::wit! {
+packr_guest::pact! {
     record point {
         x: s32,
         y: s32,
@@ -66,7 +61,7 @@ packr_guest::wit! {
         entries: map<string, s32>,
     }
 
-    world wit-types {
+    world pact-types {
         export identity: func(p: point) -> point
         export eval: func(e: sexpr) -> sexpr
         export cons-id: func(c: cons) -> cons

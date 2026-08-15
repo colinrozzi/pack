@@ -1,4 +1,4 @@
-//! Minimal WIT+ parser scaffold.
+//! Minimal Pact parser scaffold.
 //!
 //! Parses top-level type definitions and validates named references.
 //!
@@ -42,7 +42,7 @@ pub fn parse_interface(src: &str) -> Result<Interface, ParseError> {
     Ok(interface)
 }
 
-/// Parse a WIT+ world definition.
+/// Parse a Pact world definition.
 ///
 /// # Example
 ///

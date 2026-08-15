@@ -6,7 +6,7 @@ The WebAssembly Component Model provides a powerful foundation for building comp
 
 This constraint stems from the Canonical ABI's design for shared-memory interop, where fixed-layout types enable efficient, zero-copy data sharing between components. For a recursive type like:
 
-```wit
+```pact
 variant tree {
     leaf(string),
     node(list<tree>),  // ERROR: recursive reference
@@ -33,12 +33,12 @@ There's no fixed `sizeof(tree)` - the size depends on runtime data.
 
 For message-passing architectures (like actor systems), data is serialized when crossing boundaries anyway. The fixed-layout constraint provides no benefit - we're already paying the serialization cost.
 
-## Solution: WIT+ with Graph ABI
+## Solution: Pact with Graph ABI
 
-Composite defines a WIT+ dialect where recursion is allowed by default. All
+Composite defines a Pact dialect where recursion is allowed by default. All
 values cross the boundary using a graph-encoded ABI:
 
-```wit
+```pact
 variant sexpr {
     sym(string),
     num(s64),
@@ -54,13 +54,13 @@ boundary encoding is specified.
 
 ### 1. Unified ABI
 
-WIT+ uses a single graph-encoded ABI for all values, regardless of whether types
+Pact uses a single graph-encoded ABI for all values, regardless of whether types
 are recursive. This removes any canonical ABI interop guarantees in exchange for
 a consistent runtime model.
 
-### 2. WIT+ Dialect
+### 2. Pact Dialect
 
-WIT+ is a new dialect with recursion allowed by default and a single ABI. It is
+Pact is a new dialect with recursion allowed by default and a single ABI. It is
 not wire-compatible with canonical ABI components, and interop requires
 explicit adapters at the boundary.
 
@@ -88,9 +88,9 @@ This symmetry simplifies the mental model and implementation.
 
 ## Architecture
 
-### Layer 1: WIT+ Parser
+### Layer 1: Pact Parser
 
-Defines a WIT+ grammar with recursion allowed by default:
+Defines a Pact grammar with recursion allowed by default:
 
 ```
 type-def ::= variant-def | record-def | enum-def | flags-def | alias-def
@@ -132,7 +132,7 @@ type definitions in the same namespace.
 
 **All types**: Use a schema-aware graph encoding
 - Arena layout with node indices
-- Validated against the WIT+ schema at the boundary
+- Validated against the Pact schema at the boundary
 - Supports shared subtrees and cycles
 
 ### Layer 4: Package Linker
@@ -168,12 +168,12 @@ as (ptr, len). This keeps v1 copy-friendly while enabling future zero/low-copy
 
 ### Serialization Format vs Tagged Encoding
 
-WIT+ uses a schema-aware graph encoding. The type schema is known at the
+Pact uses a schema-aware graph encoding. The type schema is known at the
 boundary, so values do not carry per-value type tags or field names. This keeps
 the format compact and makes validation a schema-driven process.
 
 In contrast, a tagged/self-describing format would embed type tags with every
-value. That is not the chosen design for WIT+.
+value. That is not the chosen design for Pact.
 
 ### Buffer Layout (Little Endian)
 
@@ -228,7 +228,7 @@ tag     type        encoding
 
 - All child indices must be < node_count.
 - payload_len must match the actual payload size.
-- Values are validated against the WIT+ schema at the boundary:
+- Values are validated against the Pact schema at the boundary:
   - If a field type is `list<sexpr>`, the node must be `list` and each child
     must validate as `sexpr`.
   - Variant case tags must be in range and payload presence must match the case.
@@ -237,7 +237,7 @@ tag     type        encoding
 
 Example:
 
-```wit
+```pact
 variant sexpr {
     sym(string),
     num(s64),
@@ -259,7 +259,7 @@ indices.
 
 These should be specified alongside the graph encoding:
 
-- Type-checking algorithm: validation rules for nodes vs WIT+ schema.
+- Type-checking algorithm: validation rules for nodes vs Pact schema.
 - Error model: how decode/validation errors are surfaced to host/component.
 - Limits: maximum node count, max string/list sizes, recursion depth, total buffer size.
 - Determinism: canonicalization rules (e.g., record field order).
@@ -270,7 +270,7 @@ These should be specified alongside the graph encoding:
 ### Type-Checking Algorithm (Sketch)
 
 At the recursive ABI boundary, validate the graph buffer against the expected
-WIT+ type.
+Pact type.
 
 1. Parse header, bounds-check counts, and build a table of node headers and
    payload slices (without interpreting payloads yet).
@@ -293,7 +293,7 @@ Errors are structural (malformed buffer) or semantic (type mismatch):
 
 - MalformedBuffer: invalid magic/version, out-of-bounds indices, payload_len
   mismatch, invalid UTF-8, truncated payload.
-- TypeMismatch: node kind does not match expected WIT+ type, variant tag out of
+- TypeMismatch: node kind does not match expected Pact type, variant tag out of
   range, option/variant payload presence mismatch.
 - LimitExceeded: buffer size, node count, recursion depth, or string/list size
   limits exceeded.
@@ -316,9 +316,9 @@ Any limit violation yields LimitExceeded.
 
 ### Determinism (Sketch)
 
-- Record fields are serialized in WIT declaration order.
-- Variant case tags use WIT declaration order (0-based).
-- Tuple ordering matches the WIT tuple order.
+- Record fields are serialized in Pact declaration order.
+- Variant case tags use Pact declaration order (0-based).
+- Tuple ordering matches the Pact tuple order.
 
 This keeps encoding deterministic and stable across toolchains.
 
@@ -369,7 +369,7 @@ Serialization overhead vs fixed-layout ABI:
 ## Implementation Roadmap
 
 ### Phase 1: Foundation ✓
-- [x] WIT+ parser (recursive and mutually recursive types)
+- [x] Pact parser (recursive and mutually recursive types)
 - [x] Type system with recursive type support
 - [x] Graph-encoded ABI (CGRF format)
 - [x] Schema-aware encoding/decoding with validation
@@ -406,9 +406,9 @@ Serialization overhead vs fixed-layout ABI:
 Round-trip a minimal recursive `node` value across the package boundary using
 the graph-encoded ABI.
 
-Example WIT+ type:
+Example Pact type:
 
-```wit
+```pact
 variant node {
     leaf(s64),
     list(list<node>),
@@ -417,7 +417,7 @@ variant node {
 
 Mutual recursion example:
 
-```wit
+```pact
 variant expr {
     literal(lit),
     add(expr, expr),
@@ -431,7 +431,7 @@ variant lit {
 
 ### Required Capabilities
 
-- Parse WIT+ with recursive and mutually recursive type definitions.
+- Parse Pact with recursive and mutually recursive type definitions.
 - Encode/decode recursive values to/from the graph buffer.
 - Instantiate a package in `wasmi`.
 - Host calls an exported function taking a recursive type and receives a
@@ -441,7 +441,7 @@ variant lit {
 
 ### Acceptance Tests
 
-1. **Parse**: A WIT+ file with recursive and mutually recursive types parses
+1. **Parse**: A Pact file with recursive and mutually recursive types parses
    without error.
 2. **Round-trip encode/decode**: Encoding then decoding a deeply nested `node`
    yields structural equality.

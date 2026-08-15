@@ -1,6 +1,6 @@
-//! Minimal WIT+ parser for proc macro use.
+//! Minimal Pact parser for proc macro use.
 //!
-//! This is a simplified version of the WIT+ parser that runs at compile time
+//! This is a simplified version of the Pact parser that runs at compile time
 //! within proc macros.
 
 use proc_macro2::Span;
@@ -83,9 +83,9 @@ impl FunctionPath {
     }
 }
 
-/// Registry of all parsed WIT content
+/// Registry of all parsed Pact content
 #[derive(Debug, Clone, Default)]
-pub struct WitRegistry {
+pub struct PactRegistry {
     /// Current package declaration (namespace:package)
     pub current_package: Option<(String, String)>,
     /// All interfaces indexed by their full path
@@ -96,7 +96,7 @@ pub struct WitRegistry {
     pub types: Vec<TypeDef>,
 }
 
-impl WitRegistry {
+impl PactRegistry {
     /// Look up a function by its full path
     pub fn find_function(&self, path: &FunctionPath) -> Option<&Function> {
         let iface_key = path.interface.to_string();
@@ -286,7 +286,7 @@ impl WitRegistry {
     }
 }
 
-/// A WIT+ type reference
+/// A Pact type reference
 #[derive(Debug, Clone, PartialEq)]
 pub enum Type {
     // Primitives
@@ -470,7 +470,7 @@ pub struct Function {
     pub results: Vec<Type>,
 }
 
-/// A parsed WIT+ interface
+/// A parsed Pact interface
 #[derive(Debug, Clone)]
 pub struct Interface {
     pub name: String,
@@ -498,7 +498,7 @@ pub enum WorldItem {
     },
 }
 
-/// A parsed WIT+ world
+/// A parsed Pact world
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct World {
@@ -725,7 +725,7 @@ pub(crate) fn make_parser(tokens: Vec<Token>) -> Parser {
 // Public parsing functions
 // ============================================================================
 
-/// Parse a WIT+ world definition
+/// Parse a Pact world definition
 pub fn parse_world(src: &str) -> Result<World, ParseError> {
     let mut lexer = Lexer::new(src);
     let tokens = lexer.tokenize()?;
@@ -789,13 +789,13 @@ pub fn parse_world(src: &str) -> Result<World, ParseError> {
     })
 }
 
-/// Parse WIT content and return a complete registry
-pub fn parse_wit(src: &str) -> Result<WitRegistry, ParseError> {
+/// Parse Pact content and return a complete registry
+pub fn parse_pact(src: &str) -> Result<PactRegistry, ParseError> {
     let mut lexer = Lexer::new(src);
     let tokens = lexer.tokenize()?;
     let mut parser = Parser::new(tokens);
 
-    let mut registry = WitRegistry::default();
+    let mut registry = PactRegistry::default();
 
     while !parser.is_eof() {
         // Skip semicolons
@@ -1449,7 +1449,7 @@ mod generic_tests {
             }
             type boxed<t> = tree<t>
         "#;
-        let reg = parse_wit(src).expect("parse generic wit");
+        let reg = parse_pact(src).expect("parse generic pact");
 
         let pair = reg.types.iter().find(|t| t.name() == "pair").unwrap();
         assert_eq!(pair.type_params(), ["a", "b"]);
