@@ -31,7 +31,10 @@
 pub extern crate alloc;
 
 // Re-export the macros
-pub use packr_guest_macros::{export, import, import_from, pack_types, wit, world};
+pub use packr_guest_macros::{export, import, import_from, pack_types, pact, world};
+// `wit!` is the former name of `pact!`, kept as a deprecated alias.
+#[allow(deprecated)]
+pub use packr_guest_macros::wit;
 
 // Re-export useful types from pack-abi
 pub use packr_abi::{

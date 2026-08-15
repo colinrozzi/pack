@@ -9,8 +9,13 @@
 //! An exported function uses the record so the derive's From/TryFrom impls are
 //! actually instantiated and compiled. If this package builds, the codegen and
 //! its marshalling are correct.
+//!
+//! This fixture deliberately still calls the deprecated `wit!` alias (rather
+//! than `pact!`) so it also pins that the alias keeps forwarding to `pact!` —
+//! hence the crate-level `#![allow(deprecated)]`.
 
 #![no_std]
+#![allow(deprecated)]
 
 extern crate alloc;
 

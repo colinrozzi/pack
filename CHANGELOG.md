@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.17.0 (2026-08-15)
+
+### Changed
+
+- **`wit!` is now `pact!`.** The guest type-generation macro was renamed to match
+  the Pact interface format the runtime uses everywhere else (`parse_pact`,
+  `.pact`, `PactInterface`). `pact!` behaves identically — inline, `pact!(from
+  "path")`, and the `wit/`-directory forms all work the same.
+
+  ```rust
+  packr_guest::pact! { /* … */ }
+  packr_guest::pact!(from "../shared/api.wit+");
+  ```
+
+### Deprecated
+
+- **`wit!`** — kept as a working alias that forwards to `pact!`, now marked
+  `#[deprecated]`. Migrate by replacing `wit!` with `pact!`; the alias will be
+  removed in a future release.
+
 ## v0.16.0 (2026-08-13)
 
 ### Added
