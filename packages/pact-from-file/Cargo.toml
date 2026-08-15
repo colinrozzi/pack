@@ -1,5 +1,5 @@
 [package]
-name = "wit-from-file"
+name = "pact-from-file"
 version = "0.1.0"
 edition = "2021"
 

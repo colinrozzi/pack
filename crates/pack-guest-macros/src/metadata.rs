@@ -446,71 +446,71 @@ fn type_param_to_value(tp: &TypeParam) -> Value {
     }
 }
 
-/// Convert a WIT parser Type to a TypeDesc (no generic parameters in scope).
-pub fn wit_type_to_type_desc(
-    ty: &crate::wit_parser::Type,
-    types: &[crate::wit_parser::TypeDef],
+/// Convert a Pact parser Type to a TypeDesc (no generic parameters in scope).
+pub fn pact_type_to_type_desc(
+    ty: &crate::pact_parser::Type,
+    types: &[crate::pact_parser::TypeDef],
 ) -> TypeDesc {
-    wit_type_to_type_desc_scoped(ty, types, &[])
+    pact_type_to_type_desc_scoped(ty, types, &[])
 }
 
-/// Like [`wit_type_to_type_desc`], but a `Named` whose name is one of `params`
+/// Like [`pact_type_to_type_desc`], but a `Named` whose name is one of `params`
 /// (the enclosing interface's generic parameters) becomes a `TypeDesc::Ref`
 /// preserving the name — so the host decodes it as `Type::Ref(name)` and
 /// compose-time unification can bind it. Non-parameter names are unchanged, so
 /// this is transparent for non-generic signatures.
-pub fn wit_type_to_type_desc_scoped(
-    ty: &crate::wit_parser::Type,
-    types: &[crate::wit_parser::TypeDef],
+pub fn pact_type_to_type_desc_scoped(
+    ty: &crate::pact_parser::Type,
+    types: &[crate::pact_parser::TypeDef],
     params: &[std::string::String],
 ) -> TypeDesc {
     match ty {
-        crate::wit_parser::Type::Bool => TypeDesc::Bool,
-        crate::wit_parser::Type::U8 => TypeDesc::U8,
-        crate::wit_parser::Type::U16 => TypeDesc::U16,
-        crate::wit_parser::Type::U32 => TypeDesc::U32,
-        crate::wit_parser::Type::U64 => TypeDesc::U64,
-        crate::wit_parser::Type::S8 => TypeDesc::S8,
-        crate::wit_parser::Type::S16 => TypeDesc::S16,
-        crate::wit_parser::Type::S32 => TypeDesc::S32,
-        crate::wit_parser::Type::S64 => TypeDesc::S64,
-        crate::wit_parser::Type::F32 => TypeDesc::F32,
-        crate::wit_parser::Type::F64 => TypeDesc::F64,
-        crate::wit_parser::Type::Char => TypeDesc::Char,
-        crate::wit_parser::Type::String => TypeDesc::String,
-        crate::wit_parser::Type::List(inner) => {
-            TypeDesc::List(Box::new(wit_type_to_type_desc_scoped(inner, types, params)))
-        }
-        crate::wit_parser::Type::Option(inner) => {
-            TypeDesc::Option(Box::new(wit_type_to_type_desc_scoped(inner, types, params)))
-        }
-        crate::wit_parser::Type::Result { ok, err } => TypeDesc::Result {
+        crate::pact_parser::Type::Bool => TypeDesc::Bool,
+        crate::pact_parser::Type::U8 => TypeDesc::U8,
+        crate::pact_parser::Type::U16 => TypeDesc::U16,
+        crate::pact_parser::Type::U32 => TypeDesc::U32,
+        crate::pact_parser::Type::U64 => TypeDesc::U64,
+        crate::pact_parser::Type::S8 => TypeDesc::S8,
+        crate::pact_parser::Type::S16 => TypeDesc::S16,
+        crate::pact_parser::Type::S32 => TypeDesc::S32,
+        crate::pact_parser::Type::S64 => TypeDesc::S64,
+        crate::pact_parser::Type::F32 => TypeDesc::F32,
+        crate::pact_parser::Type::F64 => TypeDesc::F64,
+        crate::pact_parser::Type::Char => TypeDesc::Char,
+        crate::pact_parser::Type::String => TypeDesc::String,
+        crate::pact_parser::Type::List(inner) => TypeDesc::List(Box::new(
+            pact_type_to_type_desc_scoped(inner, types, params),
+        )),
+        crate::pact_parser::Type::Option(inner) => TypeDesc::Option(Box::new(
+            pact_type_to_type_desc_scoped(inner, types, params),
+        )),
+        crate::pact_parser::Type::Result { ok, err } => TypeDesc::Result {
             // `_` maps to Bool for ok / String for err to match the handler-side
             // pact parser's convention (see `parse_result` in pack/src/parser/pact.rs).
             // Semantically odd, but the two sides must agree on the hash.
             ok: Box::new(ok.as_ref().map_or(TypeDesc::Bool, |t| {
-                wit_type_to_type_desc_scoped(t, types, params)
+                pact_type_to_type_desc_scoped(t, types, params)
             })),
             err: Box::new(err.as_ref().map_or(TypeDesc::String, |t| {
-                wit_type_to_type_desc_scoped(t, types, params)
+                pact_type_to_type_desc_scoped(t, types, params)
             })),
         },
-        crate::wit_parser::Type::Tuple(items) => TypeDesc::Tuple(
+        crate::pact_parser::Type::Tuple(items) => TypeDesc::Tuple(
             items
                 .iter()
-                .map(|t| wit_type_to_type_desc_scoped(t, types, params))
+                .map(|t| pact_type_to_type_desc_scoped(t, types, params))
                 .collect(),
         ),
-        crate::wit_parser::Type::Map { key, value } => {
+        crate::pact_parser::Type::Map { key, value } => {
             // `map<K, V>` erases to `list<tuple<K, V>>` in metadata so it hashes
             // identically to a list of pairs (matching the host's desugaring).
             let pair = TypeDesc::Tuple(vec![
-                wit_type_to_type_desc_scoped(key, types, params),
-                wit_type_to_type_desc_scoped(value, types, params),
+                pact_type_to_type_desc_scoped(key, types, params),
+                pact_type_to_type_desc_scoped(value, types, params),
             ]);
             TypeDesc::List(Box::new(pair))
         }
-        crate::wit_parser::Type::Named(name) => {
+        crate::pact_parser::Type::Named(name) => {
             // An in-scope generic parameter survives as a named ref.
             if params.iter().any(|p| p == name) {
                 return TypeDesc::Ref(name.clone());
@@ -525,7 +525,7 @@ pub fn wit_type_to_type_desc_scoped(
             }
             TypeDesc::Value
         }
-        crate::wit_parser::Type::App { name, args } => {
+        crate::pact_parser::Type::App { name, args } => {
             // A generic instantiation describes (and hashes) as its instantiated
             // structure — erasure means `pair<u32, string>` is metadata-identical
             // to a plain record of the same shape, which keeps host and guest
@@ -537,40 +537,40 @@ pub fn wit_type_to_type_desc_scoped(
             }
             TypeDesc::Value
         }
-        crate::wit_parser::Type::SelfRef => TypeDesc::Value,
+        crate::pact_parser::Type::SelfRef => TypeDesc::Value,
     }
 }
 
-/// Convert a WIT TypeDef to a TypeDesc.
+/// Convert a Pact TypeDef to a TypeDesc.
 pub fn typedef_to_type_desc(
-    td: &crate::wit_parser::TypeDef,
-    types: &[crate::wit_parser::TypeDef],
+    td: &crate::pact_parser::TypeDef,
+    types: &[crate::pact_parser::TypeDef],
 ) -> TypeDesc {
     match td {
-        crate::wit_parser::TypeDef::Alias { ty, .. } => wit_type_to_type_desc(ty, types),
-        crate::wit_parser::TypeDef::Record { name, fields, .. } => TypeDesc::Record {
+        crate::pact_parser::TypeDef::Alias { ty, .. } => pact_type_to_type_desc(ty, types),
+        crate::pact_parser::TypeDef::Record { name, fields, .. } => TypeDesc::Record {
             name: name.clone(),
             fields: fields
                 .iter()
-                .map(|(n, t)| (n.clone(), wit_type_to_type_desc(t, types)))
+                .map(|(n, t)| (n.clone(), pact_type_to_type_desc(t, types)))
                 .collect(),
         },
-        crate::wit_parser::TypeDef::Variant { name, cases, .. } => TypeDesc::Variant {
+        crate::pact_parser::TypeDef::Variant { name, cases, .. } => TypeDesc::Variant {
             name: name.clone(),
             cases: cases
                 .iter()
                 .map(|c| {
                     (
                         c.name.clone(),
-                        c.payload.as_ref().map(|t| wit_type_to_type_desc(t, types)),
+                        c.payload.as_ref().map(|t| pact_type_to_type_desc(t, types)),
                     )
                 })
                 .collect(),
         },
-        crate::wit_parser::TypeDef::Enum { name, cases } => TypeDesc::Variant {
+        crate::pact_parser::TypeDef::Enum { name, cases } => TypeDesc::Variant {
             name: name.clone(),
             cases: cases.iter().map(|c| (c.clone(), None)).collect(),
         },
-        crate::wit_parser::TypeDef::Flags { .. } => TypeDesc::Flags,
+        crate::pact_parser::TypeDef::Flags { .. } => TypeDesc::Flags,
     }
 }

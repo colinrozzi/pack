@@ -1,5 +1,5 @@
 [package]
-name = "wit-types"
+name = "pact-types"
 version = "0.1.0"
 edition = "2021"
 

@@ -14,20 +14,23 @@ The WebAssembly Component Model's WIT interface definition language doesn't supp
 
 The standard workaround is to use **resources** (opaque handles) and manipulate trees through indirection. This works but is awkward for message-passing architectures where data is serialized anyway.
 
-**Pack** defines a WIT+ dialect with recursion allowed by default and a
+**Pack** defines a Pact dialect with recursion allowed by default and a
 graph-encoded ABI that naturally handles arbitrary-depth structures.
 
 ## Design Goals
 
-1. **WIT+ dialect** - Recursion is allowed by default
+1. **Pact dialect** - Recursion is allowed by default
 2. **Simple authoring** - No `rec` keywords or blocks
 3. **Compatible execution** - Uses standard WASM runtimes (wasmi, wasmtime)
 4. **Single ABI** - Graph-encoded schema-aware serialization for all values
 
-## Extended WIT Syntax
+## Pact Syntax
 
-```wit
-// Standard WIT - unchanged
+Pact is a superset of the Component Model's WIT: standard WIT definitions are
+valid Pact, and Pact adds recursion (and `map<K, V>`) on top.
+
+```pact
+// Standard WIT syntax - valid Pact, unchanged
 record point {
     x: s32,
     y: s32,
@@ -68,7 +71,7 @@ variant lit {
 │  ┌─────────────────────────────────────────────────────┐   │
 │  │                  Package Layer                       │   │
 │  │                                                      │   │
-│  │   • WIT+ parsing (standard + recursive)             │   │
+│  │   • Pact parsing (standard + recursive)             │   │
 │  │   • Package instantiation and linking               │   │
 │  │   • Host function binding                           │   │
 │  └─────────────────────────────────────────────────────┘   │
@@ -88,7 +91,7 @@ variant lit {
 └─────────────────────────────────────────────────────────────┘
 ```
 
-## ABI for WIT+
+## ABI for Pact
 
 All values use a schema-aware graph encoding. The runtime:
 1. Encodes the value into a graph buffer
@@ -257,12 +260,12 @@ pack/
 
 **Working prototype.** Core functionality is implemented and tested:
 
-- [x] WIT+ Parser — recursive and mutually recursive type definitions
+- [x] Pact Parser — recursive and mutually recursive type definitions
 - [x] Graph ABI — CGRF format encoding/decoding with schema validation
 - [x] WASM Execution — load and run modules via wasmtime
 - [x] Guest Macros — `#[export]`, `#[import]`, `pack_types!`, `#[derive(GraphValue)]`
 - [x] Host Imports — packages can call back to host
-- [x] Interface Enforcement — validate WASM modules implement WIT interfaces
+- [x] Interface Enforcement — validate WASM modules implement Pact interfaces
 - [x] Interface Hashing — Merkle-tree hashes for O(1) compatibility checking
 - [x] Runtime Composition — package A imports & calls package B (separate memories, wired at load)
 - [x] PIC Dynamic Linking — a package + the in-wasm allocator share one memory (the shared-memory substrate)

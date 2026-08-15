@@ -20,7 +20,7 @@ Actor A                              Actor B
 
 Type **names** are NOT part of the hash. Two types with the same structure have the same hash, regardless of what they're called:
 
-```wit
+```pact
 record Point { x: s32, y: s32 }     // hash: abc123...
 record Vec2  { x: s32, y: s32 }     // hash: abc123... (same!)
 ```
@@ -31,7 +31,7 @@ This enables structural compatibility: if you expect a `Point` and receive a `Ve
 
 Field and case names **are** part of the hash, because they affect how data is accessed:
 
-```wit
+```pact
 record Point { x: s32, y: s32 }     // hash: abc123...
 record Point { a: s32, b: s32 }     // hash: def456... (different!)
 ```
@@ -42,7 +42,7 @@ You access `.x` vs `.a` - that's semantically meaningful.
 
 While types are structural, **interfaces** include their binding names:
 
-```wit
+```pact
 interface A {
     type point = { x: s32, y: s32 }
     translate: func(p: point) -> point
@@ -60,7 +60,7 @@ These have **different interface hashes** because the bindings differ (`point` v
 
 Parameter names are documentation, not semantics:
 
-```wit
+```pact
 func add(a: s32, b: s32) -> s32    // hash: xyz789...
 func add(x: s32, y: s32) -> s32    // hash: xyz789... (same!)
 ```
@@ -136,7 +136,7 @@ Bindings are `(name, hash)` pairs, so the binding names ARE part of the interfac
 
 Recursive types use a self-reference placeholder:
 
-```wit
+```pact
 variant sexpr {
     sym(string),
     lst(list<sexpr>),  // recursive!
@@ -175,7 +175,7 @@ record interface-hash {
 
 ### At Compile Time
 
-1. Parse wit+ interface definitions
+1. Parse Pact interface definitions
 2. Compute hash for each type, function, interface
 3. Embed hashes in package metadata
 

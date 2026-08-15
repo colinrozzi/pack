@@ -1,18 +1,18 @@
-//! Code generator for WIT+ types.
+//! Code generator for Pact types.
 //!
-//! Takes WIT+ type definitions and generates Rust types with From/TryFrom
+//! Takes Pact type definitions and generates Rust types with From/TryFrom
 //! implementations for Value conversion.
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
-use crate::wit_parser::{
-    Function, Interface, Type, TypeDef, VariantCase, WitRegistry, World, WorldItem,
+use crate::pact_parser::{
+    Function, Interface, PactRegistry, Type, TypeDef, VariantCase, World, WorldItem,
 };
 
-/// Convert a WIT identifier (kebab-case) to Rust identifier (PascalCase for types, snake_case for functions)
-fn to_rust_type_name(wit_name: &str) -> syn::Ident {
-    let pascal = wit_name
+/// Convert a Pact identifier (kebab-case) to Rust identifier (PascalCase for types, snake_case for functions)
+fn to_rust_type_name(pact_name: &str) -> syn::Ident {
+    let pascal = pact_name
         .split('-')
         .map(|part| {
             let mut chars = part.chars();
@@ -25,17 +25,17 @@ fn to_rust_type_name(wit_name: &str) -> syn::Ident {
     format_ident!("{}", pascal)
 }
 
-fn to_rust_field_name(wit_name: &str) -> syn::Ident {
-    let snake = wit_name.replace('-', "_");
+fn to_rust_field_name(pact_name: &str) -> syn::Ident {
+    let snake = pact_name.replace('-', "_");
     format_ident!("{}", snake)
 }
 
-fn to_rust_variant_name(wit_name: &str) -> syn::Ident {
+fn to_rust_variant_name(pact_name: &str) -> syn::Ident {
     // Same as type name - PascalCase
-    to_rust_type_name(wit_name)
+    to_rust_type_name(pact_name)
 }
 
-/// Generate Rust type reference from WIT+ type
+/// Generate Rust type reference from Pact type
 fn generate_type_ref(ty: &Type, self_type_name: Option<&str>) -> TokenStream {
     match ty {
         Type::Bool => quote! { bool },
@@ -122,7 +122,7 @@ fn generate_type_ref(ty: &Type, self_type_name: Option<&str>) -> TokenStream {
                 let rust_name = to_rust_type_name(name);
                 quote! { packr_guest::Rec<#rust_name> }
             } else {
-                // Shouldn't happen in valid WIT+
+                // Shouldn't happen in valid Pact
                 quote! { Self }
             }
         }
@@ -130,7 +130,7 @@ fn generate_type_ref(ty: &Type, self_type_name: Option<&str>) -> TokenStream {
 }
 
 /// Build the `<A, B>` generic clause and the trait-bound `where` clause for a
-/// generic type definition with the given WIT type-parameter names. Returns
+/// generic type definition with the given Pact type-parameter names. Returns
 /// empty token streams for a non-generic definition, so existing (non-generic)
 /// codegen is unchanged. The bounds mirror what the hand-written `From`/
 /// `TryFrom` impls need of each parameter:
@@ -465,7 +465,7 @@ fn format_interface_path(
 }
 
 /// Generate import modules from world imports
-pub fn generate_imports(registry: &WitRegistry, world: &World) -> TokenStream {
+pub fn generate_imports(registry: &PactRegistry, world: &World) -> TokenStream {
     let mut modules = Vec::new();
 
     for import in &world.imports {
@@ -664,28 +664,28 @@ fn generate_to_value_for_import(ty: &Type, expr: TokenStream) -> TokenStream {
 // Export Metadata Generation
 // ============================================================================
 
-/// Format a WIT function signature as a string
+/// Format a Pact function signature as a string
 fn format_function_signature(func: &Function) -> String {
     let params: Vec<String> = func
         .params
         .iter()
-        .map(|(name, ty)| format!("{}: {}", name, format_wit_type(ty)))
+        .map(|(name, ty)| format!("{}: {}", name, format_pact_type(ty)))
         .collect();
 
     let results = if func.results.is_empty() {
         String::new()
     } else if func.results.len() == 1 {
-        format!(" -> {}", format_wit_type(&func.results[0]))
+        format!(" -> {}", format_pact_type(&func.results[0]))
     } else {
-        let result_strs: Vec<String> = func.results.iter().map(format_wit_type).collect();
+        let result_strs: Vec<String> = func.results.iter().map(format_pact_type).collect();
         format!(" -> ({})", result_strs.join(", "))
     };
 
     format!("func({}){}", params.join(", "), results)
 }
 
-/// Format a WIT type as a string
-fn format_wit_type(ty: &Type) -> String {
+/// Format a Pact type as a string
+fn format_pact_type(ty: &Type) -> String {
     match ty {
         Type::Bool => "bool".to_string(),
         Type::U8 => "u8".to_string(),
@@ -700,29 +700,33 @@ fn format_wit_type(ty: &Type) -> String {
         Type::F64 => "f64".to_string(),
         Type::Char => "char".to_string(),
         Type::String => "string".to_string(),
-        Type::List(inner) => format!("list<{}>", format_wit_type(inner)),
-        Type::Option(inner) => format!("option<{}>", format_wit_type(inner)),
+        Type::List(inner) => format!("list<{}>", format_pact_type(inner)),
+        Type::Option(inner) => format!("option<{}>", format_pact_type(inner)),
         Type::Result { ok, err } => {
             let ok_str = ok
                 .as_ref()
-                .map(|t| format_wit_type(t))
+                .map(|t| format_pact_type(t))
                 .unwrap_or_else(|| "_".to_string());
             let err_str = err
                 .as_ref()
-                .map(|t| format_wit_type(t))
+                .map(|t| format_pact_type(t))
                 .unwrap_or_else(|| "_".to_string());
             format!("result<{}, {}>", ok_str, err_str)
         }
         Type::Tuple(items) => {
-            let item_strs: Vec<String> = items.iter().map(format_wit_type).collect();
+            let item_strs: Vec<String> = items.iter().map(format_pact_type).collect();
             format!("tuple<{}>", item_strs.join(", "))
         }
         Type::Map { key, value } => {
-            format!("map<{}, {}>", format_wit_type(key), format_wit_type(value))
+            format!(
+                "map<{}, {}>",
+                format_pact_type(key),
+                format_pact_type(value)
+            )
         }
         Type::Named(name) => name.clone(),
         Type::App { name, args } => {
-            let arg_strs: Vec<String> = args.iter().map(format_wit_type).collect();
+            let arg_strs: Vec<String> = args.iter().map(format_pact_type).collect();
             format!("{}<{}>", name, arg_strs.join(", "))
         }
         Type::SelfRef => "self".to_string(),
@@ -740,7 +744,7 @@ pub struct ExportInfo {
 }
 
 /// Generate export metadata for validation
-pub fn generate_export_metadata(registry: &WitRegistry, world: &World) -> TokenStream {
+pub fn generate_export_metadata(registry: &PactRegistry, world: &World) -> TokenStream {
     let mut exports: Vec<ExportInfo> = Vec::new();
 
     for export in &world.exports {
@@ -803,7 +807,7 @@ pub fn generate_export_metadata(registry: &WitRegistry, world: &World) -> TokenS
     quote! {
         #[doc(hidden)]
         pub mod __pack_exports {
-            /// (function_name, export_name, wit_signature)
+            /// (function_name, export_name, pact_signature)
             pub const EXPORTS: &[(&str, &str, &str)] = &[
                 #(#entries),*
             ];
@@ -820,7 +824,7 @@ pub fn generate_export_metadata(registry: &WitRegistry, world: &World) -> TokenS
 
 /// Collect export information for the #[export] macro to use
 #[allow(dead_code)]
-pub fn collect_exports(registry: &WitRegistry, world: &World) -> Vec<ExportInfo> {
+pub fn collect_exports(registry: &PactRegistry, world: &World) -> Vec<ExportInfo> {
     let mut exports = Vec::new();
 
     for export in &world.exports {
@@ -874,7 +878,7 @@ pub fn collect_exports(registry: &WitRegistry, world: &World) -> Vec<ExportInfo>
 #[cfg(test)]
 mod generic_tests {
     use super::*;
-    use crate::wit_parser::{Type, TypeDef, VariantCase};
+    use crate::pact_parser::{Type, TypeDef, VariantCase};
 
     /// The generated code must at least be syntactically valid Rust.
     fn assert_valid_rust(ts: &TokenStream) {

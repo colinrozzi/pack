@@ -1,4 +1,4 @@
-// Example WIT+ world demonstrating the world! macro
+// Example Pact world demonstrating the world! macro
 //
 // This world defines:
 // - An import interface (runtime) with typed functions

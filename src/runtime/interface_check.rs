@@ -1,4 +1,4 @@
-//! Interface enforcement - validate WASM modules implement WIT interfaces
+//! Interface enforcement - validate WASM modules implement Pact interfaces
 
 use crate::parser::Interface;
 use crate::types::Function;
@@ -40,7 +40,7 @@ impl ExpectedSignature {
     }
 }
 
-/// Determine expected WASM signature for a WIT function
+/// Determine expected WASM signature for a Pact function
 fn expected_signature_for(func: &Function) -> ExpectedSignature {
     // Graph ABI convention: all functions with params or results use (i32, i32) -> i64
     // The pointer/length convention handles all types uniformly

@@ -361,7 +361,7 @@ impl<'a, T> HostLinkerBuilder<'a, T> {
 
     /// Start defining an interface with the given name.
     ///
-    /// Interface names follow WIT conventions:
+    /// Interface names follow Pact conventions:
     /// - Simple: `"host"`
     /// - Namespaced: `"theater:simple/runtime"`
     ///
@@ -750,7 +750,7 @@ impl<T: 'static> InterfaceBuilder<'_, '_, T> {
     /// Register a typed host function that returns a Result.
     ///
     /// Both the success and error types must implement `Into<Value>`.
-    /// The result is encoded as a WIT result type:
+    /// The result is encoded as a Pact result type:
     /// - `Ok(value)` → `Variant { tag: 0, payload: Some(value) }`
     /// - `Err(error)` → `Variant { tag: 1, payload: Some(error) }`
     ///
@@ -874,7 +874,7 @@ impl<T: 'static> InterfaceBuilder<'_, '_, T> {
                     // Call user function
                     let result = func(&mut ctx, input);
 
-                    // Encode result as WIT result type
+                    // Encode result as Pact result type
                     // Use PackType::value_type() to get correct types for both variants
                     let output_value: Value = match result {
                         Ok(value) => Value::Result {
@@ -1098,7 +1098,7 @@ impl<T: Send + Clone + 'static> InterfaceBuilder<'_, '_, T> {
 
     /// Register an async host function that returns a Result.
     ///
-    /// Both success and error types are encoded as WIT result variants.
+    /// Both success and error types are encoded as Pact result variants.
     /// The `AsyncCtx` contains a cloned copy of the store state.
     ///
     /// The WASM function signature is `(in_ptr, in_len, out_ptr_ptr, out_len_ptr) -> status`.
@@ -1232,7 +1232,7 @@ impl<T: Send + Clone + 'static> InterfaceBuilder<'_, '_, T> {
                         // Call async function
                         let result = func(ctx, input).await;
 
-                        // Encode result as WIT result type
+                        // Encode result as Pact result type
                         // Use PackType::value_type() to get correct types for both variants
                         let output_value: Value = match result {
                             Ok(value) => Value::Result {

@@ -1,4 +1,4 @@
-//! Composite: A package runtime with extended WIT support
+//! Composite: A package runtime with extended Pact support
 //!
 //! This runtime extends the WebAssembly Component Model with support for
 //! recursive data types, enabling natural representation of tree structures
@@ -11,7 +11,7 @@
 //! │           Composite Runtime             │
 //! │                                         │
 //! │  types     - Unified type system        │
-//! │  parser    - Extended WIT parsing       │
+//! │  parser    - Extended Pact parsing       │
 //! │  abi       - Type encoding/decoding     │
 //! │  runtime   - Package instantiation      │
 //! │                                         │
@@ -20,11 +20,11 @@
 //! └─────────────────────────────────────────┘
 //! ```
 //!
-//! ## Extended WIT Types
+//! ## Extended Pact Types
 //!
-//! WIT+ allows recursive types by default:
+//! Pact allows recursive types by default:
 //!
-//! ```wit
+//! ```pact
 //! variant sexpr {
 //!     sym(string),
 //!     num(s64),
