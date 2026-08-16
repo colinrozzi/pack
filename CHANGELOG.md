@@ -31,7 +31,11 @@ This is a breaking release — guest actors on the old names must migrate.
   module became `parser::world`. Docs debranded from "WIT+" to "Pact" (factual
   references to the external Component Model WIT standard are retained).
 
-## v0.17.0 (2026-08-15)
+## v0.17.0 (unreleased — folded into 0.18.0)
+
+> This rename+deprecation step was never published on its own; 0.16.0 → 0.18.0
+> jumps straight to the hard removal. Kept here as a record of the progression.
+
 
 ### Changed
 
