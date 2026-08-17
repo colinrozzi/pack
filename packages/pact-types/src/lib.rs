@@ -54,11 +54,14 @@ packr_guest::pact! {
         tail: option<self>,
     }
 
-    // `map<K, V>` field: lowers to `BTreeMap<K, V>` and marshals as a
-    // key-sorted `list<tuple<K, V>>`.
+    // `map<K, V>` / `set<T>` fields: lower to `BTreeMap` / `BTreeSet` and marshal
+    // as key-sorted `list<tuple<K, V>>` / `list<T>`. `groups` nests a set inside
+    // a map value — exercising the `KnownValueType for BTreeSet` impl.
     record dict {
         name: string,
         entries: map<string, s32>,
+        tags: set<string>,
+        groups: map<string, set<string>>,
     }
 
     world pact-types {
@@ -101,9 +104,13 @@ fn cons_id(c: Cons) -> Cons {
 fn dict_id(d: Dict) -> Dict {
     let mut entries = d.entries;
     entries.entry(alloc::string::String::from("_count")).or_insert(0);
+    let mut tags = d.tags;
+    tags.insert(alloc::string::String::from("_seen"));
     Dict {
         name: d.name,
         entries,
+        tags,
+        groups: d.groups,
     }
 }
 

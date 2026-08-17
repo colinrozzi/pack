@@ -829,3 +829,27 @@ fn variant_with_error_case_compiles_and_roundtrips() {
         assert_eq!(original, back);
     }
 }
+
+// A `BTreeSet` NESTED inside another container (`map<K, set<V>>` → `BTreeMap<K,
+// BTreeSet<V>>`) round-trips. This exercises `KnownValueType for BTreeSet`
+// (added for `set<T>`), which building the map's `elem_type` requires — a bare
+// top-level `BTreeSet` field only needs `From`/`TryFrom`.
+#[derive(Debug, Clone, PartialEq, GraphValue)]
+struct Groups {
+    groups: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
+}
+
+#[test]
+fn nested_set_in_map_roundtrips() {
+    let mut groups = std::collections::BTreeMap::new();
+    groups.insert("admins".to_string(), {
+        let mut s = std::collections::BTreeSet::new();
+        s.insert("alice".to_string());
+        s.insert("bob".to_string());
+        s
+    });
+    let original = Groups { groups };
+    let value: Value = original.clone().into();
+    let back: Groups = value.try_into().unwrap();
+    assert_eq!(original, back);
+}

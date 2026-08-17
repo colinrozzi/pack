@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.19.0 (2026-08-17)
+
+### Added
+
+- **`set<T>` type.** Front-end sugar for a set, the sibling of `map<K, V>`. It
+  lowers to `BTreeSet<T>` in Rust and marshals as a key-sorted `list<T>` on the
+  wire — **no new `Value` variant, no wire change**; a `set<T>` hashes/validates
+  identically to that (sorted) list. Because a `BTreeSet` iterates in key order,
+  the encoding is canonical (deterministic) for free — which is what makes a set
+  suitable for replicated state-machine state (identical logical state encodes
+  byte-identically across replicas).
+  - Pact: `set<string>`, `set<tuple<list<u8>, list<u8>>>`, usable anywhere a type
+    is — record field, variant payload, and **nested** (`map<K, set<V>>`,
+    `list<set<T>>`).
+  - Guest: a `set<...>` field/param generates a `BTreeSet<...>`.
+- **`KnownValueType for BTreeSet<T>`** — this is what lets a `BTreeSet` nest
+  inside another container (building the outer container's `elem_type` needs it).
+  A bare top-level `BTreeSet` field already worked via `From`/`TryFrom`.
+
+### Notes
+
+- Wire-compatible: a set is *exactly* a `list<T>`, so existing packages and
+  consumers are byte-for-byte unaffected. Ships as a minor.
+
 ## v0.18.1 (2026-08-17)
 
 ### Fixed

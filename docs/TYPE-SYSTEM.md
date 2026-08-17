@@ -124,13 +124,18 @@ option<T>
 result<T, E>
 tuple<T, U, ...>
 map<K, V>
+set<T>
 ```
 
-`map<K, V>` is *front-end sugar*: it lowers to `BTreeMap<K, V>` on the Rust side
-and erases to `list<tuple<K, V>>` on the wire and in metadata. It introduces no
-new ABI value kind — a map is exactly a key-sorted list of key/value pairs, so
-it hashes and validates identically to that list, and its encoding is canonical
-(deterministic key order) for free.
+`map<K, V>` and `set<T>` are *front-end sugar*: they lower to `BTreeMap<K, V>` /
+`BTreeSet<T>` on the Rust side and erase to `list<tuple<K, V>>` / `list<T>` on the
+wire and in metadata. They introduce no new ABI value kind — a map is exactly a
+key-sorted list of key/value pairs and a set a key-sorted list of elements, so
+each hashes and validates identically to that list, and its encoding is canonical
+(deterministic order) for free. That canonical ordering is what makes a `set`
+suitable for a replicated state machine's state: identical logical state encodes
+byte-identically across replicas. Both work anywhere a type does, including
+nested (`map<K, set<V>>`, `list<set<T>>`) and as variant payloads.
 
 ### Function types
 

@@ -510,6 +510,10 @@ pub fn pact_type_to_type_desc_scoped(
             ]);
             TypeDesc::List(Box::new(pair))
         }
+        crate::pact_parser::Type::Set(elem) => {
+            // `set<T>` erases to `list<T>` in metadata (matching the host).
+            TypeDesc::List(Box::new(pact_type_to_type_desc_scoped(elem, types, params)))
+        }
         crate::pact_parser::Type::Named(name) => {
             // An in-scope generic parameter survives as a named ref.
             if params.iter().any(|p| p == name) {

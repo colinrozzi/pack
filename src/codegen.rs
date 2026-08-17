@@ -257,6 +257,9 @@ fn type_to_rust(ty: &Type) -> String {
                 type_to_rust(value)
             )
         }
+        Type::Set(elem) => {
+            format!("std::collections::BTreeSet<{}>", type_to_rust(elem))
+        }
         Type::Ref(path) => {
             // Named type reference
             to_pascal_case(&path.segments.join("::"))
