@@ -695,3 +695,108 @@ fn map_field_roundtrip() {
     let back: Dict = value.try_into().unwrap();
     assert_eq!(original, back);
 }
+
+// ============================================================================
+// Convergence guarantees for typed, PERSISTED state-machine state
+//
+// State-machine actors (chat-sm, mesh) marshal a typed GraphValue state record
+// that must (a) encode BYTE-IDENTICALLY for identical logical state across
+// replicas (convergence + state hashing) and (b) tolerate schema evolution of
+// the persisted bytes. These tests lock both so a future change can't silently
+// break replica convergence.
+// ============================================================================
+
+#[derive(Debug, Clone, PartialEq, GraphValue)]
+#[graph(forward_compatible)]
+struct StateV1 {
+    members: std::collections::BTreeSet<(u64, u64)>,
+    tags: std::collections::BTreeMap<u64, Vec<u64>>,
+    log: Vec<u64>,
+}
+
+// StateV1 with one appended field — an evolved persisted schema.
+#[derive(Debug, Clone, PartialEq, GraphValue)]
+#[graph(forward_compatible)]
+struct StateV2 {
+    members: std::collections::BTreeSet<(u64, u64)>,
+    tags: std::collections::BTreeMap<u64, Vec<u64>>,
+    log: Vec<u64>,
+    reactions: std::collections::BTreeMap<u64, u64>,
+}
+
+/// A `map`/`set` (BTreeMap/BTreeSet) field encodes deterministically —
+/// insertion order must NOT affect the bytes (both iterate in key order).
+#[test]
+fn btreemap_btreeset_encoding_is_insertion_order_independent() {
+    let mut a = StateV1 {
+        members: std::collections::BTreeSet::new(),
+        tags: std::collections::BTreeMap::new(),
+        log: vec![3, 1, 2],
+    };
+    a.members.insert((9, 1));
+    a.members.insert((2, 7));
+    a.members.insert((9, 0));
+    a.tags.insert(9, vec![0, 1]);
+    a.tags.insert(2, vec![7]);
+
+    // Same logical state, reversed insertion order.
+    let mut b = StateV1 {
+        members: std::collections::BTreeSet::new(),
+        tags: std::collections::BTreeMap::new(),
+        log: vec![3, 1, 2],
+    };
+    b.members.insert((9, 0));
+    b.members.insert((9, 1));
+    b.members.insert((2, 7));
+    b.tags.insert(2, vec![7]);
+    b.tags.insert(9, vec![0, 1]);
+
+    let bytes_a = packr_abi::encode(&Value::from(a.clone())).unwrap();
+    let bytes_b = packr_abi::encode(&Value::from(b)).unwrap();
+    assert_eq!(
+        bytes_a, bytes_b,
+        "encoding must be insertion-order-independent"
+    );
+
+    // And it round-trips (BTreeSet + BTreeMap fields).
+    let back: StateV1 = packr_abi::decode(&bytes_a).unwrap().try_into().unwrap();
+    assert_eq!(back, a);
+}
+
+/// `#[graph(forward_compatible)]` lets a PERSISTED record gain a field without
+/// breaking old bytes: decoding old (V1) bytes into the evolved (V2) record
+/// succeeds, with the new field defaulted.
+#[test]
+fn forward_compatible_decodes_old_bytes_after_field_add() {
+    let mut v1 = StateV1 {
+        members: std::collections::BTreeSet::new(),
+        tags: std::collections::BTreeMap::new(),
+        log: vec![1, 2, 3],
+    };
+    v1.members.insert((5, 0));
+    v1.tags.insert(5, vec![0]);
+
+    let old_bytes = packr_abi::encode(&Value::from(v1.clone())).unwrap();
+
+    // Old bytes -> evolved record with an added field: succeeds, field defaulted.
+    let v2: StateV2 = packr_abi::decode(&old_bytes).unwrap().try_into().unwrap();
+    assert_eq!(v2.members, v1.members);
+    assert_eq!(v2.tags, v1.tags);
+    assert_eq!(v2.log, v1.log);
+    assert_eq!(v2.reactions, std::collections::BTreeMap::new());
+
+    // And the reverse: newer bytes -> old reader, extra field ignored.
+    let v2_full = StateV2 {
+        members: v1.members.clone(),
+        tags: v1.tags.clone(),
+        log: v1.log.clone(),
+        reactions: {
+            let mut m = std::collections::BTreeMap::new();
+            m.insert(1u64, 9u64);
+            m
+        },
+    };
+    let new_bytes = packr_abi::encode(&Value::from(v2_full)).unwrap();
+    let back_v1: StateV1 = packr_abi::decode(&new_bytes).unwrap().try_into().unwrap();
+    assert_eq!(back_v1, v1);
+}
