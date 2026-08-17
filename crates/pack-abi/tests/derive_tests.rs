@@ -800,3 +800,32 @@ fn forward_compatible_decodes_old_bytes_after_field_add() {
     let back_v1: StateV1 = packr_abi::decode(&new_bytes).unwrap().try_into().unwrap();
     assert_eq!(back_v1, v1);
 }
+
+// ============================================================================
+// Regression: a variant case named `error` must not collide with the
+// generated `TryFrom::Error` associated type. Before the fix, the derive spelled
+// the try_from return type as `Self::Error`, which is ambiguous between an
+// `Error` VARIANT and the trait's `Error` ASSOCIATED TYPE (deny-by-default
+// `ambiguous_associated_items`). Any `pact!`/`wit!` variant with an `error` case
+// tripped this. The fix spells the return type as the concrete `ConversionError`.
+// ============================================================================
+
+#[derive(Debug, Clone, PartialEq, GraphValue)]
+enum Reply {
+    Id(u64),
+    State(u64),
+    Error(String),
+}
+
+#[test]
+fn variant_with_error_case_compiles_and_roundtrips() {
+    for original in [
+        Reply::Id(7),
+        Reply::State(3),
+        Reply::Error("boom".to_string()),
+    ] {
+        let value: Value = original.clone().into();
+        let back: Reply = value.try_into().unwrap();
+        assert_eq!(original, back);
+    }
+}
