@@ -492,6 +492,7 @@ fn parse_type(parser: &mut Parser) -> Result<Type, ParseError> {
         "tuple" => parse_tuple(parser),
         "result" => parse_result(parser),
         "map" => parse_map(parser),
+        "set" => parse_set(parser),
         _ => Ok(Type::named(ident)),
     }
 }
@@ -503,6 +504,13 @@ fn parse_map(parser: &mut Parser) -> Result<Type, ParseError> {
     let value = parse_type(parser)?;
     parser.expect_symbol('>')?;
     Ok(Type::map(key, value))
+}
+
+fn parse_set(parser: &mut Parser) -> Result<Type, ParseError> {
+    parser.expect_symbol('<')?;
+    let elem = parse_type(parser)?;
+    parser.expect_symbol('>')?;
+    Ok(Type::set(elem))
 }
 
 fn parse_single_param<F>(parser: &mut Parser, wrap: F) -> Result<Type, ParseError>

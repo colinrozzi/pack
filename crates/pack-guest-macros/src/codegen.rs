@@ -100,6 +100,12 @@ fn generate_type_ref(ty: &Type, self_type_name: Option<&str>) -> TokenStream {
             let value_ty = generate_type_ref(value, self_type_name);
             quote! { ::alloc::collections::BTreeMap<#key_ty, #value_ty> }
         }
+        Type::Set(elem) => {
+            // `set<T>` lowers to `BTreeSet<T>`, which round-trips through the ABI
+            // as `list<T>` (key-sorted, so it's canonical).
+            let elem_ty = generate_type_ref(elem, self_type_name);
+            quote! { ::alloc::collections::BTreeSet<#elem_ty> }
+        }
         Type::Named(name) => {
             let rust_name = to_rust_type_name(name);
             quote! { #rust_name }
@@ -169,7 +175,7 @@ fn generate_to_value(ty: &Type, expr: TokenStream, self_type_name: Option<&str>)
         Type::F64 => quote! { packr_guest::Value::F64(#expr) },
         Type::Char => quote! { packr_guest::Value::Char(#expr) },
         Type::String => quote! { packr_guest::Value::String(#expr) },
-        Type::List(_) | Type::Option(_) | Type::Map { .. } => {
+        Type::List(_) | Type::Option(_) | Type::Map { .. } | Type::Set(_) => {
             // Vec<T> / Option<T> / BTreeMap<K, V> encode via their packr_abi
             // `From` impls, which build the correct struct-form Value (a map
             // becomes a list<tuple<K, V>>).
@@ -724,6 +730,7 @@ fn format_pact_type(ty: &Type) -> String {
                 format_pact_type(value)
             )
         }
+        Type::Set(elem) => format!("set<{}>", format_pact_type(elem)),
         Type::Named(name) => name.clone(),
         Type::App { name, args } => {
             let arg_strs: Vec<String> = args.iter().map(format_pact_type).collect();

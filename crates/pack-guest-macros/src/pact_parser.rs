@@ -320,6 +320,10 @@ pub enum Type {
         value: Box<Type>,
     },
 
+    // `set<T>` — front-end sugar that lowers to `BTreeSet<T>` in Rust and erases
+    // to a (key-sorted) `list<T>` on the wire / in metadata.
+    Set(Box<Type>),
+
     // Named reference (to another type). Also used for a reference to an
     // in-scope generic type parameter (e.g. `a` inside `record pair<a, b>`);
     // both lower to a PascalCased Rust identifier, so codegen need not
@@ -386,6 +390,7 @@ impl Type {
                 key: Box::new(key.substitute(env)),
                 value: Box::new(value.substitute(env)),
             },
+            Type::Set(elem) => Type::Set(Box::new(elem.substitute(env))),
             Type::App { name, args } => Type::App {
                 name: name.clone(),
                 args: args.iter().map(|t| t.substitute(env)).collect(),
@@ -1335,6 +1340,12 @@ pub(crate) fn parse_type(parser: &mut Parser) -> Result<Type, ParseError> {
                 key: Box::new(key),
                 value: Box::new(value),
             })
+        }
+        "set" => {
+            parser.expect_symbol('<')?;
+            let elem = parse_type(parser)?;
+            parser.expect_symbol('>')?;
+            Ok(Type::Set(Box::new(elem)))
         }
         _ => {
             // Generic type application `name<...>`, or a bare named reference

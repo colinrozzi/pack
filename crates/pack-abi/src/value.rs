@@ -460,6 +460,16 @@ impl<K: KnownValueType + Ord, V: KnownValueType> KnownValueType for BTreeMap<K, 
     }
 }
 
+// A `set<T>` erases to a (key-sorted) `list<T>` on the wire, so its known value
+// type is a list of `T` — matching `From<BTreeSet>` below. This impl is what
+// lets a `BTreeSet` nest inside another container (`map<K, set<V>>`,
+// `list<set<T>>`), since building that container's `elem_type` needs it.
+impl<T: KnownValueType + Ord> KnownValueType for BTreeSet<T> {
+    fn known_value_type() -> ValueType {
+        ValueType::List(Box::new(T::known_value_type()))
+    }
+}
+
 impl<T: KnownValueType> KnownValueType for Option<T> {
     fn known_value_type() -> ValueType {
         ValueType::Option(Box::new(T::known_value_type()))

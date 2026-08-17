@@ -519,6 +519,12 @@ pub enum Type {
     // hashing, metadata, and validation it is treated as its desugared list form.
     Map { key: Box<Type>, value: Box<Type> },
 
+    // Set type `set<T>`. A front-end convenience that lowers to a `BTreeSet<T>`
+    // in Rust and marshals as a `list<T>` on the wire (canonical, key-sorted).
+    // Distinct only at the source/codegen level; for hashing, metadata, and
+    // validation it is treated as its desugared list form.
+    Set(Box<Type>),
+
     // Named type reference (with qualified path).
     //
     // Also used for references to an in-scope generic type parameter: a bare
@@ -601,6 +607,22 @@ impl Type {
         }
     }
 
+    /// Create a set type `set<elem>`.
+    pub fn set(elem: Type) -> Self {
+        Type::Set(Box::new(elem))
+    }
+
+    /// The desugared wire form of a `set<T>`: `list<T>`. A set marshals, hashes,
+    /// and validates exactly as this list (canonical, key-sorted), so the erased
+    /// paths (metadata, hashing, validation) delegate to it. Returns `self`
+    /// unchanged for a non-set type.
+    pub fn desugar_set(&self) -> Type {
+        match self {
+            Type::Set(elem) => Type::List(elem.clone()),
+            other => other.clone(),
+        }
+    }
+
     /// Substitute in-scope type parameters with concrete types.
     ///
     /// A `Ref` whose simple name is bound in `env` is replaced by the bound
@@ -632,6 +654,7 @@ impl Type {
                 key: Box::new(key.substitute(env)),
                 value: Box::new(value.substitute(env)),
             },
+            Type::Set(elem) => Type::Set(Box::new(elem.substitute(env))),
             _ => self.clone(),
         }
     }
@@ -698,6 +721,7 @@ impl Type {
                 k1.unify(k2, params, bindings)?;
                 v1.unify(v2, params, bindings)
             }
+            (Type::Set(e1), Type::Set(e2)) => e1.unify(e2, params, bindings),
             // Non-parameter constructs (primitives, nominal refs) must be equal.
             (a, b) if a == b => Ok(()),
             (a, b) => Err(format!("cannot unify {a:?} with {b:?}")),
@@ -723,6 +747,7 @@ impl Type {
             Type::Tuple(types) => types.iter().any(|t| t.contains_recursion()),
             Type::App { args, .. } => args.iter().any(|t| t.contains_recursion()),
             Type::Map { key, value } => key.contains_recursion() || value.contains_recursion(),
+            Type::Set(elem) => elem.contains_recursion(),
             _ => false,
         }
     }
