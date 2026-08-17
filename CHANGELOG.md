@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.18.1 (2026-08-17)
+
+### Fixed
+
+- **`#[derive(GraphValue)]` on a variant with an `error` case.** A type (or a
+  `pact!`/`wit!` variant) with a case named `error` → `Error` failed to compile
+  with `ambiguous associated item`: the generated `TryFrom<Value>` impl spelled
+  its return type as `Self::Error`, which is ambiguous between the `Error`
+  *variant* and the trait's `Error` *associated type* (a deny-by-default
+  future-incompat lint). The return type is now spelled as the concrete
+  `ConversionError`. No behavior change; any guest with an `error`/`result`-ish
+  variant now compiles.
+
 ## v0.18.0 (2026-08-15) — BREAKING
 
 Committed fully to the **Pact** name; **"wit" is gone** from the public surface.
