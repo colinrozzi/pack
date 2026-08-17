@@ -1063,6 +1063,24 @@ pub fn import(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// # From the `pact/` directory
 ///
 /// With no argument, `pact!()` reads every `.pact` file under `pact/`.
+///
+/// # Cross-file imports
+///
+/// A Pact file can pull type definitions from another Pact file with a
+/// path-based `use`, so a type is single-sourced instead of hand-mirrored:
+///
+/// ```ignore
+/// // consumer.pact
+/// use "../shared.pact".{msg, chat-state};
+/// record snapshot { latest: chat-state, last-msg: msg }
+/// world consumer { export snap: func(s: snapshot) -> snapshot }
+/// ```
+///
+/// The path resolves relative to the importing file's directory (relative to
+/// `CARGO_MANIFEST_DIR` for inline/`pact/`-dir input). The named types — plus
+/// their transitive same-file dependencies — are pulled in and generated
+/// locally. Every `use`d file is registered as a build dependency, so editing it
+/// triggers a rebuild.
 #[proc_macro]
 pub fn pact(input: TokenStream) -> TokenStream {
     expand_pact(input)
@@ -1084,7 +1102,7 @@ fn expand_pact(input: TokenStream) -> TokenStream {
                     .into();
             }
         };
-        let world = match pact_parser::parse_world(&content) {
+        let mut world = match pact_parser::parse_world(&content) {
             Ok(w) => w,
             Err(e) => {
                 return syn::Error::new(
@@ -1095,13 +1113,27 @@ fn expand_pact(input: TokenStream) -> TokenStream {
                 .into();
             }
         };
+        // Resolve `use "path".{names}` imports relative to THIS file's directory.
+        let base_dir = abs_path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        let used_paths = match resolve_world_uses(&mut world, &base_dir) {
+            Ok(v) => v,
+            Err(e) => {
+                return syn::Error::new(file_ref.path.span(), e)
+                    .to_compile_error()
+                    .into();
+            }
+        };
         let generated = codegen::generate_world_types(&world);
-        let abs_str = abs_path.to_string_lossy();
-        let abs_str = abs_str.as_ref();
+        // Register the source file + every `use`d file as build dependencies so
+        // editing any of them triggers recompilation of this crate.
+        let mut trackers = vec![abs_path];
+        trackers.extend(used_paths);
+        let trackers = build_dep_trackers(&trackers);
         return quote! {
-            // Register the source file as a build dependency so editing the
-            // shared definition triggers recompilation of this crate.
-            const _: &[u8] = include_bytes!(#abs_str);
+            #trackers
             #generated
         }
         .into();
@@ -1130,7 +1162,7 @@ fn expand_pact(input: TokenStream) -> TokenStream {
     };
 
     // Parse the Pact content
-    let world = match pact_parser::parse_world(&pact_content) {
+    let mut world = match pact_parser::parse_world(&pact_content) {
         Ok(w) => w,
         Err(e) => {
             return syn::Error::new(
@@ -1142,10 +1174,72 @@ fn expand_pact(input: TokenStream) -> TokenStream {
         }
     };
 
+    // Resolve `use "path".{names}` imports relative to the crate root.
+    let base_dir = match std::env::var("CARGO_MANIFEST_DIR") {
+        Ok(d) => std::path::PathBuf::from(d),
+        Err(_) => std::path::PathBuf::from("."),
+    };
+    let used_paths = match resolve_world_uses(&mut world, &base_dir) {
+        Ok(v) => v,
+        Err(e) => {
+            return syn::Error::new(proc_macro2::Span::call_site(), e)
+                .to_compile_error()
+                .into();
+        }
+    };
+
     // Generate the types
     let generated = codegen::generate_world_types(&world);
+    let trackers = build_dep_trackers(&used_paths);
 
-    generated.into()
+    quote! {
+        #trackers
+        #generated
+    }
+    .into()
+}
+
+/// Resolve a world's `use "path".{names}` imports: for each, read the file
+/// (relative to `base_dir`), parse it, pull the named type defs plus their
+/// transitive same-file dependencies, and append them to the world's types
+/// (deduped by name). Returns the absolute paths read, for build-dep tracking.
+fn resolve_world_uses(
+    world: &mut pact_parser::World,
+    base_dir: &std::path::Path,
+) -> Result<Vec<std::path::PathBuf>, String> {
+    let uses = world.uses.clone();
+    let mut tracked = Vec::new();
+    for u in &uses {
+        let path = base_dir.join(&u.path);
+        let content = std::fs::read_to_string(&path)
+            .map_err(|e| format!("Failed to read `use` file {}: {}", path.display(), e))?;
+        let registry = pact_parser::parse_pact(&content)
+            .map_err(|e| format!("Failed to parse `use` file {}: {}", path.display(), e))?;
+        // Types available in the used file: top-level defs + any world's defs.
+        let mut avail = registry.types.clone();
+        for w in &registry.worlds {
+            avail.extend(w.types.iter().cloned());
+        }
+        let pulled = pact_parser::resolve_used_types(&u.items, &avail)
+            .map_err(|e| format!("in `use \"{}\"`: {}", u.path, e))?;
+        for td in pulled {
+            if !world.types.iter().any(|t| t.name() == td.name()) {
+                world.types.push(td);
+            }
+        }
+        tracked.push(path);
+    }
+    Ok(tracked)
+}
+
+/// Build `const _: &[u8] = include_bytes!("<abs>");` entries for each path, so
+/// editing a source or `use`d file triggers a rebuild.
+fn build_dep_trackers(paths: &[std::path::PathBuf]) -> proc_macro2::TokenStream {
+    let entries = paths.iter().map(|p| {
+        let s = p.to_string_lossy().into_owned();
+        quote! { const _: &[u8] = include_bytes!(#s); }
+    });
+    quote! { #(#entries)* }
 }
 
 /// A `pact!` invocation that points at an external definition file:

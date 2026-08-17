@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.20.0 (2026-08-17)
+
+### Added
+
+- **Cross-file `use` imports.** A Pact file can now pull type definitions from
+  another Pact file, so a type is single-sourced instead of hand-mirrored across
+  crates:
+
+  ```pact
+  // consumer.pact
+  use "../shared.pact".{msg, chat-state};
+  record snapshot { latest: chat-state, last-msg: msg }
+  world consumer { export snap: func(s: snapshot) -> snapshot }
+  ```
+
+  The path is **path-based**, resolved relative to the importing file's directory
+  (relative to `CARGO_MANIFEST_DIR` for inline / `pact/`-directory input). The
+  named types **plus their transitive same-file dependencies** are pulled in and
+  generated locally, and every `use`d file is registered as a build dependency
+  (so editing it triggers a rebuild). Because guest codegen is deterministic,
+  types co-generated in different crates from the same source are wire-identical.
+  - Guest lexer gained a string-literal token (for the quoted path).
+  - Scope: the `pact!` macro (inline, `pact!(from …)`, and `pact/`-dir). Bare-name
+    package imports (`use pkg.{…}`) are a possible later addition.
+
 ## v0.19.0 (2026-08-17)
 
 ### Added
