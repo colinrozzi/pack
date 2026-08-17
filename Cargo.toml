@@ -35,6 +35,7 @@ exclude = [
     "packages/pact-types",
     "packages/pact-from-file",
     "packages/hello",
+    "packages/message-server-actor",
 ]
 
 [workspace.package]
