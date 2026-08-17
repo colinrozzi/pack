@@ -345,7 +345,7 @@ fn derive_struct(
                 impl #impl_generics #krate::__private::TryFrom<#krate::Value> for #name #ty_generics #where_clause {
                     type Error = #krate::ConversionError;
 
-                    fn try_from(value: #krate::Value) -> #krate::__private::Result<Self, Self::Error> {
+                    fn try_from(value: #krate::Value) -> #krate::__private::Result<Self, #krate::ConversionError> {
                         match value {
                             #krate::Value::Record { fields, .. } => {
                                 #count_check
@@ -429,7 +429,7 @@ fn derive_struct(
                 impl #impl_generics #krate::__private::TryFrom<#krate::Value> for #name #ty_generics #where_clause {
                     type Error = #krate::ConversionError;
 
-                    fn try_from(value: #krate::Value) -> #krate::__private::Result<Self, Self::Error> {
+                    fn try_from(value: #krate::Value) -> #krate::__private::Result<Self, #krate::ConversionError> {
                         match value {
                             #krate::Value::Tuple(fields) => {
                                 #count_check
@@ -465,7 +465,7 @@ fn derive_struct(
                 impl #impl_generics #krate::__private::TryFrom<#krate::Value> for #name #ty_generics #where_clause {
                     type Error = #krate::ConversionError;
 
-                    fn try_from(value: #krate::Value) -> #krate::__private::Result<Self, Self::Error> {
+                    fn try_from(value: #krate::Value) -> #krate::__private::Result<Self, #krate::ConversionError> {
                         match value {
                             #krate::Value::Tuple(fields) if fields.is_empty() => {
                                 #krate::__private::Ok(Self)
@@ -694,7 +694,7 @@ fn derive_enum(
         impl #impl_generics #krate::__private::TryFrom<#krate::Value> for #name #ty_generics #where_clause {
             type Error = #krate::ConversionError;
 
-            fn try_from(value: #krate::Value) -> #krate::__private::Result<Self, Self::Error> {
+            fn try_from(value: #krate::Value) -> #krate::__private::Result<Self, #krate::ConversionError> {
                 match value {
                     #krate::Value::Variant { tag, payload, .. } => {
                         match tag {
