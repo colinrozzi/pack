@@ -48,7 +48,7 @@ fn reject_variant_tag_out_of_range() {
 
     let mut bytes = Vec::new();
     bytes.extend_from_slice(&u32::from_le_bytes(*b"CGRF").to_le_bytes());
-    bytes.extend_from_slice(&2u16.to_le_bytes()); // VERSION 2
+    bytes.extend_from_slice(&3u16.to_le_bytes()); // VERSION 3
     bytes.extend_from_slice(&0u16.to_le_bytes());
     bytes.extend_from_slice(&1u32.to_le_bytes());
     bytes.extend_from_slice(&0u32.to_le_bytes());

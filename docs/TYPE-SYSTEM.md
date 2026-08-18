@@ -127,15 +127,22 @@ map<K, V>
 set<T>
 ```
 
-`map<K, V>` and `set<T>` are *front-end sugar*: they lower to `BTreeMap<K, V>` /
-`BTreeSet<T>` on the Rust side and erase to `list<tuple<K, V>>` / `list<T>` on the
-wire and in metadata. They introduce no new ABI value kind — a map is exactly a
-key-sorted list of key/value pairs and a set a key-sorted list of elements, so
-each hashes and validates identically to that list, and its encoding is canonical
-(deterministic order) for free. That canonical ordering is what makes a `set`
-suitable for a replicated state machine's state: identical logical state encodes
+`map<K, V>` and `set<T>` are **first-class** throughout: they lower to
+`BTreeMap<K, V>` / `BTreeSet<T>` on the Rust side and marshal as their own ABI
+value kinds (`Value::Map` / `Value::Set`, wire node kinds `0x16` / `0x17`), with
+their own type-metadata tags and structural hashes. A `map<K, V>` is therefore
+**distinct** from `list<tuple<K, V>>`, and a `set<T>` distinct from `list<T>`, at
+every layer (hash, metadata, validation, wire). Their entries/items are
+**canonical by construction** — key-sorted, because a `BTreeMap`/`BTreeSet`
+iterates in key order and the encoder preserves that order without re-sorting
+(`Value` is not `Ord`). That canonical ordering is what makes a `set` suitable
+for a replicated state machine's state: identical logical state encodes
 byte-identically across replicas. Both work anywhere a type does, including
 nested (`map<K, set<V>>`, `list<set<T>>`) and as variant payloads.
+
+> **History.** In 0.15 – 0.21 these were *erased* to `list<tuple<K, V>>` /
+> `list<T>` on the wire (no distinct value kind). 0.22.0 made them first-class —
+> a deliberate breaking wire change (CGRF format v3, no dual-read).
 
 ### Function types
 

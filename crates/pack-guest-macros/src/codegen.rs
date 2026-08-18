@@ -94,15 +94,15 @@ fn generate_type_ref(ty: &Type, self_type_name: Option<&str>) -> TokenStream {
             }
         }
         Type::Map { key, value } => {
-            // `map<K, V>` lowers to `BTreeMap<K, V>`, which round-trips through
-            // the ABI as `list<tuple<K, V>>` (key-sorted, so it's canonical).
+            // `map<K, V>` lowers to `BTreeMap<K, V>`, which marshals as a
+            // first-class `Value::Map` (key-sorted, so it's canonical).
             let key_ty = generate_type_ref(key, self_type_name);
             let value_ty = generate_type_ref(value, self_type_name);
             quote! { ::alloc::collections::BTreeMap<#key_ty, #value_ty> }
         }
         Type::Set(elem) => {
-            // `set<T>` lowers to `BTreeSet<T>`, which round-trips through the ABI
-            // as `list<T>` (key-sorted, so it's canonical).
+            // `set<T>` lowers to `BTreeSet<T>`, which marshals as a first-class
+            // `Value::Set` (key-sorted, so it's canonical).
             let elem_ty = generate_type_ref(elem, self_type_name);
             quote! { ::alloc::collections::BTreeSet<#elem_ty> }
         }

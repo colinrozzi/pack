@@ -204,6 +204,8 @@ const HASH_TAG_RECORD: u8 = 0x14;
 const HASH_TAG_VARIANT: u8 = 0x15;
 const HASH_TAG_FUNCTION: u8 = 0x16;
 const HASH_TAG_INTERFACE: u8 = 0x17;
+const HASH_TAG_MAP: u8 = 0x18;
+const HASH_TAG_SET: u8 = 0x19;
 
 /// Builder for computing type hashes.
 struct TypeHasher {
@@ -272,6 +274,20 @@ pub fn hash_tuple(elements: &[TypeHash]) -> TypeHash {
         hasher = hasher.child(elem);
     }
     hasher.finish()
+}
+
+/// Hash a map type `map<K, V>`. First-class — distinct from `list<tuple<K, V>>`.
+pub fn hash_map(key: &TypeHash, value: &TypeHash) -> TypeHash {
+    TypeHasher::new()
+        .tag(HASH_TAG_MAP)
+        .child(key)
+        .child(value)
+        .finish()
+}
+
+/// Hash a set type `set<T>`. First-class — distinct from `list<T>`.
+pub fn hash_set(element: &TypeHash) -> TypeHash {
+    TypeHasher::new().tag(HASH_TAG_SET).child(element).finish()
 }
 
 /// Hash a record type (structural - name NOT included).
@@ -401,8 +417,11 @@ fn hash_type_inner(ty: &Type, types: &[TypeDef], stack: &mut Vec<String>) -> Typ
                 .collect();
             hash_tuple(&hashes)
         }
-        Type::Map { .. } => hash_type_inner(&ty.desugar_map(), types, stack),
-        Type::Set(..) => hash_type_inner(&ty.desugar_set(), types, stack),
+        Type::Map { key, value } => hash_map(
+            &hash_type_inner(key, types, stack),
+            &hash_type_inner(value, types, stack),
+        ),
+        Type::Set(elem) => hash_set(&hash_type_inner(elem, types, stack)),
         Type::Ref(path) => hash_ref(path, types, stack),
         Type::App { path, args } => hash_app(path, args, types, stack),
         Type::Value => HASH_SELF_REF,
@@ -639,6 +658,8 @@ const TAG_VARIANT: u32 = 18;
 const TAG_TUPLE: u32 = 19;
 const TAG_VALUE: u32 = 20;
 const TAG_UNIT: u32 = 21;
+const TAG_MAP: u32 = 22;
+const TAG_SET: u32 = 23;
 
 // ============================================================================
 // Metadata Decoding
@@ -1106,6 +1127,34 @@ fn decode_type_collecting(
                 }
                 TAG_VALUE => Ok(Type::Value),
                 TAG_UNIT => Ok(Type::Unit),
+                TAG_MAP => {
+                    let record = payload.into_iter().next().ok_or_else(|| {
+                        MetadataError::InvalidStructure("map missing payload".into())
+                    })?;
+                    match record {
+                        Value::Record { fields, .. } => {
+                            let mut key = Type::Unit;
+                            let mut value = Type::Unit;
+                            for (name, val) in fields {
+                                match name.as_str() {
+                                    "key" => key = decode_type_collecting(val, type_defs)?,
+                                    "value" => value = decode_type_collecting(val, type_defs)?,
+                                    _ => {}
+                                }
+                            }
+                            Ok(Type::map(key, value))
+                        }
+                        _ => Err(MetadataError::InvalidStructure(
+                            "map payload not a record".into(),
+                        )),
+                    }
+                }
+                TAG_SET => {
+                    let inner = payload.into_iter().next().ok_or_else(|| {
+                        MetadataError::InvalidStructure("set missing element type".into())
+                    })?;
+                    Ok(Type::set(decode_type_collecting(inner, type_defs)?))
+                }
                 _ => Err(MetadataError::InvalidStructure(format!(
                     "unknown type tag: {}",
                     tag
@@ -1427,15 +1476,6 @@ fn decode_type_param_list(val: Value) -> Result<Vec<crate::types::TypeParam>, Me
 }
 
 fn encode_type_value(ty: &Type) -> Value {
-    // `map<K, V>` / `set<T>` are front-end sugar: they erase to `list<tuple<K,
-    // V>>` / `list<T>` on the wire and in metadata, so they hash/marshal
-    // identically to that list.
-    if let Type::Map { .. } = ty {
-        return encode_type_value(&ty.desugar_map());
-    }
-    if let Type::Set(..) = ty {
-        return encode_type_value(&ty.desugar_set());
-    }
     let (tag, payload) = match ty {
         Type::Unit => (TAG_UNIT as usize, vec![]),
         Type::Bool => (TAG_BOOL as usize, vec![]),
@@ -1496,9 +1536,17 @@ fn encode_type_value(ty: &Type) -> Value {
             )
         }
         Type::Value => (TAG_VALUE as usize, vec![]),
-        // Desugared to `list<tuple<K, V>>` by the guard at the top of this fn.
-        Type::Map { .. } => unreachable!("map desugared before match"),
-        Type::Set(..) => unreachable!("set desugared before match"),
+        Type::Map { key, value } => (
+            TAG_MAP as usize,
+            vec![Value::Record {
+                type_name: "MapPayload".to_string(),
+                fields: vec![
+                    ("key".to_string(), encode_type_value(key)),
+                    ("value".to_string(), encode_type_value(value)),
+                ],
+            }],
+        ),
+        Type::Set(elem) => (TAG_SET as usize, vec![encode_type_value(elem)]),
     };
 
     Value::Variant {
@@ -1721,13 +1769,6 @@ pub fn validate_value_in_type_space(
     expected: &Type,
     type_defs: &[TypeDef],
 ) -> Result<(), TypeValidationError> {
-    // `map<K, V>` / `set<T>` erase to `list<...>`; validate against that shape.
-    if let Type::Map { .. } = expected {
-        return validate_value_in_type_space(value, &expected.desugar_map(), type_defs);
-    }
-    if let Type::Set(..) = expected {
-        return validate_value_in_type_space(value, &expected.desugar_set(), type_defs);
-    }
     match expected {
         // Escape hatch — anything goes
         Type::Value => Ok(()),
@@ -1927,9 +1968,41 @@ pub fn validate_value_in_type_space(
                 }),
             }
         }
-        // Desugared to `list<tuple<K, V>>` by the guard at the top of this fn.
-        Type::Map { .. } => unreachable!("map desugared before match"),
-        Type::Set(..) => unreachable!("set desugared before match"),
+        Type::Map { key, value: val_ty } => match value {
+            Value::Map { entries, .. } => {
+                for (i, (k, v)) in entries.iter().enumerate() {
+                    validate_value_in_type_space(k, key, type_defs).map_err(|e| {
+                        TypeValidationError::Nested {
+                            context: format!("map[{}].key", i),
+                            inner: Box::new(e),
+                        }
+                    })?;
+                    validate_value_in_type_space(v, val_ty, type_defs).map_err(|e| {
+                        TypeValidationError::Nested {
+                            context: format!("map[{}].value", i),
+                            inner: Box::new(e),
+                        }
+                    })?;
+                }
+                Ok(())
+            }
+            _ => Err(mismatch("map", value)),
+        },
+
+        Type::Set(elem_type) => match value {
+            Value::Set { items, .. } => {
+                for (i, item) in items.iter().enumerate() {
+                    validate_value_in_type_space(item, elem_type, type_defs).map_err(|e| {
+                        TypeValidationError::Nested {
+                            context: format!("set[{}]", i),
+                            inner: Box::new(e),
+                        }
+                    })?;
+                }
+                Ok(())
+            }
+            _ => Err(mismatch("set", value)),
+        },
     }
 }
 
@@ -2097,6 +2170,8 @@ fn value_type_name(value: &Value) -> String {
         } => format!("variant '{}' (case '{}')", type_name, case_name),
         Value::Tuple(items) => format!("tuple<{}>", items.len()),
         Value::Flags(_) => "flags".into(),
+        Value::Map { entries, .. } => format!("map<{} entries>", entries.len()),
+        Value::Set { items, .. } => format!("set<{}>", items.len()),
     }
 }
 

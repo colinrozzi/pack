@@ -4,10 +4,10 @@
 //! Also computes Merkle-tree hashes for type compatibility checking.
 
 use packr_abi::{
-    encode, hash_function, hash_interface, hash_list, hash_option, hash_record, hash_result,
-    hash_tuple, hash_variant, Binding, TypeHash, Value, ValueType, HASH_BOOL, HASH_CHAR, HASH_F32,
-    HASH_F64, HASH_FLAGS, HASH_S16, HASH_S32, HASH_S64, HASH_S8, HASH_SELF_REF, HASH_STRING,
-    HASH_U16, HASH_U32, HASH_U64, HASH_U8,
+    encode, hash_function, hash_interface, hash_list, hash_map, hash_option, hash_record,
+    hash_result, hash_set, hash_tuple, hash_variant, Binding, TypeHash, Value, ValueType,
+    HASH_BOOL, HASH_CHAR, HASH_F32, HASH_F64, HASH_FLAGS, HASH_S16, HASH_S32, HASH_S64, HASH_S8,
+    HASH_SELF_REF, HASH_STRING, HASH_U16, HASH_U32, HASH_U64, HASH_U8,
 };
 use std::collections::HashMap;
 
@@ -59,6 +59,15 @@ pub enum TypeDesc {
         cases: Vec<(std::string::String, Option<TypeDesc>)>,
     },
     Tuple(Vec<TypeDesc>),
+    /// First-class `map<K, V>` — its own metadata tag and hash (distinct from
+    /// `list<tuple<K, V>>`), matching the host.
+    Map {
+        key: Box<TypeDesc>,
+        value: Box<TypeDesc>,
+    },
+    /// First-class `set<T>` — its own metadata tag and hash (distinct from
+    /// `list<T>`), matching the host.
+    Set(Box<TypeDesc>),
     /// A named type reference — used for interface-level generic parameters
     /// (e.g. `s`). The host decodes this as `Type::Ref(name)`; compose then
     /// binds it if `name` is a declared type parameter.
@@ -180,6 +189,29 @@ impl TypeDesc {
                     items: items.iter().map(|t| t.to_value()).collect(),
                 }],
             },
+            // Mirrors the host's `encode_type_value` for `Type::Map` exactly
+            // (TAG_MAP=22 with a `MapPayload` record carrying key/value), so the
+            // host decodes it back as `Type::Map`.
+            TypeDesc::Map { key, value } => Value::Variant {
+                type_name: "type-desc".into(),
+                case_name: "map".into(),
+                tag: 22,
+                payload: vec![Value::Record {
+                    type_name: "MapPayload".into(),
+                    fields: vec![
+                        ("key".into(), key.to_value()),
+                        ("value".into(), value.to_value()),
+                    ],
+                }],
+            },
+            // Mirrors the host's `encode_type_value` for `Type::Set` (TAG_SET=23
+            // with the element type as the sole payload).
+            TypeDesc::Set(elem) => Value::Variant {
+                type_name: "type-desc".into(),
+                case_name: "set".into(),
+                tag: 23,
+                payload: vec![elem.to_value()],
+            },
             // Mirrors the host's `Type::Ref` encoding exactly (TAG_VARIANT with a
             // `TypeRef` record carrying just the name), so the host decodes it
             // back as `Type::Ref(name)`.
@@ -223,6 +255,8 @@ impl TypeDesc {
                 let hashes: Vec<_> = items.iter().map(|t| t.to_hash()).collect();
                 hash_tuple(&hashes)
             }
+            TypeDesc::Map { key, value } => hash_map(&key.to_hash(), &value.to_hash()),
+            TypeDesc::Set(elem) => hash_set(&elem.to_hash()),
             TypeDesc::Record { fields, .. } => {
                 // Sort fields by name for canonical ordering
                 let mut sorted: Vec<_> = fields
@@ -501,19 +535,15 @@ pub fn pact_type_to_type_desc_scoped(
                 .map(|t| pact_type_to_type_desc_scoped(t, types, params))
                 .collect(),
         ),
-        crate::pact_parser::Type::Map { key, value } => {
-            // `map<K, V>` erases to `list<tuple<K, V>>` in metadata so it hashes
-            // identically to a list of pairs (matching the host's desugaring).
-            let pair = TypeDesc::Tuple(vec![
-                pact_type_to_type_desc_scoped(key, types, params),
-                pact_type_to_type_desc_scoped(value, types, params),
-            ]);
-            TypeDesc::List(Box::new(pair))
-        }
-        crate::pact_parser::Type::Set(elem) => {
-            // `set<T>` erases to `list<T>` in metadata (matching the host).
-            TypeDesc::List(Box::new(pact_type_to_type_desc_scoped(elem, types, params)))
-        }
+        crate::pact_parser::Type::Map { key, value } => TypeDesc::Map {
+            // First-class in metadata — its own tag/hash (matching the host).
+            key: Box::new(pact_type_to_type_desc_scoped(key, types, params)),
+            value: Box::new(pact_type_to_type_desc_scoped(value, types, params)),
+        },
+        crate::pact_parser::Type::Set(elem) => TypeDesc::Set(Box::new(
+            // First-class in metadata — its own tag/hash (matching the host).
+            pact_type_to_type_desc_scoped(elem, types, params),
+        )),
         crate::pact_parser::Type::Named(name) => {
             // An in-scope generic parameter survives as a named ref.
             if params.iter().any(|p| p == name) {

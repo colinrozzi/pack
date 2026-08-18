@@ -638,8 +638,8 @@ fn recursive_enum_via_rec_roundtrip() {
 // map<K, V> -> BTreeMap field tests
 // ============================================================================
 
-// A `map<K, V>` pact field lowers to a `BTreeMap<K, V>` field, which encodes as
-// a key-sorted `list<tuple<K, V>>` (no wire change, no new Value variant).
+// A `map<K, V>` pact field lowers to a `BTreeMap<K, V>` field, which is
+// first-class on the wire: a `Value::Map` with key-sorted entries.
 #[derive(Debug, Clone, PartialEq, GraphValue)]
 struct Dict {
     name: String,
@@ -647,7 +647,7 @@ struct Dict {
 }
 
 #[test]
-fn map_field_encodes_as_list_of_pairs() {
+fn map_field_encodes_as_first_class_map() {
     let mut entries = std::collections::BTreeMap::new();
     entries.insert("b".to_string(), 2);
     entries.insert("a".to_string(), 1);
@@ -661,19 +661,13 @@ fn map_field_encodes_as_list_of_pairs() {
         Value::Record { fields, .. } => {
             let (_, entries_val) = fields.iter().find(|(n, _)| n == "entries").unwrap();
             match entries_val {
-                Value::List { items, .. } => {
-                    assert_eq!(items.len(), 2);
+                Value::Map { entries, .. } => {
+                    assert_eq!(entries.len(), 2);
                     // BTreeMap iterates sorted, so "a" precedes "b" — canonical.
-                    assert_eq!(
-                        items[0],
-                        Value::Tuple(vec![Value::String("a".to_string()), Value::S32(1)])
-                    );
-                    assert_eq!(
-                        items[1],
-                        Value::Tuple(vec![Value::String("b".to_string()), Value::S32(2)])
-                    );
+                    assert_eq!(entries[0], (Value::String("a".to_string()), Value::S32(1)));
+                    assert_eq!(entries[1], (Value::String("b".to_string()), Value::S32(2)));
                 }
-                other => panic!("expected List for map field, got {other:?}"),
+                other => panic!("expected Map for map field, got {other:?}"),
             }
         }
         other => panic!("expected Record, got {other:?}"),

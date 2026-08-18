@@ -6,7 +6,7 @@
 //! Grammar (informal):
 //! ```text
 //! value     = bool | number | char | string | tuple | list
-//!           | option | result | record | variant | flags
+//!           | option | result | record | variant | flags | map | set
 //! bool      = "true" | "false"
 //! number    = ["-"] digits ["." digits] suffix
 //! suffix    = "u8" | "u16" | "u32" | "u64" | "s8" | "s16" | "s32" | "s64" | "f32" | "f64"
@@ -21,6 +21,9 @@
 //! record    = [ident] "{" [field ("," field)* [","]] "}"
 //! field     = ident ":" value
 //! variant   = [ident] "::" ident ["(" [value ("," value)*] ")"]
+//! map       = "map<" vtype "," vtype ">[" [entry ("," entry)*] "]"
+//! entry     = value "=>" value
+//! set       = "set<" vtype ">[" [value ("," value)*] "]"
 //! ident     = [a-zA-Z_] [a-zA-Z0-9_-]*
 //! ```
 
@@ -444,6 +447,27 @@ impl<'a> Parser<'a> {
                 err: Box::new(err),
             });
         }
+        if self.starts_with("map<") {
+            self.advance(4);
+            let key = self.parse_value_type()?;
+            self.skip_whitespace();
+            self.expect_char(',')?;
+            self.skip_whitespace();
+            let value = self.parse_value_type()?;
+            self.skip_whitespace();
+            self.expect_char('>')?;
+            return Ok(ValueType::Map {
+                key: Box::new(key),
+                value: Box::new(value),
+            });
+        }
+        if self.starts_with("set<") {
+            self.advance(4);
+            let inner = self.parse_value_type()?;
+            self.skip_whitespace();
+            self.expect_char('>')?;
+            return Ok(ValueType::Set(Box::new(inner)));
+        }
         if self.starts_with("tuple<") {
             self.advance(6);
             self.skip_whitespace();
@@ -579,6 +603,67 @@ impl<'a> Parser<'a> {
                 err_type,
                 value: Err(Box::new(inner)),
             });
+        }
+        if self.starts_with("map<") {
+            self.advance(4);
+            let key_type = self.parse_value_type()?;
+            self.skip_whitespace();
+            self.expect_char(',')?;
+            self.skip_whitespace();
+            let value_type = self.parse_value_type()?;
+            self.skip_whitespace();
+            self.expect_char('>')?;
+            self.expect_char('[')?;
+            let mut entries = Vec::new();
+            loop {
+                self.skip_whitespace();
+                if self.peek() == Some(']') {
+                    self.advance(1);
+                    break;
+                }
+                let k = self.parse_value()?;
+                self.skip_whitespace();
+                // entries use `=>` between key and value
+                self.expect_char('=')?;
+                self.expect_char('>')?;
+                self.skip_whitespace();
+                let v = self.parse_value()?;
+                entries.push((k, v));
+                self.skip_whitespace();
+                match self.peek() {
+                    Some(',') => {
+                        self.advance(1);
+                    }
+                    Some(']') => {
+                        self.advance(1);
+                        break;
+                    }
+                    Some(c) => {
+                        return Err(self.error(alloc::format!("expected ',' or ']', got '{}'", c)))
+                    }
+                    None => return Err(self.error(String::from("expected ']', got EOF"))),
+                }
+            }
+            return Ok(Value::Map {
+                key_type,
+                value_type,
+                entries,
+            });
+        }
+        if self.starts_with("set<") {
+            self.advance(4);
+            let elem_type = self.parse_value_type()?;
+            self.skip_whitespace();
+            self.expect_char('>')?;
+            self.expect_char('[')?;
+            self.skip_whitespace();
+            let items = if self.peek() == Some(']') {
+                self.advance(1);
+                Vec::new()
+            } else {
+                self.parse_comma_list(']')?
+            };
+            return Ok(Value::Set { elem_type, items });
         }
         if self.starts_with("flags(0x") {
             self.advance(8);
@@ -743,6 +828,76 @@ mod tests {
     fn test_bool() {
         assert_eq!(parse_value("true").unwrap(), Value::Bool(true));
         assert_eq!(parse_value("false").unwrap(), Value::Bool(false));
+    }
+
+    fn assert_display_roundtrip(v: Value) {
+        let s = alloc::format!("{}", v);
+        let back = parse_value(&s).unwrap_or_else(|e| panic!("failed to reparse {s:?}: {e:?}"));
+        assert_eq!(v, back, "Display/FromStr round-trip mismatch for {s:?}");
+    }
+
+    #[test]
+    fn test_map_literal_roundtrip() {
+        let m = Value::Map {
+            key_type: ValueType::String,
+            value_type: ValueType::S32,
+            entries: vec![
+                (Value::String("a".to_string()), Value::S32(1)),
+                (Value::String("b".to_string()), Value::S32(2)),
+            ],
+        };
+        assert_eq!(
+            alloc::format!("{}", m),
+            "map<string, s32>[\"a\" => 1s32, \"b\" => 2s32]"
+        );
+        assert_display_roundtrip(m);
+    }
+
+    #[test]
+    fn test_empty_map_literal_roundtrip() {
+        let m = Value::Map {
+            key_type: ValueType::U64,
+            value_type: ValueType::String,
+            entries: vec![],
+        };
+        assert_eq!(alloc::format!("{}", m), "map<u64, string>[]");
+        assert_display_roundtrip(m);
+    }
+
+    #[test]
+    fn test_set_literal_roundtrip() {
+        let s = Value::Set {
+            elem_type: ValueType::U32,
+            items: vec![Value::U32(1), Value::U32(2), Value::U32(3)],
+        };
+        assert_eq!(alloc::format!("{}", s), "set<u32>[1u32, 2u32, 3u32]");
+        assert_display_roundtrip(s);
+    }
+
+    #[test]
+    fn test_empty_set_literal_roundtrip() {
+        let s = Value::Set {
+            elem_type: ValueType::String,
+            items: vec![],
+        };
+        assert_eq!(alloc::format!("{}", s), "set<string>[]");
+        assert_display_roundtrip(s);
+    }
+
+    #[test]
+    fn test_nested_map_of_set_roundtrip() {
+        let v = Value::Map {
+            key_type: ValueType::String,
+            value_type: ValueType::Set(alloc::boxed::Box::new(ValueType::U32)),
+            entries: vec![(
+                Value::String("g".to_string()),
+                Value::Set {
+                    elem_type: ValueType::U32,
+                    items: vec![Value::U32(7), Value::U32(9)],
+                },
+            )],
+        };
+        assert_display_roundtrip(v);
     }
 
     #[test]
