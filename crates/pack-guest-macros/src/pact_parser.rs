@@ -459,6 +459,96 @@ impl TypeDef {
             TypeDef::Enum { .. } | TypeDef::Flags { .. } => self.clone(),
         }
     }
+
+    /// Names of the (nominal) types this definition references — used to pull a
+    /// `use`d type's transitive same-file dependencies.
+    fn referenced_names(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        match self {
+            TypeDef::Alias { ty, .. } => ty.collect_named(&mut out),
+            TypeDef::Record { fields, .. } => {
+                for (_, t) in fields {
+                    t.collect_named(&mut out);
+                }
+            }
+            TypeDef::Variant { cases, .. } => {
+                for c in cases {
+                    if let Some(p) = &c.payload {
+                        p.collect_named(&mut out);
+                    }
+                }
+            }
+            TypeDef::Enum { .. } | TypeDef::Flags { .. } => {}
+        }
+        out
+    }
+}
+
+impl Type {
+    /// Collect the nominal type names (`Named` / generic `App`) referenced
+    /// anywhere in this type.
+    fn collect_named(&self, out: &mut Vec<String>) {
+        match self {
+            Type::List(t) | Type::Option(t) | Type::Set(t) => t.collect_named(out),
+            Type::Result { ok, err } => {
+                if let Some(t) = ok {
+                    t.collect_named(out);
+                }
+                if let Some(t) = err {
+                    t.collect_named(out);
+                }
+            }
+            Type::Tuple(items) => {
+                for t in items {
+                    t.collect_named(out);
+                }
+            }
+            Type::Map { key, value } => {
+                key.collect_named(out);
+                value.collect_named(out);
+            }
+            Type::Named(n) => out.push(n.clone()),
+            Type::App { name, args } => {
+                out.push(name.clone());
+                for a in args {
+                    a.collect_named(out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Given requested `items` and the type defs available in a `use`d file
+/// (`avail`), return the requested defs plus their transitive same-file
+/// dependencies, deduped. Errors if an explicitly-requested item isn't found.
+/// A transitive reference that isn't in `avail` is left alone (it's the
+/// importer's own type, a builtin, or a genuine error the codegen will surface).
+pub fn resolve_used_types(items: &[String], avail: &[TypeDef]) -> Result<Vec<TypeDef>, String> {
+    let mut result: Vec<TypeDef> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut queue: Vec<String> = items.to_vec();
+    while let Some(name) = queue.pop() {
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+        match avail.iter().find(|t| t.name() == name) {
+            Some(td) => {
+                for dep in td.referenced_names() {
+                    if !seen.contains(&dep) && avail.iter().any(|t| t.name() == dep) {
+                        queue.push(dep);
+                    }
+                }
+                result.push(td.clone());
+            }
+            None => {
+                if items.contains(&name) {
+                    return Err(format!("type `{}` not found in the used file", name));
+                }
+            }
+        }
+    }
+    Ok(result)
 }
 
 #[derive(Debug, Clone)]
@@ -511,6 +601,18 @@ pub struct World {
     pub types: Vec<TypeDef>,
     pub imports: Vec<WorldItem>,
     pub exports: Vec<WorldItem>,
+    /// Cross-file `use "path".{names}` imports, resolved by the macro.
+    pub uses: Vec<PactUse>,
+}
+
+/// A path-based cross-file import: `use "<relative-path>".{name, name};`.
+/// The path is resolved (by the macro) relative to the importing file's
+/// directory; the named type definitions (and their transitive same-file
+/// dependencies) are pulled into this file's scope.
+#[derive(Debug, Clone)]
+pub struct PactUse {
+    pub path: String,
+    pub items: Vec<String>,
 }
 
 /// Parse error
@@ -543,6 +645,8 @@ impl std::fmt::Display for ParseError {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Token {
     Ident(String),
+    /// A double-quoted string literal (used for `use "path".{…}` file paths).
+    Str(String),
     Symbol(char),
     Eof,
 }
@@ -606,6 +710,25 @@ impl<'a> Lexer<'a> {
                     }
                 }
                 tokens.push(Token::Ident(ident));
+                continue;
+            }
+
+            // Double-quoted string literal (e.g. a `use` file path).
+            if ch == '"' {
+                self.chars.next(); // opening quote
+                let mut s = String::new();
+                let mut closed = false;
+                for c in self.chars.by_ref() {
+                    if c == '"' {
+                        closed = true;
+                        break;
+                    }
+                    s.push(c);
+                }
+                if !closed {
+                    return Err(ParseError::new("unterminated string literal"));
+                }
+                tokens.push(Token::Str(s));
                 continue;
             }
 
@@ -736,11 +859,16 @@ pub fn parse_world(src: &str) -> Result<World, ParseError> {
     let tokens = lexer.tokenize()?;
     let mut parser = Parser::new(tokens);
 
-    // Parse optional type definitions before the world
+    // Parse optional `use` imports and type definitions before the world.
     let mut types = Vec::new();
+    let mut uses = Vec::new();
     while !parser.is_eof() {
         if matches!(parser.peek(), Token::Ident(s) if s == "world") {
             break;
+        }
+        if matches!(parser.peek(), Token::Ident(s) if s == "use") {
+            uses.push(parse_use(&mut parser)?);
+            continue;
         }
         if let Some(typedef) = try_parse_typedef(&mut parser)? {
             types.push(typedef);
@@ -791,7 +919,38 @@ pub fn parse_world(src: &str) -> Result<World, ParseError> {
         types,
         imports,
         exports,
+        uses,
     })
+}
+
+/// Parse a path-based cross-file import: `use "<path>".{name, name};`.
+/// Assumes the next token is the `use` ident.
+fn parse_use(parser: &mut Parser) -> Result<PactUse, ParseError> {
+    let _ = parser.accept_ident("use");
+    let path = match parser.next() {
+        Token::Str(s) => s,
+        other => {
+            return Err(ParseError::new(format!(
+                "expected a quoted path after `use`, got {:?}",
+                other
+            )))
+        }
+    };
+    parser.expect_symbol('.')?;
+    parser.expect_symbol('{')?;
+    let mut items = Vec::new();
+    loop {
+        if parser.accept_symbol('}') {
+            break;
+        }
+        items.push(parser.expect_ident()?);
+        if parser.accept_symbol('}') {
+            break;
+        }
+        parser.expect_symbol(',')?;
+    }
+    parser.accept_symbol(';');
+    Ok(PactUse { path, items })
 }
 
 /// Parse Pact content and return a complete registry
@@ -980,6 +1139,7 @@ fn parse_world_body(parser: &mut Parser) -> Result<World, ParseError> {
         types,
         imports,
         exports,
+        uses: Vec::new(),
     })
 }
 
@@ -1385,6 +1545,45 @@ mod tests {
         assert_eq!(world.name, "my-component");
         assert_eq!(world.imports.len(), 1);
         assert_eq!(world.exports.len(), 1);
+    }
+
+    #[test]
+    fn parse_use_captures_path_and_items() {
+        let src = r#"
+            use "../shared.pact".{msg, chat-state};
+            record snapshot { latest: msg }
+            world consumer { export snap: func(s: snapshot) -> snapshot }
+        "#;
+        let world = parse_world(src).expect("parse");
+        assert_eq!(world.uses.len(), 1);
+        assert_eq!(world.uses[0].path, "../shared.pact");
+        assert_eq!(world.uses[0].items, vec!["msg", "chat-state"]);
+    }
+
+    #[test]
+    fn resolve_used_types_pulls_transitive_deps() {
+        // Only `entry` is requested, but it references `msg` and `kind`, which
+        // must be pulled transitively.
+        let shared = r#"
+            record msg { room: string }
+            variant kind { text, join }
+            record entry { m: msg, k: kind }
+            record unrelated { x: u64 }
+        "#;
+        let reg = parse_pact(shared).expect("parse shared");
+        let pulled = resolve_used_types(&["entry".to_string()], &reg.types).expect("resolve");
+        let mut names: Vec<&str> = pulled.iter().map(|t| t.name()).collect();
+        names.sort();
+        assert_eq!(names, vec!["entry", "kind", "msg"]);
+        // `unrelated` is NOT pulled.
+        assert!(!pulled.iter().any(|t| t.name() == "unrelated"));
+    }
+
+    #[test]
+    fn resolve_used_types_errors_on_missing_item() {
+        let reg = parse_pact("record msg { x: u64 }").expect("parse");
+        let err = resolve_used_types(&["nope".to_string()], &reg.types).unwrap_err();
+        assert!(err.contains("nope"));
     }
 
     #[test]
