@@ -64,11 +64,23 @@ packr_guest::pact! {
         groups: map<string, set<string>>,
     }
 
+    // Annotations: `@forward-compatible` makes the generated record tolerate
+    // schema evolution (missing field defaults) — for evolving persisted state —
+    // and `@default` adds `Default` to the derive. Recovers the exact shape of a
+    // hand-derived `#[graph(forward_compatible)]` + `#[derive(Default)]` type.
+    @forward-compatible
+    @default
+    record persisted {
+        seen: set<string>,
+        count: u64,
+    }
+
     world pact-types {
         export identity: func(p: point) -> point
         export eval: func(e: sexpr) -> sexpr
         export cons-id: func(c: cons) -> cons
         export dict-id: func(d: dict) -> dict
+        export persist-id: func(p: persisted) -> persisted
     }
 }
 
@@ -96,6 +108,17 @@ fn eval(e: Sexpr) -> Sexpr {
 #[export]
 fn cons_id(c: Cons) -> Cons {
     c
+}
+
+/// Forces the `@forward-compatible`/`@default` annotated record to compile.
+/// The `Persisted::default()` call only compiles if `@default` actually added
+/// `Default` to the derive.
+#[export]
+fn persist_id(p: Persisted) -> Persisted {
+    let mut base = Persisted::default();
+    base.count = p.count + 1;
+    base.seen = p.seen;
+    base
 }
 
 /// Forces the `map<string, s32>` -> `BTreeMap<String, i32>` field marshalling to

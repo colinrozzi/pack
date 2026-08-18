@@ -603,6 +603,20 @@ pub struct World {
     pub exports: Vec<WorldItem>,
     /// Cross-file `use "path".{names}` imports, resolved by the macro.
     pub uses: Vec<PactUse>,
+    /// Per-type codegen annotations (`@forward-compatible`, `@default`), keyed
+    /// by type name.
+    pub type_attrs: HashMap<String, TypeAttrs>,
+}
+
+/// Codegen annotations attached to a type definition via `@`-prefixed lines,
+/// e.g. `@forward-compatible` / `@default` before a `record`/`variant`.
+#[derive(Debug, Clone, Default)]
+pub struct TypeAttrs {
+    /// Emit `#[graph(..., forward_compatible)]` — tolerant decode (missing field
+    /// defaults, extra ignored) for evolving persisted records.
+    pub forward_compatible: bool,
+    /// Add `Default` to the generated `#[derive(...)]`.
+    pub derive_default: bool,
 }
 
 /// A path-based cross-file import: `use "<relative-path>".{name, name};`.
@@ -862,6 +876,7 @@ pub fn parse_world(src: &str) -> Result<World, ParseError> {
     // Parse optional `use` imports and type definitions before the world.
     let mut types = Vec::new();
     let mut uses = Vec::new();
+    let mut type_attrs: HashMap<String, TypeAttrs> = HashMap::new();
     while !parser.is_eof() {
         if matches!(parser.peek(), Token::Ident(s) if s == "world") {
             break;
@@ -870,9 +885,18 @@ pub fn parse_world(src: &str) -> Result<World, ParseError> {
             uses.push(parse_use(&mut parser)?);
             continue;
         }
+        let attrs = parse_type_annotations(&mut parser)?;
         if let Some(typedef) = try_parse_typedef(&mut parser)? {
+            if !attrs.is_empty() {
+                type_attrs.insert(typedef.name().to_string(), attrs);
+            }
             types.push(typedef);
         } else {
+            if !attrs.is_empty() {
+                return Err(ParseError::new(
+                    "`@` annotation must be followed by a type definition",
+                ));
+            }
             break;
         }
     }
@@ -893,10 +917,19 @@ pub fn parse_world(src: &str) -> Result<World, ParseError> {
             continue;
         }
 
-        // Check for type definitions inside world
+        // Check for type definitions inside world (optionally annotated).
+        let attrs = parse_type_annotations(&mut parser)?;
         if let Some(typedef) = try_parse_typedef(&mut parser)? {
+            if !attrs.is_empty() {
+                type_attrs.insert(typedef.name().to_string(), attrs);
+            }
             types.push(typedef);
             continue;
+        }
+        if !attrs.is_empty() {
+            return Err(ParseError::new(
+                "`@` annotation must be followed by a type definition",
+            ));
         }
 
         let keyword = parser.expect_ident()?;
@@ -920,6 +953,7 @@ pub fn parse_world(src: &str) -> Result<World, ParseError> {
         imports,
         exports,
         uses,
+        type_attrs,
     })
 }
 
@@ -951,6 +985,33 @@ fn parse_use(parser: &mut Parser) -> Result<PactUse, ParseError> {
     }
     parser.accept_symbol(';');
     Ok(PactUse { path, items })
+}
+
+/// Consume leading `@ident` annotation lines before a type definition, building
+/// a `TypeAttrs`. Errors on an unknown annotation name.
+fn parse_type_annotations(parser: &mut Parser) -> Result<TypeAttrs, ParseError> {
+    let mut attrs = TypeAttrs::default();
+    while matches!(parser.peek(), Token::Symbol('@')) {
+        parser.next(); // consume '@'
+        let name = parser.expect_ident()?;
+        match name.as_str() {
+            "forward-compatible" | "forward_compatible" => attrs.forward_compatible = true,
+            "default" => attrs.derive_default = true,
+            other => {
+                return Err(ParseError::new(format!(
+                    "unknown type annotation `@{}` (expected `forward-compatible` or `default`)",
+                    other
+                )))
+            }
+        }
+    }
+    Ok(attrs)
+}
+
+impl TypeAttrs {
+    fn is_empty(&self) -> bool {
+        !self.forward_compatible && !self.derive_default
+    }
 }
 
 /// Parse Pact content and return a complete registry
@@ -1140,6 +1201,7 @@ fn parse_world_body(parser: &mut Parser) -> Result<World, ParseError> {
         imports,
         exports,
         uses: Vec::new(),
+        type_attrs: HashMap::new(),
     })
 }
 
@@ -1545,6 +1607,33 @@ mod tests {
         assert_eq!(world.name, "my-component");
         assert_eq!(world.imports.len(), 1);
         assert_eq!(world.exports.len(), 1);
+    }
+
+    #[test]
+    fn parse_type_annotations_captured_on_record() {
+        let src = r#"
+            @forward-compatible
+            @default
+            record state { count: u64 }
+            world w { export f: func(s: state) -> state }
+        "#;
+        let world = parse_world(src).expect("parse");
+        let attrs = world.type_attrs.get("state").expect("state has attrs");
+        assert!(attrs.forward_compatible);
+        assert!(attrs.derive_default);
+        // A record with no annotation isn't in the map.
+        assert!(world.type_attrs.get("other").is_none());
+    }
+
+    #[test]
+    fn parse_unknown_annotation_errors() {
+        let src = r#"
+            @bogus
+            record state { count: u64 }
+            world w {}
+        "#;
+        let err = parse_world(src).unwrap_err();
+        assert!(err.message.contains("bogus"), "{}", err.message);
     }
 
     #[test]
