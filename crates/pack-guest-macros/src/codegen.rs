@@ -7,7 +7,7 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
 use crate::pact_parser::{
-    Function, Interface, PactRegistry, Type, TypeDef, VariantCase, World, WorldItem,
+    Function, Interface, PactRegistry, Type, TypeAttrs, TypeDef, VariantCase, World, WorldItem,
 };
 
 /// Convert a Pact identifier (kebab-case) to Rust identifier (PascalCase for types, snake_case for functions)
@@ -240,6 +240,10 @@ fn generate_to_value(ty: &Type, expr: TokenStream, self_type_name: Option<&str>)
 
 /// Generate a complete Rust type definition with From/TryFrom impls
 pub fn generate_type_def(typedef: &TypeDef) -> TokenStream {
+    generate_type_def_with_attrs(typedef, None)
+}
+
+fn generate_type_def_with_attrs(typedef: &TypeDef, attrs: Option<&TypeAttrs>) -> TokenStream {
     match typedef {
         TypeDef::Alias {
             name,
@@ -250,13 +254,13 @@ pub fn generate_type_def(typedef: &TypeDef) -> TokenStream {
             name,
             type_params,
             fields,
-        } => generate_record(name, type_params, fields),
+        } => generate_record(name, type_params, fields, attrs),
         TypeDef::Variant {
             name,
             type_params,
             cases,
-        } => generate_variant(name, type_params, cases),
-        TypeDef::Enum { name, cases } => generate_enum(name, cases),
+        } => generate_variant(name, type_params, cases, attrs),
+        TypeDef::Enum { name, cases } => generate_enum(name, cases, attrs),
         TypeDef::Flags { name, flags } => generate_flags(name, flags),
     }
 }
@@ -271,7 +275,12 @@ fn generate_alias(name: &str, type_params: &[String], ty: &Type) -> TokenStream 
     }
 }
 
-fn generate_record(name: &str, type_params: &[String], fields: &[(String, Type)]) -> TokenStream {
+fn generate_record(
+    name: &str,
+    type_params: &[String],
+    fields: &[(String, Type)],
+    attrs: Option<&TypeAttrs>,
+) -> TokenStream {
     let rust_name = to_rust_type_name(name);
     // Only the generic parameter list is needed on the type; the GraphValue
     // derive supplies the trait bounds on its own generated impls.
@@ -290,16 +299,21 @@ fn generate_record(name: &str, type_params: &[String], fields: &[(String, Type)]
     // rather than hand-written From/TryFrom impls — the derive builds the
     // correct struct-form Value and decodes via FromValue (so option/recursive
     // fields work), and it stays in lockstep with the tested derive.
+    let derive_graph = derive_and_graph(attrs, true);
     quote! {
-        #[derive(Debug, Clone, PartialEq, packr_guest::GraphValue)]
-        #[graph(crate = "packr_guest::composite_abi")]
+        #derive_graph
         pub struct #rust_name #generics {
             #(#field_defs),*
         }
     }
 }
 
-fn generate_variant(name: &str, type_params: &[String], cases: &[VariantCase]) -> TokenStream {
+fn generate_variant(
+    name: &str,
+    type_params: &[String],
+    cases: &[VariantCase],
+    attrs: Option<&TypeAttrs>,
+) -> TokenStream {
     let rust_name = to_rust_type_name(name);
     let (generics, _where_clause) = generic_parts(type_params);
 
@@ -319,16 +333,16 @@ fn generate_variant(name: &str, type_params: &[String], cases: &[VariantCase]) -
 
     // As with records, marshal via the GraphValue derive (case order = tag
     // order) instead of hand-written impls.
+    let derive_graph = derive_and_graph(attrs, false);
     quote! {
-        #[derive(Debug, Clone, PartialEq, packr_guest::GraphValue)]
-        #[graph(crate = "packr_guest::composite_abi")]
+        #derive_graph
         pub enum #rust_name #generics {
             #(#case_defs),*
         }
     }
 }
 
-fn generate_enum(name: &str, cases: &[String]) -> TokenStream {
+fn generate_enum(name: &str, cases: &[String], attrs: Option<&TypeAttrs>) -> TokenStream {
     let rust_name = to_rust_type_name(name);
 
     let case_defs: Vec<_> = cases
@@ -336,10 +350,17 @@ fn generate_enum(name: &str, cases: &[String]) -> TokenStream {
         .map(|case| to_rust_variant_name(case))
         .collect();
 
-    // A C-like enum marshals via the derive too (matching src/codegen.rs).
+    // A C-like enum marshals via the derive too (matching src/codegen.rs). It
+    // keeps its Copy/Eq/Hash derives; only `@forward-compatible` applies here
+    // (`@default` needs a `#[default]` variant, which pact enums don't express).
+    let fwd_tok = if attrs.is_some_and(|a| a.forward_compatible) {
+        quote! { , forward_compatible }
+    } else {
+        quote! {}
+    };
     quote! {
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, packr_guest::GraphValue)]
-        #[graph(crate = "packr_guest::composite_abi")]
+        #[graph(crate = "packr_guest::composite_abi" #fwd_tok)]
         pub enum #rust_name {
             #(#case_defs),*
         }
@@ -410,10 +431,37 @@ fn generate_flags(name: &str, flags: &[String]) -> TokenStream {
 
 /// Generate all types from a world definition
 pub fn generate_world_types(world: &World) -> TokenStream {
-    let type_defs: Vec<_> = world.types.iter().map(generate_type_def).collect();
+    let type_defs: Vec<_> = world
+        .types
+        .iter()
+        .map(|td| generate_type_def_with_attrs(td, world.type_attrs.get(td.name())))
+        .collect();
 
     quote! {
         #(#type_defs)*
+    }
+}
+
+/// Build the `#[derive(...)]` + `#[graph(...)]` lines for a generated type,
+/// honouring `@forward-compatible` / `@default` annotations. `allow_default`
+/// is false for enums/variants (Rust's `derive(Default)` needs a `#[default]`
+/// variant, which pact enums don't express).
+fn derive_and_graph(attrs: Option<&TypeAttrs>, allow_default: bool) -> TokenStream {
+    let forward_compatible = attrs.is_some_and(|a| a.forward_compatible);
+    let derive_default = allow_default && attrs.is_some_and(|a| a.derive_default);
+    let default_tok = if derive_default {
+        quote! { , ::core::default::Default }
+    } else {
+        quote! {}
+    };
+    let fwd_tok = if forward_compatible {
+        quote! { , forward_compatible }
+    } else {
+        quote! {}
+    };
+    quote! {
+        #[derive(Debug, Clone, PartialEq #default_tok, packr_guest::GraphValue)]
+        #[graph(crate = "packr_guest::composite_abi" #fwd_tok)]
     }
 }
 
@@ -904,6 +952,30 @@ mod generic_tests {
             out.to_string(),
             "Pair < u32 , :: alloc :: string :: String >"
         );
+    }
+
+    #[test]
+    fn record_annotations_emit_forward_compatible_and_default() {
+        use crate::pact_parser::TypeAttrs;
+        let td = TypeDef::Record {
+            name: "state".into(),
+            type_params: vec![],
+            fields: vec![("count".into(), Type::U64)],
+        };
+        // No annotations: neither attr present.
+        let plain = generate_type_def(&td).to_string();
+        assert!(!plain.contains("forward_compatible"), "{plain}");
+        assert!(!plain.contains("Default"), "{plain}");
+
+        // Both annotations: forward_compatible on the graph attr + Default derived.
+        let attrs = TypeAttrs {
+            forward_compatible: true,
+            derive_default: true,
+        };
+        let annotated = generate_type_def_with_attrs(&td, Some(&attrs)).to_string();
+        assert!(annotated.contains("forward_compatible"), "{annotated}");
+        assert!(annotated.contains("Default"), "{annotated}");
+        assert_valid_rust(&generate_type_def_with_attrs(&td, Some(&attrs)));
     }
 
     #[test]

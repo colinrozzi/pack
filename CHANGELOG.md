@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.21.0 (2026-08-17)
+
+### Added
+
+- **`@forward-compatible` / `@default` record annotations.** A pact `record`
+  (or `variant`) can now carry codegen annotations so a generated type recovers
+  the shape you'd hand-write:
+
+  ```pact
+  @forward-compatible
+  @default
+  record chat-state {
+      members: set<tuple<list<u8>, list<u8>>>,
+      log: list<message>,
+  }
+  ```
+
+  - `@forward-compatible` → the generated type gets `#[graph(...,
+    forward_compatible)]`, so decoding **old persisted bytes still succeeds after
+    a field is added** (missing field defaults, extra ignored). Essential for a
+    persisted, evolving state record moved into a pact.
+  - `@default` → adds `Default` to the generated `#[derive(...)]` (records only;
+    a C-like enum can't derive `Default` without a `#[default]` variant).
+
+  This closes the gap where moving a hand-derived `#[graph(forward_compatible)]`
+  type into a pact record silently dropped forward-compatibility. No wire change
+  — `forward_compatible` is decode-leniency only; encoded bytes are identical.
+
 ## v0.20.0 (2026-08-17)
 
 ### Added

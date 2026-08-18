@@ -1081,6 +1081,21 @@ pub fn import(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// their transitive same-file dependencies — are pulled in and generated
 /// locally. Every `use`d file is registered as a build dependency, so editing it
 /// triggers a rebuild.
+///
+/// # Record annotations
+///
+/// A `record`/`variant` can carry `@`-prefixed codegen annotations:
+///
+/// ```pact
+/// @forward-compatible
+/// @default
+/// record chat-state { members: set<tuple<list<u8>, list<u8>>>, log: list<message> }
+/// ```
+///
+/// - `@forward-compatible` emits `#[graph(…, forward_compatible)]` — tolerant
+///   decode (a missing field defaults, an extra one is ignored), so old
+///   persisted bytes still decode after a field is added.
+/// - `@default` adds `Default` to the generated derive (records only).
 #[proc_macro]
 pub fn pact(input: TokenStream) -> TokenStream {
     expand_pact(input)
