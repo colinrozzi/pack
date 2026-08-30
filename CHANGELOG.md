@@ -1,5 +1,34 @@
 # Changelog
 
+## v0.23.0 (2026-08-30)
+
+### Added
+
+- **`packr_abi::Pattern` — a structural value matcher.** A `Pattern` is a
+  *partial value tree*: the same shape as the `Value` it matches, but with holes.
+  `Pattern::matches(&Value) -> bool` is a co-recursive walk of the pattern tree
+  against the value tree — the same tree model interface matching uses on *types*,
+  generalized to carry data (`Equals`) and allow holes (`Any`, `open`). (Interface
+  matching is the degenerate all-pinned case; this is the general one.)
+
+  Semantics are **exact by default, opt-in partial** via a per-container `open`
+  flag:
+  - **Record** — exact field set; `open` = listed fields present & match, extras
+    ignored.
+  - **Map** — exact key set; `open` = listed keys present & their values match,
+    extras ignored (key-addressed — built on first-class `Value::Map`).
+  - **Set** — patterns ↔ elements one-to-one (bijection); `open` = containment.
+  - **List** — same length, positional; `open` = the patterns match a prefix.
+  - **Tuple / Variant payload** — always exact (arity is pinned by the type).
+
+  `Any` matches any subtree; `open` is strictly about *cardinality*, so the two
+  stay orthogonal. It is a **pure structural matcher** — no `and`/`or`/`not`,
+  comparisons, regex, or capture; a union is a `Vec<Pattern>` at the call site
+  (match-any). `From<Pattern> for Value` + `TryFrom<Value>` let a pattern ride the
+  graph ABI, so a guest can build one and send it as a subscription filter.
+  Ergonomic constructors (`Pattern::record_open([...])`, `Pattern::set_open([...])`,
+  …). No wire change — additive.
+
 ## v0.22.0 (2026-08-29)
 
 ### Changed (BREAKING — wire format v3)
