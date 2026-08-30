@@ -92,19 +92,6 @@ fn validate_type(
     types: &HashMap<String, &TypeDef>,
     assigned: &mut HashMap<u32, String>,
 ) -> Result<(), ValidationError> {
-    // `map<K, V>` / `set<T>` are sugar for `list<...>`; desugar before validating
-    // so the memo key and node checks only ever see the erased list form.
-    let desugared;
-    let ty = if let Type::Map { .. } = ty {
-        desugared = ty.desugar_map();
-        &desugared
-    } else if let Type::Set(..) = ty {
-        desugared = ty.desugar_set();
-        &desugared
-    } else {
-        ty
-    };
-
     let type_key = type_key(ty, self_name);
     if let Some(existing) = assigned.get(&index) {
         if existing != &type_key {
@@ -295,9 +282,43 @@ fn validate_type(
             // Value type is a dynamic escape hatch - accept any node kind
             Ok(())
         }
-        // Desugared to `list<tuple<K, V>>` by the guard at the top of this fn.
-        Type::Map { .. } => unreachable!("map desugared before match"),
-        Type::Set(..) => unreachable!("set desugared before match"),
+        Type::Map { key, value } => {
+            expect_kind(index, node.kind, NodeKind::Map)?;
+            let mut cursor = PayloadCursor::new(&node.payload);
+            // Format: [key_type:type_tag*, value_type:type_tag*, count:u32,
+            //          (key_child:u32, value_child:u32)*]
+            cursor.skip_value_type()?; // key_type
+            cursor.skip_value_type()?; // value_type
+            let count = cursor.read_u32()? as usize;
+            let mut child_pairs = Vec::with_capacity(count);
+            for _ in 0..count {
+                let kc = cursor.read_u32()?;
+                let vc = cursor.read_u32()?;
+                child_pairs.push((kc, vc));
+            }
+            cursor.finish(index)?;
+            for (kc, vc) in child_pairs {
+                validate_type(buffer, kc, key, self_name, types, assigned)?;
+                validate_type(buffer, vc, value, self_name, types, assigned)?;
+            }
+            Ok(())
+        }
+        Type::Set(elem) => {
+            expect_kind(index, node.kind, NodeKind::Set)?;
+            let mut cursor = PayloadCursor::new(&node.payload);
+            // Format: [elem_type:type_tag*, count:u32, child_indices:u32*]
+            cursor.skip_value_type()?;
+            let count = cursor.read_u32()? as usize;
+            let mut child_indices = Vec::with_capacity(count);
+            for _ in 0..count {
+                child_indices.push(cursor.read_u32()?);
+            }
+            cursor.finish(index)?;
+            for child in child_indices {
+                validate_type(buffer, child, elem, self_name, types, assigned)?;
+            }
+            Ok(())
+        }
     }
 }
 
@@ -354,18 +375,6 @@ fn validate_value(
     self_name: Option<&str>,
     types: &HashMap<String, &TypeDef>,
 ) -> Result<(), ValidationError> {
-    // `map<K, V>` / `set<T>` erase to `list<...>`; validate against that shape.
-    let desugared;
-    let ty = if let Type::Map { .. } = ty {
-        desugared = ty.desugar_map();
-        &desugared
-    } else if let Type::Set(..) = ty {
-        desugared = ty.desugar_set();
-        &desugared
-    } else {
-        ty
-    };
-
     match (value, ty) {
         (_, Type::Unit) => {
             // Unit type has no runtime value representation
@@ -407,6 +416,19 @@ fn validate_value(
             }
             for (item, inner) in items.iter().zip(inner_types) {
                 validate_value(item, inner, self_name, types)?;
+            }
+            Ok(())
+        }
+        (Value::Map { entries, .. }, Type::Map { key, value }) => {
+            for (k, v) in entries {
+                validate_value(k, key, self_name, types)?;
+                validate_value(v, value, self_name, types)?;
+            }
+            Ok(())
+        }
+        (Value::Set { items, .. }, Type::Set(elem)) => {
+            for item in items {
+                validate_value(item, elem, self_name, types)?;
             }
             Ok(())
         }

@@ -1,7 +1,7 @@
-//! `map<K, V>` is front-end sugar: it lowers to `BTreeMap<K, V>` in Rust and
-//! erases to `list<tuple<K, V>>` on the wire and in metadata. These tests pin
-//! that erasure — a map must hash, encode, and validate identically to the
-//! equivalent list of key/value pairs.
+//! `map<K, V>` is FIRST-CLASS: it lowers to `BTreeMap<K, V>` in Rust and
+//! marshals as a `Value::Map` (its own wire node kind + hash), distinct from
+//! `list<tuple<K, V>>`. These tests pin that first-class identity — a map is no
+//! longer erased to a list of key/value pairs.
 
 use std::collections::BTreeMap;
 
@@ -14,19 +14,19 @@ fn string_u32_map() -> Type {
     Type::map(Type::String, Type::U32)
 }
 
-fn desugared() -> Type {
+fn list_of_pairs() -> Type {
     Type::list(Type::Tuple(vec![Type::String, Type::U32]))
 }
 
 #[test]
-fn map_hashes_identically_to_list_of_pairs() {
-    // Type-parameter erasure: `map<string, u32>` and `list<tuple<string, u32>>`
-    // are metadata-identical, so host and guest agree on the link hash.
-    assert_eq!(hash_type(&string_u32_map()), hash_type(&desugared()));
+fn map_hashes_distinctly_from_list_of_pairs() {
+    // First-class: `map<string, u32>` has its own type hash, distinct from the
+    // erased `list<tuple<string, u32>>` form.
+    assert_ne!(hash_type(&string_u32_map()), hash_type(&list_of_pairs()));
 }
 
 #[test]
-fn map_parsed_from_pact_hashes_like_list_of_pairs() {
+fn map_parsed_from_pact_hashes_as_first_class_map() {
     let src = r#"
         interface api {
             exports {
@@ -44,7 +44,10 @@ fn map_parsed_from_pact_hashes_like_list_of_pairs() {
         })
         .expect("lookup func");
     let param_ty = &func.params[0].ty;
-    assert_eq!(hash_type(param_ty), hash_type(&desugared()));
+    // The parsed type hashes as a first-class map (matching a hand-built
+    // `Type::map`), and NOT as the erased list-of-pairs.
+    assert_eq!(hash_type(param_ty), hash_type(&string_u32_map()));
+    assert_ne!(hash_type(param_ty), hash_type(&list_of_pairs()));
 }
 
 #[test]
@@ -66,13 +69,16 @@ fn map_value_roundtrips_through_schema() {
 }
 
 #[test]
-fn map_encoding_is_byte_identical_to_list_of_pairs() {
+fn map_encodes_as_first_class_map_not_list() {
     let mut m = BTreeMap::new();
     m.insert("k1".to_string(), 10u32);
     m.insert("k2".to_string(), 20u32);
 
-    // A map encodes exactly as the key-sorted list of `tuple<K, V>` pairs.
+    // A map is a `Value::Map` and encodes DISTINCTLY from the equivalent
+    // key-sorted list of `tuple<K, V>` pairs (the old erased form).
     let map_value: Value = m.into();
+    assert!(matches!(map_value, Value::Map { .. }));
+
     let list_value = Value::List {
         elem_type: packr::abi::ValueType::Tuple(vec![
             packr::abi::ValueType::String,
@@ -84,7 +90,7 @@ fn map_encoding_is_byte_identical_to_list_of_pairs() {
         ],
     };
 
-    assert_eq!(
+    assert_ne!(
         encode(&map_value).expect("encode map"),
         encode(&list_value).expect("encode list"),
     );

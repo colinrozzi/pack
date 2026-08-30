@@ -313,15 +313,16 @@ pub enum Type {
     },
     Tuple(Vec<Type>),
 
-    // `map<K, V>` — front-end sugar that lowers to `BTreeMap<K, V>` in Rust and
-    // erases to `list<tuple<K, V>>` on the wire / in metadata.
+    // `map<K, V>` — lowers to `BTreeMap<K, V>` in Rust and is first-class on the
+    // wire / in metadata (`Value::Map`, its own node kind + hash; canonical
+    // key-sorted).
     Map {
         key: Box<Type>,
         value: Box<Type>,
     },
 
-    // `set<T>` — front-end sugar that lowers to `BTreeSet<T>` in Rust and erases
-    // to a (key-sorted) `list<T>` on the wire / in metadata.
+    // `set<T>` — lowers to `BTreeSet<T>` in Rust and is first-class on the wire /
+    // in metadata (`Value::Set`, its own node kind + hash; canonical key-sorted).
     Set(Box<Type>),
 
     // Named reference (to another type). Also used for a reference to an

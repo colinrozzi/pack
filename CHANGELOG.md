@@ -1,5 +1,48 @@
 # Changelog
 
+## v0.22.0 (2026-08-29)
+
+### Changed (BREAKING — wire format v3)
+
+- **`map<K, V>` and `set<T>` are now FIRST-CLASS in the ABI.** They gain real
+  `Value::Map` / `Value::Set` variants, their own wire node kinds
+  (`0x16` / `0x17`), their own `ValueType::Map` / `ValueType::Set`, their own
+  type-metadata tags, and their own structural hashes — reversing the earlier
+  **erasure** (0.15 / 0.19), where `map` marshalled as a key-sorted
+  `list<tuple<K, V>>` and `set` as a `list<T>`.
+
+  This is a **deliberate, clean breaking wire change** — the CGRF format version
+  is bumped **2 → 3** and there is **no dual-read / tolerant decode**. Old-format
+  buffers are rejected with `Unsupported version`; one coordinated rework, clean
+  forever after. **The whole fleet must move to `packr-guest` 0.22.0 in lockstep**
+  (host `packr-abi` and every guest `packr-guest` must agree on the format).
+
+  What changed concretely:
+  - `Value::Map { key_type, value_type, entries }` and
+    `Value::Set { elem_type, items }`. Entries/items are **canonical by
+    construction** — they arrive key-sorted from the `From<BTreeMap>` /
+    `From<BTreeSet>` path (both iterate sorted); the encoder preserves that order
+    and never re-sorts (`Value` can't be `Ord` — floats have no total order), so
+    identical logical maps/sets still encode to identical bytes (determinism /
+    convergence preserved, now honest at the `Value` layer).
+  - A `map<K, V>` now **hashes distinctly** from `list<tuple<K, V>>`, and a
+    `set<T>` distinctly from `list<T>`. Interface link-hashes that involve a
+    map/set change accordingly.
+  - Value-literal syntax (`Display` ↔ `FromStr`, lossless):
+    `map<string, u32>["a" => 1u32, "b" => 2u32]` and `set<u32>[1u32, 2u32]`
+    (empty forms carry the type: `map<u64, string>[]`, `set<string>[]`).
+  - All the internal `map`/`set` → `list` desugaring paths (hashing, metadata
+    encode/decode, validation, guest metadata) are **deleted**; each is handled
+    as itself throughout.
+
+  **Migration note (what re-encodes automatically vs needs a reset):** a map/set
+  that lives only in **re-derived folded state** (recomputed from an event log),
+  in a **same-build-version-linked** boundary, or **in-memory** re-encodes for
+  free on the next fold/rebuild. A map/set **persisted in the old format and not
+  re-derived**, or one **in an event payload in a full-retention log**, needs a
+  one-time reset/migration at cutover. (Fleet survey at release time: zero such
+  cases.)
+
 ## v0.21.0 (2026-08-17)
 
 ### Added

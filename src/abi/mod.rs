@@ -32,7 +32,7 @@ pub enum AbiError {
 }
 
 const MAGIC: u32 = u32::from_le_bytes(*b"CGRF");
-const VERSION: u16 = 2;
+const VERSION: u16 = 3;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Limits {
@@ -76,6 +76,8 @@ pub enum NodeKind {
     Flags = 0x13,
     Result = 0x14,
     Array = 0x15,
+    Map = 0x16,
+    Set = 0x17,
 }
 
 #[derive(Debug, Clone)]
@@ -355,7 +357,9 @@ impl GraphBuffer {
                 | NodeKind::Option
                 | NodeKind::Record
                 | NodeKind::Variant
-                | NodeKind::Result => {
+                | NodeKind::Result
+                | NodeKind::Map
+                | NodeKind::Set => {
                     // These have variable-length type tags or string headers
                     // Skip detailed validation, just ensure payload is not too large (already checked)
                 }
@@ -369,6 +373,8 @@ impl GraphBuffer {
                     | NodeKind::Record
                     | NodeKind::Variant
                     | NodeKind::Result
+                    | NodeKind::Map
+                    | NodeKind::Set
             ) && !cursor.is_eof()
             {
                 return Err(AbiError::InvalidEncoding(format!(
@@ -453,6 +459,8 @@ fn node_kind_from_u8(value: u8) -> Result<NodeKind, AbiError> {
         0x13 => Ok(NodeKind::Flags),
         0x14 => Ok(NodeKind::Result),
         0x15 => Ok(NodeKind::Array),
+        0x16 => Ok(NodeKind::Map),
+        0x17 => Ok(NodeKind::Set),
         _ => Err(AbiError::InvalidTag(value)),
     }
 }
@@ -478,6 +486,8 @@ const TYPE_S16: u8 = 0x11;
 const TYPE_CHAR: u8 = 0x12;
 const TYPE_FLAGS: u8 = 0x13;
 const TYPE_RESULT: u8 = 0x14;
+const TYPE_MAP: u8 = 0x16;
+const TYPE_SET: u8 = 0x17;
 
 /// Returns the byte width of a fixed-size primitive ValueType, or None for compound types.
 fn fixed_width(ty: &ValueType) -> Option<usize> {
@@ -603,6 +613,15 @@ fn encode_value_type(ty: &ValueType, out: &mut Vec<u8>) {
                 encode_value_type(elem, out);
             }
         }
+        ValueType::Map { key, value } => {
+            out.push(TYPE_MAP);
+            encode_value_type(key, out);
+            encode_value_type(value, out);
+        }
+        ValueType::Set(elem) => {
+            out.push(TYPE_SET);
+            encode_value_type(elem, out);
+        }
     }
 }
 
@@ -665,6 +684,18 @@ fn decode_value_type(cursor: &mut Cursor<'_>) -> Result<ValueType, AbiError> {
                 elems.push(decode_value_type(cursor)?);
             }
             Ok(ValueType::Tuple(elems))
+        }
+        TYPE_MAP => {
+            let key = decode_value_type(cursor)?;
+            let value = decode_value_type(cursor)?;
+            Ok(ValueType::Map {
+                key: Box::new(key),
+                value: Box::new(value),
+            })
+        }
+        TYPE_SET => {
+            let elem = decode_value_type(cursor)?;
+            Ok(ValueType::Set(Box::new(elem)))
         }
         _ => Err(AbiError::InvalidTag(tag)),
     }
@@ -791,6 +822,52 @@ impl GraphCodec for Value {
                 }
                 Ok(encoder.push_node(Node {
                     kind: NodeKind::Tuple,
+                    payload,
+                }))
+            }
+            Value::Map {
+                key_type,
+                value_type,
+                entries,
+            } => {
+                // Encode children first, in entry order (canonical by
+                // construction: entries arrive key-sorted from From<BTreeMap>;
+                // preserve order, do not re-sort — Value is not Ord).
+                let mut child_indices = Vec::with_capacity(entries.len());
+                for (k, v) in entries {
+                    let kc = k.encode_graph(encoder)?;
+                    let vc = v.encode_graph(encoder)?;
+                    child_indices.push((kc, vc));
+                }
+                // Format: [key_type:type_tag*, value_type:type_tag*, count:u32,
+                //          (key_child:u32, value_child:u32)*]
+                let mut payload = Vec::new();
+                encode_value_type(key_type, &mut payload);
+                encode_value_type(value_type, &mut payload);
+                payload.extend_from_slice(&(child_indices.len() as u32).to_le_bytes());
+                for (kc, vc) in child_indices {
+                    payload.extend_from_slice(&kc.to_le_bytes());
+                    payload.extend_from_slice(&vc.to_le_bytes());
+                }
+                Ok(encoder.push_node(Node {
+                    kind: NodeKind::Map,
+                    payload,
+                }))
+            }
+            Value::Set { elem_type, items } => {
+                let mut child_indices = Vec::with_capacity(items.len());
+                for item in items {
+                    child_indices.push(item.encode_graph(encoder)?);
+                }
+                // Format: [elem_type:type_tag*, count:u32, child_indices:u32*]
+                let mut payload = Vec::new();
+                encode_value_type(elem_type, &mut payload);
+                payload.extend_from_slice(&(child_indices.len() as u32).to_le_bytes());
+                for child in child_indices {
+                    payload.extend_from_slice(&child.to_le_bytes());
+                }
+                Ok(encoder.push_node(Node {
+                    kind: NodeKind::Set,
                     payload,
                 }))
             }
@@ -1033,6 +1110,37 @@ fn decode_value(
                 items.push(decode_value(decoder, child, cache, visiting)?);
             }
             Value::Tuple(items)
+        }
+        NodeKind::Map => {
+            // Format: [key_type:type_tag*, value_type:type_tag*, count:u32,
+            //          (key_child:u32, value_child:u32)*]
+            let key_type = decode_value_type(&mut cursor)?;
+            let value_type = decode_value_type(&mut cursor)?;
+            let count = cursor.read_u32()? as usize;
+            let mut entries = Vec::with_capacity(count);
+            for _ in 0..count {
+                let kc = cursor.read_u32()?;
+                let vc = cursor.read_u32()?;
+                let k = decode_value(decoder, kc, cache, visiting)?;
+                let v = decode_value(decoder, vc, cache, visiting)?;
+                entries.push((k, v));
+            }
+            Value::Map {
+                key_type,
+                value_type,
+                entries,
+            }
+        }
+        NodeKind::Set => {
+            // Format: [elem_type:type_tag*, count:u32, child_indices:u32*]
+            let elem_type = decode_value_type(&mut cursor)?;
+            let count = cursor.read_u32()? as usize;
+            let mut items = Vec::with_capacity(count);
+            for _ in 0..count {
+                let child = cursor.read_u32()?;
+                items.push(decode_value(decoder, child, cache, visiting)?);
+            }
+            Value::Set { elem_type, items }
         }
         NodeKind::Option => {
             // v2 format: [inner_type:type_tag*, presence:u8, child_index?:u32]

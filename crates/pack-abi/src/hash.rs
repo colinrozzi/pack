@@ -229,6 +229,8 @@ const TAG_RECORD: u8 = 0x14;
 const TAG_VARIANT: u8 = 0x15;
 const TAG_FUNCTION: u8 = 0x16;
 const TAG_INTERFACE: u8 = 0x17;
+const TAG_MAP: u8 = 0x18;
+const TAG_SET: u8 = 0x19;
 
 // ============================================================================
 // Compound Type Hashing
@@ -262,6 +264,21 @@ pub fn hash_tuple(elements: &[TypeHash]) -> TypeHash {
     }
 
     hasher.finish()
+}
+
+/// Hash a map type: `map<K, V>`. Distinct from `list<tuple<K, V>>` — map is
+/// first-class, so it hashes under its own tag.
+pub fn hash_map(key: &TypeHash, value: &TypeHash) -> TypeHash {
+    TypeHasher::new()
+        .tag(TAG_MAP)
+        .child(key)
+        .child(value)
+        .finish()
+}
+
+/// Hash a set type: `set<T>`. Distinct from `list<T>` — set is first-class.
+pub fn hash_set(element: &TypeHash) -> TypeHash {
+    TypeHasher::new().tag(TAG_SET).child(element).finish()
 }
 
 /// Hash a record type (structural - name NOT included).

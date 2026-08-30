@@ -32,6 +32,11 @@ pub enum ValueType {
     Variant(String), // type name
     Tuple(Vec<ValueType>),
     Flags,
+    Map {
+        key: Box<ValueType>,
+        value: Box<ValueType>,
+    },
+    Set(Box<ValueType>),
 }
 
 impl core::fmt::Display for ValueType {
@@ -66,6 +71,8 @@ impl core::fmt::Display for ValueType {
                 write!(f, ">")
             }
             ValueType::Flags => write!(f, "flags"),
+            ValueType::Map { key, value } => write!(f, "map<{}, {}>", key, value),
+            ValueType::Set(elem) => write!(f, "set<{}>", elem),
         }
     }
 }
@@ -117,6 +124,21 @@ pub enum Value {
     // Keep Tuple as-is (no type info needed - positional)
     Tuple(Vec<Value>),
     Flags(u64),
+
+    // First-class associative map. `entries` are in canonical key order (the
+    // `From<BTreeMap>` path guarantees it, since `BTreeMap` iterates sorted), so
+    // identical logical maps encode to identical bytes.
+    Map {
+        key_type: ValueType,
+        value_type: ValueType,
+        entries: Vec<(Value, Value)>,
+    },
+    // First-class set. `items` are in canonical, deduplicated element order (the
+    // `From<BTreeSet>` path guarantees it).
+    Set {
+        elem_type: ValueType,
+        items: Vec<Value>,
+    },
 }
 
 impl Value {
@@ -181,6 +203,15 @@ impl Value {
             Value::Variant { type_name, .. } => ValueType::Variant(type_name.clone()),
             Value::Tuple(items) => ValueType::Tuple(items.iter().map(|v| v.infer_type()).collect()),
             Value::Flags(_) => ValueType::Flags,
+            Value::Map {
+                key_type,
+                value_type,
+                ..
+            } => ValueType::Map {
+                key: Box::new(key_type.clone()),
+                value: Box::new(value_type.clone()),
+            },
+            Value::Set { elem_type, .. } => ValueType::Set(Box::new(elem_type.clone())),
         }
     }
 }
@@ -310,6 +341,32 @@ impl core::fmt::Display for Value {
                 Ok(())
             }
             Value::Flags(v) => write!(f, "flags(0x{:x})", v),
+            Value::Map {
+                key_type,
+                value_type,
+                entries,
+            } => {
+                // Always annotate types (like some/ok) — an empty map otherwise
+                // carries no way to recover its key/value types.
+                write!(f, "map<{}, {}>[", key_type, value_type)?;
+                for (i, (k, v)) in entries.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{} => {}", k, v)?;
+                }
+                write!(f, "]")
+            }
+            Value::Set { elem_type, items } => {
+                write!(f, "set<{}>[", elem_type)?;
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", item)?;
+                }
+                write!(f, "]")
+            }
         }
     }
 }
@@ -449,24 +506,24 @@ impl<T: KnownValueType> KnownValueType for Vec<T> {
     }
 }
 
-// A `map<K, V>` erases to `list<tuple<K, V>>` on the wire, so its known value
-// type is a list of key/value pairs — matching `From<BTreeMap>` above.
+// A `map<K, V>` is first-class on the wire (`ValueType::Map`) — matching
+// `From<BTreeMap>` above.
 impl<K: KnownValueType + Ord, V: KnownValueType> KnownValueType for BTreeMap<K, V> {
     fn known_value_type() -> ValueType {
-        ValueType::List(Box::new(ValueType::Tuple(alloc::vec![
-            K::known_value_type(),
-            V::known_value_type(),
-        ])))
+        ValueType::Map {
+            key: Box::new(K::known_value_type()),
+            value: Box::new(V::known_value_type()),
+        }
     }
 }
 
-// A `set<T>` erases to a (key-sorted) `list<T>` on the wire, so its known value
-// type is a list of `T` — matching `From<BTreeSet>` below. This impl is what
-// lets a `BTreeSet` nest inside another container (`map<K, set<V>>`,
-// `list<set<T>>`), since building that container's `elem_type` needs it.
+// A `set<T>` is first-class on the wire (`ValueType::Set`) — matching
+// `From<BTreeSet>` below. This impl is what lets a `BTreeSet` nest inside
+// another container (`map<K, set<V>>`, `list<set<T>>`), since building that
+// container's `elem_type` needs it.
 impl<T: KnownValueType + Ord> KnownValueType for BTreeSet<T> {
     fn known_value_type() -> ValueType {
-        ValueType::List(Box::new(T::known_value_type()))
+        ValueType::Set(Box::new(T::known_value_type()))
     }
 }
 
@@ -802,8 +859,10 @@ impl<T: TryFrom<Value, Error = ConversionError>> TryFrom<Value> for Vec<T> {
 
 impl<T: Into<Value> + KnownValueType + Ord> From<BTreeSet<T>> for Value {
     fn from(v: BTreeSet<T>) -> Self {
+        // `BTreeSet` iterates in sorted, deduplicated order, so `items` is
+        // canonical by construction — the encoder preserves this order.
         let items: Vec<Value> = v.into_iter().map(Into::into).collect();
-        Value::List {
+        Value::Set {
             elem_type: T::known_value_type(),
             items,
         }
@@ -814,14 +873,14 @@ impl<T: TryFrom<Value, Error = ConversionError> + Ord> TryFrom<Value> for BTreeS
     type Error = ConversionError;
     fn try_from(v: Value) -> Result<Self, Self::Error> {
         match v {
-            Value::List { items, .. } => items
+            Value::Set { items, .. } => items
                 .into_iter()
                 .enumerate()
                 .map(|(i, item)| {
                     T::try_from(item).map_err(|e| ConversionError::IndexError(i, Box::new(e)))
                 })
                 .collect(),
-            other => Err(ConversionError::ExpectedList(format!("{:?}", other))),
+            other => Err(ConversionError::ExpectedSet(format!("{:?}", other))),
         }
     }
 }
@@ -830,13 +889,15 @@ impl<K: Into<Value> + KnownValueType + Ord, V: Into<Value> + KnownValueType> Fro
     for Value
 {
     fn from(v: BTreeMap<K, V>) -> Self {
-        let items: Vec<Value> = v
-            .into_iter()
-            .map(|(k, v)| Value::Tuple(Vec::from([k.into(), v.into()])))
-            .collect();
-        Value::List {
-            elem_type: ValueType::Tuple(alloc::vec![K::known_value_type(), V::known_value_type()]),
-            items,
+        // `BTreeMap` iterates in sorted key order, so `entries` is canonical by
+        // construction — the encoder preserves this order (`Value` is not `Ord`,
+        // so it cannot re-sort).
+        let entries: Vec<(Value, Value)> =
+            v.into_iter().map(|(k, v)| (k.into(), v.into())).collect();
+        Value::Map {
+            key_type: K::known_value_type(),
+            value_type: V::known_value_type(),
+            entries,
         }
     }
 }
@@ -849,23 +910,18 @@ impl<
     type Error = ConversionError;
     fn try_from(v: Value) -> Result<Self, Self::Error> {
         match v {
-            Value::List { items, .. } => items
+            Value::Map { entries, .. } => entries
                 .into_iter()
                 .enumerate()
-                .map(|(i, item)| match item {
-                    Value::Tuple(mut fields) if fields.len() == 2 => {
-                        let v_val = fields.pop().unwrap();
-                        let k_val = fields.pop().unwrap();
-                        let k = K::try_from(k_val)
-                            .map_err(|e| ConversionError::IndexError(i, Box::new(e)))?;
-                        let v = V::try_from(v_val)
-                            .map_err(|e| ConversionError::IndexError(i, Box::new(e)))?;
-                        Ok((k, v))
-                    }
-                    other => Err(ConversionError::ExpectedTuple(format!("{:?}", other))),
+                .map(|(i, (k_val, v_val))| {
+                    let k = K::try_from(k_val)
+                        .map_err(|e| ConversionError::IndexError(i, Box::new(e)))?;
+                    let v = V::try_from(v_val)
+                        .map_err(|e| ConversionError::IndexError(i, Box::new(e)))?;
+                    Ok((k, v))
                 })
                 .collect(),
-            other => Err(ConversionError::ExpectedList(format!("{:?}", other))),
+            other => Err(ConversionError::ExpectedMap(format!("{:?}", other))),
         }
     }
 }

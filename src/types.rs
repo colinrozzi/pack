@@ -513,16 +513,16 @@ pub enum Type {
     Result { ok: Box<Type>, err: Box<Type> },
     Tuple(Vec<Type>),
 
-    // Map type `map<K, V>`. A front-end convenience that lowers to a
-    // `BTreeMap<K, V>` in Rust and marshals as a `list<tuple<K, V>>` on the wire
-    // (canonical, key-sorted). Distinct only at the source/codegen level; for
-    // hashing, metadata, and validation it is treated as its desugared list form.
+    // Map type `map<K, V>`. First-class throughout: lowers to a `BTreeMap<K, V>`
+    // in Rust and marshals as a `Value::Map` (its own wire node kind, canonical
+    // key-sorted entries). Hashes, metadata-encodes, and validates as itself —
+    // distinct from `list<tuple<K, V>>`.
     Map { key: Box<Type>, value: Box<Type> },
 
-    // Set type `set<T>`. A front-end convenience that lowers to a `BTreeSet<T>`
-    // in Rust and marshals as a `list<T>` on the wire (canonical, key-sorted).
-    // Distinct only at the source/codegen level; for hashing, metadata, and
-    // validation it is treated as its desugared list form.
+    // Set type `set<T>`. First-class throughout: lowers to a `BTreeSet<T>` in
+    // Rust and marshals as a `Value::Set` (its own wire node kind, canonical
+    // key-sorted items). Hashes, metadata-encodes, and validates as itself —
+    // distinct from `list<T>`.
     Set(Box<Type>),
 
     // Named type reference (with qualified path).
@@ -593,34 +593,9 @@ impl Type {
         }
     }
 
-    /// The desugared wire form of a `map<K, V>`: `list<tuple<K, V>>`. A map
-    /// marshals, hashes, and validates exactly as this list of key/value pairs,
-    /// so the erased paths (metadata, hashing, validation) delegate to it.
-    /// Returns `self` unchanged for a non-map type.
-    pub fn desugar_map(&self) -> Type {
-        match self {
-            Type::Map { key, value } => Type::List(Box::new(Type::Tuple(vec![
-                (**key).clone(),
-                (**value).clone(),
-            ]))),
-            other => other.clone(),
-        }
-    }
-
     /// Create a set type `set<elem>`.
     pub fn set(elem: Type) -> Self {
         Type::Set(Box::new(elem))
-    }
-
-    /// The desugared wire form of a `set<T>`: `list<T>`. A set marshals, hashes,
-    /// and validates exactly as this list (canonical, key-sorted), so the erased
-    /// paths (metadata, hashing, validation) delegate to it. Returns `self`
-    /// unchanged for a non-set type.
-    pub fn desugar_set(&self) -> Type {
-        match self {
-            Type::Set(elem) => Type::List(elem.clone()),
-            other => other.clone(),
-        }
     }
 
     /// Substitute in-scope type parameters with concrete types.
