@@ -28,7 +28,10 @@ extern crate alloc;
 
 mod hash;
 mod parse;
+mod pattern;
 mod value;
+
+pub use pattern::Pattern;
 
 pub use hash::{
     hash_function,
