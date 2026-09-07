@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/pack-abi",
+    "crates/pack-core",
     "crates/pack-derive",
     "crates/pack-guest",
     "crates/pack-guest-macros",

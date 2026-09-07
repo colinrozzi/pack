@@ -854,6 +854,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "packr-core"
+version = "0.22.0"
+dependencies = [
+ "async-trait",
+ "packr-abi",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "packr-derive"
 version = "0.22.0"
 dependencies = [
