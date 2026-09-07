@@ -255,6 +255,53 @@ pub fn run_resume(
     finish(exec.resume(completion_id, value), out_ptr_ptr, out_len_ptr)
 }
 
+// ---------------------------------------------------------------------------
+// Global executor — the single per-instance executor the macros drive through
+// (so `#[async_export]`/`#[async_import]`/`setup_async_guest!` reference only
+// `packr_guest::executor::` paths, never fragile cross-macro identifiers).
+// Single-threaded wasm → `static mut` is sound.
+// ---------------------------------------------------------------------------
+
+static mut GLOBAL_EXEC: Option<Executor> = None;
+
+fn global_exec() -> &'static mut Executor {
+    unsafe {
+        (*core::ptr::addr_of_mut!(GLOBAL_EXEC)).get_or_insert_with(|| Executor::new(Runtime::new()))
+    }
+}
+
+/// The global executor's runtime — used by `#[async_import]` shims for `host_call`.
+pub fn global_runtime() -> Runtime {
+    global_exec().runtime()
+}
+
+/// Run an export on the global executor. Used by `#[async_export]`.
+pub fn run_export_global(
+    task: Pin<Box<dyn Future<Output = Value>>>,
+    out_ptr_ptr: i32,
+    out_len_ptr: i32,
+) -> i32 {
+    run_export(global_exec(), task, out_ptr_ptr, out_len_ptr)
+}
+
+/// Re-enter the global executor. Used by the `__pack_resume` export.
+pub fn run_resume_global(
+    completion_id: u32,
+    result_ptr: i32,
+    result_len: i32,
+    out_ptr_ptr: i32,
+    out_len_ptr: i32,
+) -> i32 {
+    run_resume(
+        global_exec(),
+        completion_id,
+        result_ptr,
+        result_len,
+        out_ptr_ptr,
+        out_len_ptr,
+    )
+}
+
 /// A no-op `Waker`: the executor re-polls the whole task on every `resume`, so
 /// individual futures don't need to schedule themselves.
 fn noop_waker() -> Waker {

@@ -31,7 +31,9 @@
 pub extern crate alloc;
 
 // Re-export the macros
-pub use packr_guest_macros::{export, import, import_from, pack_types, pact, world};
+pub use packr_guest_macros::{
+    async_export, async_import, export, import, import_from, pack_types, pact, world,
+};
 
 /// Guest-side executor for the pending/resume async-ABI (`docs/async-abi.md`).
 pub mod executor;
@@ -393,5 +395,46 @@ macro_rules! setup_guest {
         #[global_allocator]
         static __PACK_ALLOCATOR: $crate::DlmallocAllocator = $crate::DlmallocAllocator;
         $crate::panic_handler!();
+    };
+}
+
+/// Set up an **async** actor for the pending/resume async-ABI: everything
+/// [`setup_guest!`] does, plus the single per-instance executor, its runtime
+/// accessor, and the `__pack_resume` export the host re-enters. Pair with
+/// `#[async_export]` / `#[async_import]`. See `docs/async-abi.md`.
+///
+/// ```ignore
+/// packr_guest::setup_async_guest!();
+///
+/// #[packr_guest::async_import(module = "math", name = "double")]
+/// async fn double(input: Value) -> Value {}
+///
+/// #[packr_guest::async_export]
+/// async fn process(input: Value) -> Value {
+///     match double(input).await { Value::S64(n) => Value::S64(n + 1), o => o }
+/// }
+/// ```
+#[macro_export]
+macro_rules! setup_async_guest {
+    () => {
+        $crate::setup_guest!();
+
+        /// Host re-entry: deliver a resolved host result and re-poll the task.
+        #[no_mangle]
+        pub extern "C" fn __pack_resume(
+            completion_id: i32,
+            result_ptr: i32,
+            result_len: i32,
+            out_ptr_ptr: i32,
+            out_len_ptr: i32,
+        ) -> i32 {
+            $crate::executor::run_resume_global(
+                completion_id as u32,
+                result_ptr,
+                result_len,
+                out_ptr_ptr,
+                out_len_ptr,
+            )
+        }
     };
 }
