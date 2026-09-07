@@ -8,6 +8,7 @@ members = [
     "crates/pack-guest-macros",
 ]
 exclude = [
+    "crates/pack-web",
     "packages/pack-alloc",
     "packages/echo-pic",
     "packages/hostcall-pic",

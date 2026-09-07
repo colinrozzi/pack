@@ -10,9 +10,10 @@
 //! Async-first (locked, 2026-09-06): every backend-crossing call is `async`
 //! because JS `WebAssembly` is inherently Promise-based. There is no sync path.
 
-use async_trait::async_trait;
+use std::sync::Arc;
 
 use crate::host::HostImports;
+use crate::interceptor::CallInterceptor;
 
 /// A numeric wasm value at the call boundary.
 ///
@@ -89,8 +90,14 @@ pub enum EngineError {
 /// The orchestration layer drives this to run the pack ABI: allocate an input
 /// buffer via a guest export, write encoded bytes, call the export, read the
 /// result ptr/len slots, decode. See `docs/engine-axis.md` §3.
-#[async_trait]
-pub trait WasmInstance: Send {
+// `async fn` in trait (stable, native) rather than `#[async_trait]`: the future's
+// `Send`-ness then FOLLOWS each backend's impl — wasmtime's are `Send` (native
+// work-stealing spawns them fine), the browser's are `!Send` (single-threaded JS)
+// — with no hard `Send` bound a browser can't satisfy and no cfg-gated MaybeSend.
+// Cost: not `dyn`-compatible, which we don't need (backend chosen at compile
+// time; `call_with_value` is generic). See `docs/engine-axis.md` §4.
+#[allow(async_fn_in_trait)]
+pub trait WasmInstance {
     /// Call an exported function with numeric args, returning its numeric
     /// results. Async so both wasmtime (`call_async`) and JS fit, and so an
     /// export can transitively re-enter the guest allocator.
@@ -121,6 +128,11 @@ pub trait WasmInstance: Send {
     /// to an epoch deadline; a browser driver maps it to `Worker.terminate`;
     /// a backend with no native mechanism makes this a documented no-op.
     fn set_deadline(&mut self, ticks_until_trap: u64);
+
+    /// The record/replay interceptor installed for this instance (from
+    /// [`HostImports::with_interceptor`]), if any. `call_with_value` consults it
+    /// on the export path, mirroring the guest → host path.
+    fn interceptor(&self) -> Option<&Arc<dyn CallInterceptor>>;
 }
 
 /// A wasm engine: compiles module bytes and instantiates them.
@@ -129,12 +141,12 @@ pub trait WasmInstance: Send {
 /// [`WasmEngine::compile`] recompiles each time. When the cache returns it will
 /// be backend-owned state behind this same method — the trait shape is
 /// cache-ready (`Module` is a cheap-clone handle).
-#[async_trait]
-pub trait WasmEngine: Send + Sync {
+#[allow(async_fn_in_trait)]
+pub trait WasmEngine {
     /// A compiled-module handle. Cheap to clone (wasmtime's `Module` is an
     /// `Arc` inside; a JS `WebAssembly.Module` is a handle) so a future cache
-    /// can hand out clones.
-    type Module: Clone + Send + Sync;
+    /// can hand out clones. No `Send`/`Sync` bound — a JS `Module` is `!Send`.
+    type Module: Clone;
 
     /// A live instance produced by [`WasmEngine::instantiate`].
     type Instance: WasmInstance;

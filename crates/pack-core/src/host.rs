@@ -63,6 +63,30 @@ where
     Arc::new(move |v| Box::pin(f(v)))
 }
 
+/// Wrap a *typed* host function as a [`HostFn`], recovering typed I/O ergonomics
+/// over the `Value → Value` core without a typed store. The input is converted
+/// from the decoded [`Value`] via `TryFrom` (a mismatch surfaces as
+/// [`HostError`]) and the output via `Into<Value>`. State is still captured by
+/// the closure (capture-based model, `docs/engine-axis.md` §4.2).
+pub fn typed_host_fn<P, R, F, Fut>(f: F) -> HostFn
+where
+    P: TryFrom<Value> + Send + 'static,
+    <P as TryFrom<Value>>::Error: core::fmt::Debug,
+    R: Into<Value> + Send + 'static,
+    F: Fn(P) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<R, HostError>> + Send + 'static,
+{
+    let f = Arc::new(f);
+    Arc::new(move |v| {
+        let f = f.clone();
+        Box::pin(async move {
+            let arg = P::try_from(v)
+                .map_err(|e| HostError(format!("host-fn argument type mismatch: {e:?}")))?;
+            f(arg).await.map(Into::into)
+        })
+    })
+}
+
 /// Per-call access to the guest, provided by the backend while a host function
 /// runs: read/write guest linear memory and re-enter the guest allocator. This
 /// is the single backend-specific seam in the guest → host path.

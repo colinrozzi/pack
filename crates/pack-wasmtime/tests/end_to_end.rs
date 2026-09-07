@@ -9,8 +9,13 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Arc, Mutex};
 
-use packr_core::{call_with_value, host_fn, HostError, HostImports, Value, WasmEngine};
+use async_trait::async_trait;
+use packr_core::{
+    call_with_value, host_fn, typed_host_fn, CallInterceptor, HostError, HostImports, Value,
+    WasmEngine,
+};
 use packr_wasmtime::WasmtimeEngine;
 
 /// Build `packages/<pkg_dir>` to a self-contained actor wasm and return the path
@@ -91,16 +96,13 @@ async fn host_import_actor_runs_through_the_backend() {
     // by `process` but must be satisfied at instantiate).
     let mut imports = HostImports::new();
     imports
+        // `double` via the TYPED sugar: i64 -> i64, converted from/to Value.
         .define(
             "math",
             "double",
-            host_fn(|v| async move {
-                Ok::<Value, HostError>(match v {
-                    Value::S64(n) => Value::S64(n * 2),
-                    other => other,
-                })
-            }),
+            typed_host_fn(|n: i64| async move { Ok::<i64, HostError>(n * 2) }),
         )
+        // `big` via the raw Value path (unused by `process`, but must be defined).
         .define("math", "big", host_fn(|v| async move { Ok::<Value, HostError>(v) }));
 
     let mut instance = engine
@@ -118,4 +120,95 @@ async fn host_import_actor_runs_through_the_backend() {
         .await
         .expect("call process(50)");
     assert_eq!(result2, Value::S64(101), "process(50) = 2*50 + 1 = 101");
+}
+
+/// Records every export call it sees.
+#[derive(Default)]
+struct Recorder {
+    exports: Mutex<Vec<(String, Value)>>, // (function, output)
+}
+
+#[async_trait]
+impl CallInterceptor for Recorder {
+    async fn before_import(&self, _: &str, _: &str, _: &Value) -> Option<Value> {
+        None
+    }
+    async fn after_import(&self, _: &str, _: &str, _: &Value, _: &Value) {}
+    async fn before_export(&self, _: &str, _: &Value) -> Option<Value> {
+        None
+    }
+    async fn after_export(&self, function: &str, _: &Value, output: &Value) {
+        self.exports
+            .lock()
+            .unwrap()
+            .push((function.to_string(), output.clone()));
+    }
+}
+
+/// An interceptor installed via `HostImports::with_interceptor` observes export
+/// calls on the guest → export path.
+#[tokio::test]
+async fn export_interceptor_records_calls() {
+    let Some(wasm_path) = build_pkg("math-real", "math_real") else {
+        eprintln!("SKIP: wasm32 toolchain unavailable");
+        return;
+    };
+    let wasm = std::fs::read(&wasm_path).expect("read the built wasm");
+
+    let engine = WasmtimeEngine::new();
+    let module = engine.compile(&wasm).await.expect("compile");
+
+    let recorder = Arc::new(Recorder::default());
+    let mut imports = HostImports::new();
+    imports.with_interceptor(recorder.clone());
+    let mut instance = engine.instantiate(&module, imports).await.expect("instantiate");
+
+    let result = call_with_value(&mut instance, "double", &Value::S64(7))
+        .await
+        .expect("call double(7)");
+    assert_eq!(result, Value::S64(14));
+
+    let recorded = recorder.exports.lock().unwrap();
+    assert_eq!(recorded.len(), 1, "one export call recorded");
+    assert_eq!(recorded[0].0, "double");
+    assert_eq!(recorded[0].1, Value::S64(14), "recorded output value");
+}
+
+/// A replay interceptor short-circuits the export: `before_export` returns a
+/// recorded value, so the guest is never called.
+struct Replay(Value);
+
+#[async_trait]
+impl CallInterceptor for Replay {
+    async fn before_import(&self, _: &str, _: &str, _: &Value) -> Option<Value> {
+        None
+    }
+    async fn after_import(&self, _: &str, _: &str, _: &Value, _: &Value) {}
+    async fn before_export(&self, _: &str, _: &Value) -> Option<Value> {
+        Some(self.0.clone())
+    }
+    async fn after_export(&self, _: &str, _: &Value, _: &Value) {}
+}
+
+#[tokio::test]
+async fn export_interceptor_replays_without_calling_guest() {
+    let Some(wasm_path) = build_pkg("math-real", "math_real") else {
+        eprintln!("SKIP: wasm32 toolchain unavailable");
+        return;
+    };
+    let wasm = std::fs::read(&wasm_path).expect("read the built wasm");
+
+    let engine = WasmtimeEngine::new();
+    let module = engine.compile(&wasm).await.expect("compile");
+
+    let mut imports = HostImports::new();
+    imports.with_interceptor(Arc::new(Replay(Value::S64(999))));
+    let mut instance = engine.instantiate(&module, imports).await.expect("instantiate");
+
+    // double(7) would be 14, but the replay interceptor returns 999 and the
+    // guest is never invoked.
+    let result = call_with_value(&mut instance, "double", &Value::S64(7))
+        .await
+        .expect("call double(7)");
+    assert_eq!(result, Value::S64(999), "replayed value, guest not called");
 }

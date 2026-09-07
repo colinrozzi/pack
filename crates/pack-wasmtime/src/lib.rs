@@ -13,9 +13,12 @@
 //! by capture-based [`HostImports`] and run through the shared
 //! `dispatch_host_import` trampoline).
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use packr_core::backend::{EngineError, Val, WasmEngine, WasmInstance};
 use packr_core::host::{dispatch_host_import, HostCallCtx, HostImports};
+use packr_core::CallInterceptor;
 use wasmtime::{Caller, Config, Engine, Instance, Linker, Memory, Module, Store};
 
 /// A never-tripping epoch deadline. NOT `u64::MAX`: `set_epoch_deadline`
@@ -53,7 +56,6 @@ impl Default for WasmtimeEngine {
     }
 }
 
-#[async_trait]
 impl WasmEngine for WasmtimeEngine {
     type Module = Module;
     type Instance = WasmtimeInstance;
@@ -71,6 +73,8 @@ impl WasmEngine for WasmtimeEngine {
         // Epoch interruption is engine-wide; default to no deadline so the guest
         // never traps unless a caller arms it via `set_deadline`.
         store.set_epoch_deadline(NO_EPOCH_DEADLINE);
+
+        let interceptor = imports.interceptor().cloned();
 
         let mut linker = Linker::new(&self.engine);
         register_default_alloc(&mut linker).map_err(|e| EngineError::Instantiate(e.to_string()))?;
@@ -105,6 +109,7 @@ impl WasmEngine for WasmtimeEngine {
             instance,
             memory,
             exports,
+            interceptor,
         })
     }
 }
@@ -114,6 +119,7 @@ impl WasmEngine for WasmtimeEngine {
 pub struct WasmtimeInstance {
     store: Store<()>,
     instance: Instance,
+    interceptor: Option<Arc<dyn CallInterceptor>>,
     /// The guest's exported "memory". `None` only for exotic modules with no
     /// exported memory (not yet supported by the execution-cluster path).
     memory: Option<Memory>,
@@ -126,7 +132,6 @@ impl WasmtimeInstance {
     }
 }
 
-#[async_trait]
 impl WasmInstance for WasmtimeInstance {
     async fn call(&mut self, name: &str, args: &[Val]) -> Result<Vec<Val>, EngineError> {
         let func = self
@@ -206,6 +211,10 @@ impl WasmInstance for WasmtimeInstance {
 
     fn set_deadline(&mut self, ticks_until_trap: u64) {
         self.store.set_epoch_deadline(ticks_until_trap);
+    }
+
+    fn interceptor(&self) -> Option<&Arc<dyn CallInterceptor>> {
+        self.interceptor.as_ref()
     }
 }
 

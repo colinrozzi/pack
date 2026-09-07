@@ -33,7 +33,8 @@ pub mod interceptor;
 pub use abi_call::{call_with_value, CallError, INPUT_BUFFER_OFFSET, RESULT_LEN_OFFSET, RESULT_PTR_OFFSET};
 pub use backend::{EngineError, Val, WasmEngine, WasmInstance};
 pub use host::{
-    dispatch_host_import, host_fn, HostCallCtx, HostError, HostFn, HostImport, HostImports,
+    dispatch_host_import, host_fn, typed_host_fn, HostCallCtx, HostError, HostFn, HostImport,
+    HostImports,
 };
 pub use interceptor::CallInterceptor;
 

@@ -11,6 +11,8 @@
 >
 > **Decision locked (2026-09-07, Colin):**
 > - **host-import store-data model: capture-based** — a host fn is `Fn(Value) -> async Result<Value>` that captures its own state; no typed store `T` threaded through the engine. Guest business state lives in the wasm (in-module-state), so the only host-side state is capability plumbing — natural to capture, no type-safety lost, browser-portable. See §4.2.
+>
+> **Send model — NO MaybeSend.** `WasmEngine`/`WasmInstance` use native **`async fn` in trait** with **no `Send` bound**, so each backend's future `Send`-ness *follows its impl*: wasmtime's are `Send` (native work-stealing spawns actors fine), the browser's are `!Send` (single-threaded JS). This avoids the cfg-gated `MaybeSend` marker (the theater "phantom" smell) and any boxing. Cost: the traits aren't `dyn`-compatible — which we don't need (backend chosen at compile time; `call_with_value` is generic). `async-trait` is kept only for the genuinely `dyn` traits (`CallInterceptor`, `HostCallCtx`). Proven: one trait set compiles + runs on both wasmtime (native, 4 e2e tests) and JS `WebAssembly` (`packr-web`, e2e green in Node).
 
 ## 1. Goal
 

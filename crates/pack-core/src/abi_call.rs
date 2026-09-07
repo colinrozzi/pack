@@ -52,6 +52,15 @@ pub async fn call_with_value<I>(inst: &mut I, name: &str, input: &Value) -> Resu
 where
     I: WasmInstance + ?Sized,
 {
+    // Interceptor replay: short-circuit the export with a recorded value.
+    let interceptor = inst.interceptor().cloned();
+    if let Some(ic) = &interceptor {
+        if let Some(recorded) = ic.before_export(name, input).await {
+            ic.after_export(name, input, &recorded).await;
+            return Ok(recorded);
+        }
+    }
+
     let input_bytes = encode(input).map_err(|e| CallError::Abi(format!("{e:?}")))?;
 
     // Allocate the input buffer in guest memory; fall back to the fixed buffer
@@ -96,6 +105,10 @@ where
     inst.read_memory(out_ptr, &mut out_bytes)?;
     let value = decode(&out_bytes).map_err(|e| CallError::Abi(format!("{e:?}")))?;
     let _ = pack_free(inst, out_ptr, out_len).await;
+
+    if let Some(ic) = &interceptor {
+        ic.after_export(name, input, &value).await;
+    }
 
     Ok(value)
 }
