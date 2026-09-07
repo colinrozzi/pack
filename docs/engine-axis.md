@@ -8,6 +8,9 @@
 > - **crate-per-backend** — a backend-free core crate + one crate per backend.
 > - **no compile cache in v1** — dropped for now; reintroduced once the stack runs end to end.
 > - **naming (pack-dev's call):** `packr-core` (agnostic runtime + traits), `packr-wasmtime` (native backend), `packr-web` (browser backend, later); the top `packr` crate becomes a default-wasmtime facade so existing `packr::…` consumers don't move. See §4.6.
+>
+> **Decision locked (2026-09-07, Colin):**
+> - **host-import store-data model: capture-based** — a host fn is `Fn(Value) -> async Result<Value>` that captures its own state; no typed store `T` threaded through the engine. Guest business state lives in the wasm (in-module-state), so the only host-side state is capability plumbing — natural to capture, no type-safety lost, browser-portable. See §4.2.
 
 ## 1. Goal
 
@@ -98,29 +101,24 @@ trait WasmInstance: Send {
 
 Once these exist, `call_with_value_async`, `types()`, `call_pack_alloc_async`, `write_memory`/`read_memory`/`read_value`/`write_value`, and `set_epoch_deadline` all rewrite in terms of them, **once**, in a backend-free module.
 
-### 4.2 Host imports (guest → host) — the hard cluster
+### 4.2 Host imports (guest → host) — capture-based (built)
 
-This is where `src/runtime/host.rs` (~57 KB) lives, and it's the real work. It's the reverse direction: the guest calls a host function, which must (a) read args out of guest memory, (b) possibly re-enter the guest to `__pack_alloc` its return (the guest-allocate path — theater's large returns: `get-chain`, `store.get`, `wat-to-wasm`), and (c) write the return back.
+The reverse direction: the guest calls a host function, which must (a) read args out of guest memory, (b) run the host logic, (c) re-enter the guest to `__pack_alloc` its return (async — theater's large returns: `get-chain`, `store.get`, `wat-to-wasm`), and (d) write it back. The pack ABI mirrors the export path: the guest calls `(in_ptr, in_len, out_ptr_slot, out_len_slot) -> status`, where status `-1` = host-side failure, `1` = success (guest owns + frees the output buffer).
 
-The good news: the memory-access seam is **already abstracted** into `Ctx` (`host.rs:169`). Everything funnels through `Ctx::resolve_memory()` and the three methods `read_value` / `write_value_at` / `read_string`. The only genuinely wasmtime-typed pieces of `Ctx` are the `caller: Caller` + `memory: Option<Memory>` fields and the `data()/data_mut()` store accessors.
+**Store-data model: capture-based (decided 2026-09-07, Colin).** A host function is `Fn(Value) -> async Result<Value>` that **captures** whatever host state it needs — there is *no typed store `T`* threaded through the engine. Rationale:
+- The old runtime already never handed host fns `&mut store`: its async path does `let state = caller.data().clone()` — a read-only snapshot. Capture-based is the same semantics, made explicit.
+- **Guest business state lives in the wasm** (the in-module-state work), so there is no rich application `T` to thread. The only host-side state is the *capability context* — the actor's identity + handles to runtime resources (store, message queue, tcp registry) that host fns operate on. That is small and handle-shaped: natural to capture.
+- No type-safety loss: captured handles are concrete typed Rust values (as typed as `ctx.data() -> &T`); typed *I/O* stays available as a `typed_host_fn(|arg: A| -> R)` sugar layer over the `Value → Value` core. Only the *engine* avoids a `T` parameter — which the browser backend (no typed store) requires.
 
-**Plan: make `Ctx` backend-generic.**
+**What's built (`crates/pack-core/src/host.rs`):**
+- `HostFn = Arc<dyn Fn(Value) -> BoxFuture<Result<Value, HostError>>>` + a `host_fn(..)` constructor. User fns never touch memory.
+- `HostImports` — a capture-based registry (`define(interface, function, host_fn)`, `with_interceptor(..)`), passed to `WasmEngine::instantiate`.
+- `HostCallCtx` — the **one** backend seam: `read`/`write` guest memory + async `alloc`/`free` (guest re-entry). The backend implements it over its live instance.
+- `dispatch_host_import(ctx, func, interceptor, …, in_ptr, in_len, out_ptr_slot, out_len_slot) -> i32` — the trampoline: read+decode input, interceptor replay/record, run the host fn, **always guest-allocate** the encoded return (async-first — no fixed 32 KB buffer, so returns are unbounded; this retires the id=9 cap). Lives once in packr-core; every backend shares it.
 
-```rust
-/// Backend-neutral host-call context. Replaces the wasmtime Caller+Memory pair.
-struct Ctx<'a, T> {
-    store: &'a mut dyn StoreAccess<T>,   // data() / data_mut()
-    mem:   &'a mut dyn GuestMemory,      // read()/write()/grow()/size()
-    // + re-entry handle so an async host fn can call __pack_alloc (see below)
-    alloc: &'a mut dyn GuestReentry,
-}
-```
+The wasmtime backend (`packr-wasmtime`) implements `HostCallCtx` over `Caller<'_, ()>` and registers each import via `func_wrap_async`. The `pack:alloc` default provider stays a **raw, non-intercepted `func_wrap`** (theater's constraint: alloc off the chain log) — separate from the interface imports.
 
-`read_value` / `write_value_at` / `read_string` are unchanged except they call `self.mem` instead of `self.caller` + `resolve_memory()`. `HostLinkerBuilder` / `InterfaceBuilder` / `func_typed` / `func_async` / `func_async_result` register their closures through a backend `HostImports` registrar:
-- **wasmtime:** `HostImports` wraps a `Linker<T>`; closures get a `Ctx` built from `Caller`.
-- **browser:** `HostImports` builds an `importObject` of JS functions closing over the `WebAssembly.Memory`; closures get a `Ctx` built from that memory + a JS re-entry shim.
-
-The `pack:alloc` default provider (`register_default_alloc`, `mod.rs:366`) is registered the same neutral way — and critically stays a **raw, non-intercepted link** (theater's constraint: keep alloc off the chain log), which the `HostImports` registrar preserves as a first-class distinction from the typed/intercepted interface functions.
+*Proven end to end:* `adder-pic` (imports `math.double`) runs `process(5) = 2·5 + 1 = 11` with `double` supplied as a capture-based host fn — the full guest→host→guest round trip through the trait.
 
 ### 4.3 What stays above the line, untouched
 

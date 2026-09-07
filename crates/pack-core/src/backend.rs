@@ -12,6 +12,8 @@
 
 use async_trait::async_trait;
 
+use crate::host::HostImports;
+
 /// A numeric wasm value at the call boundary.
 ///
 /// packr's guest ABI is entirely `i32`-typed today (the export convention is
@@ -140,13 +142,13 @@ pub trait WasmEngine: Send + Sync {
     /// Compile wasm bytes into a module.
     async fn compile(&self, bytes: &[u8]) -> Result<Self::Module, EngineError>;
 
-    /// Instantiate a compiled module.
-    ///
-    /// NOTE: host imports (the guest → host direction) are **not** wired here
-    /// yet. That is the §4.2 "hard cluster" — the store-data / `Ctx` /
-    /// re-entry generics — and gets its own focused pass (see `crate::host`).
-    /// Until then this instantiates modules whose only imports are the default
-    /// `pack:alloc` (self-contained actors), which covers the execution-cluster
-    /// bring-up.
-    async fn instantiate(&self, module: &Self::Module) -> Result<Self::Instance, EngineError>;
+    /// Instantiate a compiled module, satisfying its host imports from
+    /// `imports` (plus the built-in default `pack:alloc`). Pass
+    /// [`HostImports::new`] for a self-contained actor that imports only
+    /// `pack:alloc`.
+    async fn instantiate(
+        &self,
+        module: &Self::Module,
+        imports: HostImports,
+    ) -> Result<Self::Instance, EngineError>;
 }

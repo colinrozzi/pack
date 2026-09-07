@@ -15,23 +15,27 @@
 //!   There is no sync path.
 //! - **crate-per-backend:** one impl crate per environment.
 //!
-//! ## What's here now
+//! ## What's here
 //!
-//! The **execution cluster** (host → guest): [`backend`] (the traits) and
-//! [`abi_call`] (the export call path, generic over [`WasmInstance`]).
-//!
-//! ## What's next
-//!
-//! The **host-import cluster** (guest → host) — a backend-generic `Ctx`,
-//! `HostImports`, guest-allocator re-entry, and `CallInterceptor` — is the
-//! §4.2 "hard cluster" and gets its own pass. It carries the store-data
-//! generics that are still being pinned down.
+//! - The **execution cluster** (host → guest): [`backend`] (the traits) and
+//!   [`abi_call`] (the export call path, generic over [`WasmInstance`]).
+//! - The **host-import cluster** (guest → host): [`host`] (the [`HostImports`]
+//!   registry, the [`HostCallCtx`] backend seam, and the `dispatch_host_import`
+//!   trampoline) and [`interceptor`] (record/replay). Store-data model is
+//!   **capture-based** — host fns capture their state, no typed store is
+//!   threaded through the engine (see `docs/engine-axis.md` §4.2).
 
 pub mod abi_call;
 pub mod backend;
+pub mod host;
+pub mod interceptor;
 
 pub use abi_call::{call_with_value, CallError, INPUT_BUFFER_OFFSET, RESULT_LEN_OFFSET, RESULT_PTR_OFFSET};
 pub use backend::{EngineError, Val, WasmEngine, WasmInstance};
+pub use host::{
+    dispatch_host_import, host_fn, HostCallCtx, HostError, HostFn, HostImport, HostImports,
+};
+pub use interceptor::CallInterceptor;
 
 /// The graph ABI, re-exported so downstream crates see exactly one `Value` type.
 pub use packr_abi as abi;

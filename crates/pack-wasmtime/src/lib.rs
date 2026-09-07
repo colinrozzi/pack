@@ -6,14 +6,16 @@
 //! `packr-core` (e.g. [`packr_core::call_with_value`]) runs on top of it without
 //! naming `wasmtime`.
 //!
-//! Scope: the **execution cluster** (host → guest) — compile, instantiate, call
-//! exports, touch memory, arm epoch preemption. The host-import cluster
-//! (guest → host) is the next slice and is not wired here yet, so this
-//! instantiates modules whose only imports are the default `pack:alloc`
-//! (self-contained actors and legacy `pack:alloc`-importing modules).
+//! Covers both directions: the **execution cluster** (host → guest — compile,
+//! instantiate, call exports, touch memory, epoch preemption) and the
+//! **host-import cluster** (guest → host — [`WasmtimeHostCtx`] implements
+//! `packr_core`'s `HostCallCtx`, so a guest's imported functions are satisfied
+//! by capture-based [`HostImports`] and run through the shared
+//! `dispatch_host_import` trampoline).
 
 use async_trait::async_trait;
 use packr_core::backend::{EngineError, Val, WasmEngine, WasmInstance};
+use packr_core::host::{dispatch_host_import, HostCallCtx, HostImports};
 use wasmtime::{Caller, Config, Engine, Instance, Linker, Memory, Module, Store};
 
 /// A never-tripping epoch deadline. NOT `u64::MAX`: `set_epoch_deadline`
@@ -60,7 +62,11 @@ impl WasmEngine for WasmtimeEngine {
         Module::new(&self.engine, bytes).map_err(|e| EngineError::Compile(e.to_string()))
     }
 
-    async fn instantiate(&self, module: &Module) -> Result<WasmtimeInstance, EngineError> {
+    async fn instantiate(
+        &self,
+        module: &Module,
+        imports: HostImports,
+    ) -> Result<WasmtimeInstance, EngineError> {
         let mut store = Store::new(&self.engine, ());
         // Epoch interruption is engine-wide; default to no deadline so the guest
         // never traps unless a caller arms it via `set_deadline`.
@@ -68,6 +74,7 @@ impl WasmEngine for WasmtimeEngine {
 
         let mut linker = Linker::new(&self.engine);
         register_default_alloc(&mut linker).map_err(|e| EngineError::Instantiate(e.to_string()))?;
+        register_host_imports(&mut linker, &imports)?;
 
         let instance = linker
             .instantiate_async(&mut store, module)
@@ -102,8 +109,8 @@ impl WasmEngine for WasmtimeEngine {
     }
 }
 
-/// A live wasmtime instance. Store data is `()` for now — host state arrives
-/// with the host-import cluster (`Store<T>`), the next slice.
+/// A live wasmtime instance. Store data is `()` — the capture-based host-import
+/// model means host state lives in the host-fn closures, not a typed store.
 pub struct WasmtimeInstance {
     store: Store<()>,
     instance: Instance,
@@ -250,4 +257,127 @@ fn register_default_alloc(linker: &mut Linker<()>) -> Result<(), wasmtime::Error
         },
     )?;
     Ok(())
+}
+
+/// Register the capture-based [`HostImports`] on the linker. Each becomes a
+/// `func_wrap_async` with the pack host-import signature
+/// `(in_ptr, in_len, out_ptr_slot, out_len_slot) -> status`; it builds a
+/// [`WasmtimeHostCtx`] over the live caller and runs the shared
+/// `dispatch_host_import` trampoline — so the marshalling logic lives once, in
+/// packr-core, not per backend.
+fn register_host_imports(linker: &mut Linker<()>, imports: &HostImports) -> Result<(), EngineError> {
+    let interceptor = imports.interceptor().cloned();
+    for imp in imports.imports() {
+        let func = imp.func.clone();
+        let interceptor = interceptor.clone();
+        let interface = imp.interface.clone();
+        let function = imp.function.clone();
+        linker
+            .func_wrap_async(
+                &imp.interface,
+                &imp.function,
+                move |mut caller: Caller<'_, ()>,
+                      (in_ptr, in_len, out_ptr, out_len): (i32, i32, i32, i32)| {
+                    let func = func.clone();
+                    let interceptor = interceptor.clone();
+                    let interface = interface.clone();
+                    let function = function.clone();
+                    Box::new(async move {
+                        let mut ctx = WasmtimeHostCtx {
+                            caller: &mut caller,
+                        };
+                        dispatch_host_import(
+                            &mut ctx,
+                            &func,
+                            interceptor.as_ref(),
+                            &interface,
+                            &function,
+                            in_ptr as u32,
+                            in_len as u32,
+                            out_ptr as u32,
+                            out_len as u32,
+                        )
+                        .await
+                    })
+                },
+            )
+            .map_err(|e| EngineError::Instantiate(e.to_string()))?;
+    }
+    Ok(())
+}
+
+/// The per-call guest access `packr-core` needs while a host function runs:
+/// read/write the caller's exported memory and re-enter the guest allocator via
+/// `__pack_alloc` / `__pack_free`. This is the single backend-specific seam in
+/// the guest → host path.
+struct WasmtimeHostCtx<'a, 'c> {
+    caller: &'a mut Caller<'c, ()>,
+}
+
+impl WasmtimeHostCtx<'_, '_> {
+    fn memory(&mut self) -> Result<Memory, EngineError> {
+        self.caller
+            .get_export("memory")
+            .and_then(|e| e.into_memory())
+            .ok_or(EngineError::NoMemory)
+    }
+}
+
+#[async_trait]
+impl HostCallCtx for WasmtimeHostCtx<'_, '_> {
+    fn read(&mut self, offset: usize, buf: &mut [u8]) -> Result<(), EngineError> {
+        let mem = self.memory()?;
+        mem.read(&*self.caller, offset, buf)
+            .map_err(|_| EngineError::MemoryOutOfBounds {
+                offset,
+                len: buf.len(),
+            })
+    }
+
+    fn write(&mut self, offset: usize, data: &[u8]) -> Result<(), EngineError> {
+        let mem = self.memory()?;
+        let len = data.len();
+        mem.write(&mut *self.caller, offset, data)
+            .map_err(|_| EngineError::MemoryOutOfBounds { offset, len })
+    }
+
+    async fn alloc(&mut self, size: usize) -> Result<usize, EngineError> {
+        let f = self
+            .caller
+            .get_export("__pack_alloc")
+            .and_then(|e| e.into_func())
+            .ok_or_else(|| EngineError::ExportNotFound("__pack_alloc".to_string()))?;
+        let mut results = [wasmtime::Val::I32(0)];
+        f.call_async(
+            &mut *self.caller,
+            &[wasmtime::Val::I32(size as i32)],
+            &mut results,
+        )
+        .await
+        .map_err(|e| EngineError::Other(e.to_string()))?;
+        match results[0] {
+            wasmtime::Val::I32(p) if p != 0 => Ok(p as usize),
+            _ => Err(EngineError::AllocFailed(size)),
+        }
+    }
+
+    async fn free(&mut self, ptr: usize, size: usize) -> Result<(), EngineError> {
+        if let Some(f) = self
+            .caller
+            .get_export("__pack_free")
+            .and_then(|e| e.into_func())
+        {
+            f.call_async(
+                &mut *self.caller,
+                &[
+                    wasmtime::Val::I32(ptr as i32),
+                    wasmtime::Val::I32(size as i32),
+                ],
+                &mut [],
+            )
+            .await
+            .map_err(|e| EngineError::Other(e.to_string()))?;
+        }
+        Ok(())
+    }
 }
