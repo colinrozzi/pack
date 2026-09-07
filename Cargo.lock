@@ -860,6 +860,7 @@ dependencies = [
  "async-trait",
  "packr-abi",
  "thiserror 1.0.69",
+ "tokio",
 ]
 
 [[package]]

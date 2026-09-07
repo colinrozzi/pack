@@ -29,6 +29,7 @@ pub mod abi_call;
 pub mod backend;
 pub mod host;
 pub mod interceptor;
+pub mod resume;
 
 pub use abi_call::{call_with_value, CallError, INPUT_BUFFER_OFFSET, RESULT_LEN_OFFSET, RESULT_PTR_OFFSET};
 pub use backend::{EngineError, Val, WasmEngine, WasmInstance};
@@ -37,6 +38,7 @@ pub use host::{
     HostImports,
 };
 pub use interceptor::CallInterceptor;
+pub use resume::{drive, CompletionRegistry, ResumeTarget, TAG_ERROR, TAG_PENDING, TAG_READY};
 
 /// The graph ABI, re-exported so downstream crates see exactly one `Value` type.
 pub use packr_abi as abi;
