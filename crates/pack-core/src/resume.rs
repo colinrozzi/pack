@@ -53,6 +53,14 @@ impl CompletionRegistry {
         id
     }
 
+    /// Stash a future under an id the caller already assigned — used when the
+    /// backend's import handler assigned the `completion_id` (and told the guest)
+    /// during a guest call, so the pump must key on that same id rather than a
+    /// fresh one.
+    pub fn insert(&mut self, id: u32, fut: BoxFuture<'static, Result<Value, HostError>>) {
+        self.pending.insert(id, fut);
+    }
+
     /// Number of in-flight completions.
     pub fn len(&self) -> usize {
         self.pending.len()

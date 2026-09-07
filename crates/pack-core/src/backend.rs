@@ -39,7 +39,8 @@ impl Val {
     /// The `i32` payload, panicking on a width mismatch. For call sites that
     /// know the ABI signature (which is all of packr's orchestration).
     pub fn unwrap_i32(self) -> i32 {
-        self.as_i32().expect("expected an i32 wasm value at the ABI boundary")
+        self.as_i32()
+            .expect("expected an i32 wasm value at the ABI boundary")
     }
 }
 

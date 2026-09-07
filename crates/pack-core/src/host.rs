@@ -50,8 +50,7 @@ impl From<&str> for HostError {
 
 /// A host function: given the decoded input [`Value`], produce an output
 /// [`Value`]. async-first; captures its own state (capture-based model).
-pub type HostFn =
-    Arc<dyn Fn(Value) -> BoxFuture<'static, Result<Value, HostError>> + Send + Sync>;
+pub type HostFn = Arc<dyn Fn(Value) -> BoxFuture<'static, Result<Value, HostError>> + Send + Sync>;
 
 /// Wrap an `async fn(Value) -> Result<Value, HostError>` (capturing whatever
 /// state it needs) as a [`HostFn`]. Ergonomic sugar over the boxing.
@@ -183,7 +182,8 @@ pub async fn dispatch_host_import(
     // Interceptor replay: short-circuit with the recorded output.
     if let Some(ic) = interceptor {
         if let Some(recorded) = ic.before_import(interface, function, &input).await {
-            ic.after_import(interface, function, &input, &recorded).await;
+            ic.after_import(interface, function, &input, &recorded)
+                .await;
             return write_output(ctx, out_ptr_slot, out_len_slot, &recorded).await;
         }
     }

@@ -9,6 +9,7 @@ members = [
 ]
 exclude = [
     "crates/pack-web",
+    "packages/async-adder",
     "packages/pack-alloc",
     "packages/echo-pic",
     "packages/hostcall-pic",

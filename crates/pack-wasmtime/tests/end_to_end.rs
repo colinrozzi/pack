@@ -103,7 +103,11 @@ async fn host_import_actor_runs_through_the_backend() {
             typed_host_fn(|n: i64| async move { Ok::<i64, HostError>(n * 2) }),
         )
         // `big` via the raw Value path (unused by `process`, but must be defined).
-        .define("math", "big", host_fn(|v| async move { Ok::<Value, HostError>(v) }));
+        .define(
+            "math",
+            "big",
+            host_fn(|v| async move { Ok::<Value, HostError>(v) }),
+        );
 
     let mut instance = engine
         .instantiate(&module, imports)
@@ -114,7 +118,11 @@ async fn host_import_actor_runs_through_the_backend() {
     let result = call_with_value(&mut instance, "process", &Value::S64(5))
         .await
         .expect("call process(5)");
-    assert_eq!(result, Value::S64(11), "process(5) = 2*5 + 1 = 11 via the host fn");
+    assert_eq!(
+        result,
+        Value::S64(11),
+        "process(5) = 2*5 + 1 = 11 via the host fn"
+    );
 
     let result2 = call_with_value(&mut instance, "process", &Value::S64(50))
         .await
@@ -161,7 +169,10 @@ async fn export_interceptor_records_calls() {
     let recorder = Arc::new(Recorder::default());
     let mut imports = HostImports::new();
     imports.with_interceptor(recorder.clone());
-    let mut instance = engine.instantiate(&module, imports).await.expect("instantiate");
+    let mut instance = engine
+        .instantiate(&module, imports)
+        .await
+        .expect("instantiate");
 
     let result = call_with_value(&mut instance, "double", &Value::S64(7))
         .await
@@ -203,7 +214,10 @@ async fn export_interceptor_replays_without_calling_guest() {
 
     let mut imports = HostImports::new();
     imports.with_interceptor(Arc::new(Replay(Value::S64(999))));
-    let mut instance = engine.instantiate(&module, imports).await.expect("instantiate");
+    let mut instance = engine
+        .instantiate(&module, imports)
+        .await
+        .expect("instantiate");
 
     // double(7) would be 14, but the replay interceptor returns 999 and the
     // guest is never invoked.

@@ -21,10 +21,14 @@ use packr_core::host::{dispatch_host_import, HostCallCtx, HostImports};
 use packr_core::CallInterceptor;
 use wasmtime::{Caller, Config, Engine, Instance, Linker, Memory, Module, Store};
 
+/// The pending/resume async-ABI driver (model B) — see `docs/async-abi.md`.
+pub mod model_b;
+pub use model_b::call_resume;
+
 /// A never-tripping epoch deadline. NOT `u64::MAX`: `set_epoch_deadline`
 /// computes `current_epoch + delta`, which would overflow once the host's epoch
 /// ticker has advanced. Mirrors `packr`'s `NO_EPOCH_DEADLINE`.
-const NO_EPOCH_DEADLINE: u64 = u64::MAX / 2;
+pub(crate) const NO_EPOCH_DEADLINE: u64 = u64::MAX / 2;
 
 /// The native wasm engine, backed by `wasmtime` with async + epoch support.
 pub struct WasmtimeEngine {
@@ -189,9 +193,7 @@ impl WasmInstance for WasmtimeInstance {
     }
 
     fn memory_size(&self) -> usize {
-        self.memory
-            .map(|m| m.data_size(&self.store))
-            .unwrap_or(0)
+        self.memory.map(|m| m.data_size(&self.store)).unwrap_or(0)
     }
 
     fn grow_memory(&mut self, delta_pages: u64) -> Result<(), EngineError> {
@@ -228,12 +230,14 @@ impl WasmInstance for WasmtimeInstance {
 /// This is the bump-allocator proof provider (no real free); self-contained
 /// actors bundle their own in-wasm allocator and never use it, and it satisfies
 /// legacy `pack:alloc`-importing modules for the execution-cluster bring-up.
-fn register_default_alloc(linker: &mut Linker<()>) -> Result<(), wasmtime::Error> {
+pub(crate) fn register_default_alloc<T: 'static>(
+    linker: &mut Linker<T>,
+) -> Result<(), wasmtime::Error> {
     let next = std::sync::Arc::new(std::sync::Mutex::new(0usize));
     linker.func_wrap(
         "pack:alloc",
         "alloc",
-        move |mut caller: Caller<'_, ()>, size: i32, align: i32| -> i32 {
+        move |mut caller: Caller<'_, T>, size: i32, align: i32| -> i32 {
             let memory = match caller.get_export("memory").and_then(|e| e.into_memory()) {
                 Some(m) => m,
                 None => return 0,
@@ -261,7 +265,7 @@ fn register_default_alloc(linker: &mut Linker<()>) -> Result<(), wasmtime::Error
     linker.func_wrap(
         "pack:alloc",
         "dealloc",
-        move |_caller: Caller<'_, ()>, _ptr: i32, _size: i32, _align: i32| {
+        move |_caller: Caller<'_, T>, _ptr: i32, _size: i32, _align: i32| {
             // Bump allocator: no-op.
         },
     )?;
@@ -274,7 +278,10 @@ fn register_default_alloc(linker: &mut Linker<()>) -> Result<(), wasmtime::Error
 /// [`WasmtimeHostCtx`] over the live caller and runs the shared
 /// `dispatch_host_import` trampoline — so the marshalling logic lives once, in
 /// packr-core, not per backend.
-fn register_host_imports(linker: &mut Linker<()>, imports: &HostImports) -> Result<(), EngineError> {
+fn register_host_imports(
+    linker: &mut Linker<()>,
+    imports: &HostImports,
+) -> Result<(), EngineError> {
     let interceptor = imports.interceptor().cloned();
     for imp in imports.imports() {
         let func = imp.func.clone();
