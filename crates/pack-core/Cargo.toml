@@ -1,0 +1,20 @@
+[package]
+name = "packr-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Environment-agnostic packr runtime: the wasm-backend traits and the graph-ABI orchestration that runs on top of them (see docs/engine-axis.md)"
+
+[dependencies]
+# The graph ABI — values, wire encode/decode, pact. The crown jewel that stays
+# single-sourced above the backend line.
+packr-abi = { workspace = true, features = ["std"] }
+
+# async-first: every backend-crossing call is async (JS WebAssembly forces it).
+async-trait = "0.1"
+
+thiserror = "1.0"
+
+[dev-dependencies]
+tokio = { version = "1.0", features = ["rt", "macros"] }

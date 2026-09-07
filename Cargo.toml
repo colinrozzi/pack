@@ -1,11 +1,15 @@
 [workspace]
 members = [
     "crates/pack-abi",
+    "crates/pack-core",
+    "crates/pack-wasmtime",
     "crates/pack-derive",
     "crates/pack-guest",
     "crates/pack-guest-macros",
 ]
 exclude = [
+    "crates/pack-web",
+    "packages/async-adder",
     "packages/pack-alloc",
     "packages/echo-pic",
     "packages/hostcall-pic",

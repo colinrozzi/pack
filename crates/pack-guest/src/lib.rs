@@ -26,12 +26,15 @@
 //! }
 //! ```
 
-#![no_std]
+#![cfg_attr(not(test), no_std)]
 
 pub extern crate alloc;
 
 // Re-export the macros
 pub use packr_guest_macros::{export, import, import_from, pack_types, pact, world};
+
+/// Guest-side executor for the pending/resume async-ABI (`docs/async-abi.md`).
+pub mod executor;
 
 // Re-export useful types from pack-abi
 pub use packr_abi::{

@@ -1,0 +1,22 @@
+[package]
+name = "packr-web"
+version = "0.22.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/colinrozzi/pack"
+description = "The browser (JS WebAssembly) backend for packr-core's environment-agnostic wasm-backend traits (see docs/engine-axis.md)"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+# wasm32-only crate: excluded from the native workspace build. Build/test with
+#   cargo build -p packr-web --target wasm32-unknown-unknown
+[dependencies]
+packr-core = { path = "../pack-core" }
+# Pinned to the nix-provided wasm-bindgen-cli (0.2.127) so wasm-bindgen-test runs.
+wasm-bindgen = "=0.2.127"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
