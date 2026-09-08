@@ -26,8 +26,37 @@ use packr_abi::{decode, encode, Value};
 use crate::backend::EngineError;
 use crate::interceptor::CallInterceptor;
 
-/// A boxed, `Send` future — the return of an async host function.
+// The "MaybeSend" seam (`docs/engine-axis.md` §4, theater-dev id=295). Discriminated
+// by `target_arch`, NOT a cargo feature — a feature would unify ON across the
+// workspace (native wants Send, wasm can't have it) and break the browser build.
+// These markers are for GENERIC bounds; the `dyn` aliases (`BoxFuture`, `HostFn`)
+// are cfg-gated directly because a trait object can only carry auto traits
+// (`Send`/`Sync`) besides its principal — a non-auto `MaybeSend` in `dyn ...`
+// does not compile.
+#[cfg(not(target_arch = "wasm32"))]
+pub trait MaybeSend: Send {}
+#[cfg(not(target_arch = "wasm32"))]
+impl<T: Send + ?Sized> MaybeSend for T {}
+#[cfg(not(target_arch = "wasm32"))]
+pub trait MaybeSendSync: Sync {}
+#[cfg(not(target_arch = "wasm32"))]
+impl<T: Sync + ?Sized> MaybeSendSync for T {}
+
+#[cfg(target_arch = "wasm32")]
+pub trait MaybeSend {}
+#[cfg(target_arch = "wasm32")]
+impl<T: ?Sized> MaybeSend for T {}
+#[cfg(target_arch = "wasm32")]
+pub trait MaybeSendSync {}
+#[cfg(target_arch = "wasm32")]
+impl<T: ?Sized> MaybeSendSync for T {}
+
+/// The return of an async host function: `Send` on native (multi-thread pump),
+/// unbounded on wasm (single-thread; a browser host fn awaits a `!Send` JS promise).
+#[cfg(not(target_arch = "wasm32"))]
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+#[cfg(target_arch = "wasm32")]
+pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
 
 /// A host-side failure of a host function itself (not an application-level
 /// error — those are encoded as ordinary pact `result` Values and returned via
@@ -50,14 +79,19 @@ impl From<&str> for HostError {
 
 /// A host function: given the decoded input [`Value`], produce an output
 /// [`Value`]. async-first; captures its own state (capture-based model).
+/// `Send + Sync` on native; unbounded on wasm (a browser host fn captures JS
+/// handles / awaits JS promises → `!Send`).
+#[cfg(not(target_arch = "wasm32"))]
 pub type HostFn = Arc<dyn Fn(Value) -> BoxFuture<'static, Result<Value, HostError>> + Send + Sync>;
+#[cfg(target_arch = "wasm32")]
+pub type HostFn = Arc<dyn Fn(Value) -> BoxFuture<'static, Result<Value, HostError>>>;
 
 /// Wrap an `async fn(Value) -> Result<Value, HostError>` (capturing whatever
 /// state it needs) as a [`HostFn`]. Ergonomic sugar over the boxing.
 pub fn host_fn<F, Fut>(f: F) -> HostFn
 where
-    F: Fn(Value) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = Result<Value, HostError>> + Send + 'static,
+    F: Fn(Value) -> Fut + MaybeSend + MaybeSendSync + 'static,
+    Fut: Future<Output = Result<Value, HostError>> + MaybeSend + 'static,
 {
     Arc::new(move |v| Box::pin(f(v)))
 }
@@ -69,11 +103,11 @@ where
 /// the closure (capture-based model, `docs/engine-axis.md` §4.2).
 pub fn typed_host_fn<P, R, F, Fut>(f: F) -> HostFn
 where
-    P: TryFrom<Value> + Send + 'static,
+    P: TryFrom<Value> + MaybeSend + 'static,
     <P as TryFrom<Value>>::Error: core::fmt::Debug,
-    R: Into<Value> + Send + 'static,
-    F: Fn(P) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = Result<R, HostError>> + Send + 'static,
+    R: Into<Value> + MaybeSend + 'static,
+    F: Fn(P) -> Fut + MaybeSend + MaybeSendSync + 'static,
+    Fut: Future<Output = Result<R, HostError>> + MaybeSend + 'static,
 {
     let f = Arc::new(f);
     Arc::new(move |v| {

@@ -19,6 +19,10 @@ use packr_core::CallInterceptor;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 
+/// The pending/resume async-ABI driver (model B) for the browser — no JSPI.
+pub mod model_b;
+pub use model_b::call_resume;
+
 fn jserr(ctx: &str, e: JsValue) -> EngineError {
     EngineError::Other(format!("{ctx}: {e:?}"))
 }
