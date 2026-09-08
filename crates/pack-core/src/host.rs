@@ -120,6 +120,43 @@ where
     })
 }
 
+/// Build the **deferred, interceptor-aware** host-call future for the
+/// pending/resume path. Because the model-B import handler is synchronous
+/// (poll-once, never suspends) but the interceptor hooks are `async`, the handler
+/// can't consult the interceptor itself — instead it stashes *this* future under
+/// a `completion_id`, and the pump awaits it (in an async context) so the hooks
+/// run correctly:
+///
+/// - `before_import` — a `Some` short-circuits to the recorded value (replay);
+/// - otherwise run the host fn;
+/// - `after_import` — fires with the output (at resume; trivially issue-ordered
+///   because actors are sequential).
+///
+/// Owns its inputs so the returned future is `'static` (stashable).
+pub fn host_call_future(
+    func: HostFn,
+    interceptor: Option<Arc<dyn CallInterceptor>>,
+    interface: String,
+    function: String,
+    input: Value,
+) -> BoxFuture<'static, Result<Value, HostError>> {
+    Box::pin(async move {
+        if let Some(ic) = &interceptor {
+            if let Some(recorded) = ic.before_import(&interface, &function, &input).await {
+                ic.after_import(&interface, &function, &input, &recorded)
+                    .await;
+                return Ok(recorded);
+            }
+        }
+        let output = func(input.clone()).await?;
+        if let Some(ic) = &interceptor {
+            ic.after_import(&interface, &function, &input, &output)
+                .await;
+        }
+        Ok(output)
+    })
+}
+
 /// Per-call access to the guest, provided by the backend while a host function
 /// runs: read/write guest linear memory and re-enter the guest allocator. This
 /// is the single backend-specific seam in the guest → host path.

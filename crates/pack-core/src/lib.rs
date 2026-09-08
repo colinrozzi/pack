@@ -36,8 +36,8 @@ pub use abi_call::{
 };
 pub use backend::{EngineError, Val, WasmEngine, WasmInstance};
 pub use host::{
-    dispatch_host_import, host_fn, typed_host_fn, HostCallCtx, HostError, HostFn, HostImport,
-    HostImports,
+    dispatch_host_import, host_call_future, host_fn, typed_host_fn, HostCallCtx, HostError, HostFn,
+    HostImport, HostImports,
 };
 pub use interceptor::CallInterceptor;
 pub use resume::{drive, CompletionRegistry, ResumeTarget, TAG_ERROR, TAG_PENDING, TAG_READY};

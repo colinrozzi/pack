@@ -10,7 +10,6 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
 use js_sys::{Array, Function, Object, Reflect, Uint8Array, WebAssembly};
 use packr_core::abi_call::{CallError, RESULT_LEN_OFFSET, RESULT_PTR_OFFSET};
@@ -52,15 +51,29 @@ pub async fn call_resume(
 ) -> Result<Value, CallError> {
     let shared: SharedRef = Rc::new(RefCell::new(Shared::default()));
 
-    // Build the import object: one poll-once JS closure per host import.
+    // Build the import object: one JS closure per host import that stashes the
+    // deferred host-call future (the pump runs it).
     let import_object = Object::new();
     let mut closures: Vec<Closure<dyn Fn(i32, i32, i32, i32) -> i32>> = Vec::new();
+    let interceptor = imports.interceptor().cloned();
     for imp in imports.imports() {
         let host_fn = imp.func.clone();
         let shared_cl = shared.clone();
+        let interceptor = interceptor.clone();
+        let interface = imp.interface.clone();
+        let function = imp.function.clone();
         let closure = Closure::wrap(Box::new(
-            move |in_ptr: i32, in_len: i32, out_ptr_slot: i32, out_len_slot: i32| -> i32 {
-                handle_import(&shared_cl, &host_fn, in_ptr, in_len, out_ptr_slot, out_len_slot)
+            move |in_ptr: i32, in_len: i32, out_ptr_slot: i32, _out_len_slot: i32| -> i32 {
+                handle_import(
+                    &shared_cl,
+                    &host_fn,
+                    interceptor.clone(),
+                    &interface,
+                    &function,
+                    in_ptr,
+                    in_len,
+                    out_ptr_slot,
+                )
             },
         ) as Box<dyn Fn(i32, i32, i32, i32) -> i32>);
 
@@ -126,16 +139,20 @@ fn ensure_namespace(import_object: &Object, interface: &str) -> Result<Object, J
     Ok(ns)
 }
 
-/// Poll-once host-import handler (mirrors the wasmtime one). `Ready` → write the
-/// result inline (`READY`); `Pending` → stash the future under a fresh
-/// `completion_id`, write it into the out-ptr slot, return `PENDING`.
+/// Host-import handler: decode the input, build the deferred interceptor-aware
+/// host-call future, stash it under a fresh `completion_id`, write that id into
+/// the out-ptr slot, and return `PENDING`. The pump runs the future (async, so
+/// the interceptor hooks run correctly) and re-enters via `__pack_resume`.
+#[allow(clippy::too_many_arguments)]
 fn handle_import(
     shared: &SharedRef,
     host_fn: &packr_core::host::HostFn,
+    interceptor: Option<std::sync::Arc<dyn packr_core::CallInterceptor>>,
+    interface: &str,
+    function: &str,
     in_ptr: i32,
     in_len: i32,
     out_ptr_slot: i32,
-    out_len_slot: i32,
 ) -> i32 {
     let input = {
         let s = shared.borrow();
@@ -150,60 +167,30 @@ fn handle_import(
         }
     };
 
-    let mut fut = host_fn(input);
-    let waker = noop_waker();
-    let mut cx = Context::from_waker(&waker);
-    match fut.as_mut().poll(&mut cx) {
-        Poll::Ready(Ok(result)) => match write_guest(shared, &result) {
-            Ok((ptr, len)) => {
-                let s = shared.borrow();
-                let Some(mem) = &s.memory else { return -1 };
-                let view = Uint8Array::new(&mem.buffer());
-                write_u32(&view, out_ptr_slot as u32, ptr);
-                write_u32(&view, out_len_slot as u32, len);
-                TAG_READY
-            }
-            Err(_) => -1,
-        },
-        Poll::Ready(Err(_)) => -1,
-        Poll::Pending => {
-            let id = {
-                let mut s = shared.borrow_mut();
-                assert!(
-                    s.new_pending.is_none(),
-                    "concurrent host call: actors are sequential (one in-flight host call)"
-                );
-                let id = s.next_id;
-                s.next_id = s.next_id.wrapping_add(1);
-                s.new_pending = Some((id, fut));
-                id
-            };
-            let s = shared.borrow();
-            let Some(mem) = &s.memory else { return -1 };
-            let view = Uint8Array::new(&mem.buffer());
-            write_u32(&view, out_ptr_slot as u32, id);
-            TAG_PENDING
-        }
-    }
-}
+    let fut = packr_core::host::host_call_future(
+        host_fn.clone(),
+        interceptor,
+        interface.to_string(),
+        function.to_string(),
+        input,
+    );
 
-/// Guest-allocate a buffer (sync `__pack_alloc`) and write `value`; `(ptr, len)`.
-fn write_guest(shared: &SharedRef, value: &Value) -> Result<(u32, u32), ()> {
-    let bytes = packr_core::abi::encode(value).map_err(|_| ())?;
-    let (alloc, mem) = {
-        let s = shared.borrow();
-        (s.alloc.clone().ok_or(())?, s.memory.clone().ok_or(())?)
+    let id = {
+        let mut s = shared.borrow_mut();
+        assert!(
+            s.new_pending.is_none(),
+            "concurrent host call: actors are sequential (one in-flight host call)"
+        );
+        let id = s.next_id;
+        s.next_id = s.next_id.wrapping_add(1);
+        s.new_pending = Some((id, fut));
+        id
     };
-    let ptr = alloc
-        .call1(&JsValue::NULL, &JsValue::from_f64(bytes.len() as f64))
-        .map_err(|_| ())?
-        .as_f64()
-        .ok_or(())? as u32;
+    let s = shared.borrow();
+    let Some(mem) = &s.memory else { return -1 };
     let view = Uint8Array::new(&mem.buffer());
-    let src = Uint8Array::new_with_length(bytes.len() as u32);
-    src.copy_from(&bytes);
-    view.set(&src, ptr);
-    Ok((ptr, bytes.len() as u32))
+    write_u32(&view, out_ptr_slot as u32, id);
+    TAG_PENDING
 }
 
 fn write_u32(view: &Uint8Array, offset: u32, value: u32) {
@@ -326,13 +313,4 @@ impl ResumeTarget for WebResume {
         self.drain_into(registry);
         self.finish(tag)
     }
-}
-
-fn noop_waker() -> Waker {
-    fn no_op(_: *const ()) {}
-    fn clone(_: *const ()) -> RawWaker {
-        RawWaker::new(std::ptr::null(), &VTABLE)
-    }
-    static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, no_op, no_op, no_op);
-    unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) }
 }

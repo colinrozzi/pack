@@ -7,8 +7,6 @@
 //! drives `__pack_resume` with an ordinary `call_async`, so this proves the
 //! protocol end to end before any browser backend exists.
 
-use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
-
 use packr_core::abi_call::{CallError, RESULT_LEN_OFFSET, RESULT_PTR_OFFSET};
 use packr_core::host::{BoxFuture, HostError, HostImports};
 use packr_core::resume::{drive, CompletionRegistry, ResumeTarget, TAG_PENDING, TAG_READY};
@@ -46,9 +44,14 @@ pub async fn call_resume(
     crate::register_default_alloc(&mut linker)
         .map_err(|e| CallError::Engine(packr_core::EngineError::Instantiate(e.to_string())))?;
 
-    // Register each host import as a poll-once, non-suspending func_wrap.
+    // Register each host import as a synchronous, non-suspending func_wrap that
+    // just stashes the deferred host-call future (the pump runs it).
+    let interceptor = imports.interceptor().cloned();
     for imp in imports.imports() {
         let host_fn = imp.func.clone();
+        let interceptor = interceptor.clone();
+        let interface = imp.interface.clone();
+        let function = imp.function.clone();
         linker
             .func_wrap(
                 &imp.interface,
@@ -57,15 +60,17 @@ pub async fn call_resume(
                       in_ptr: i32,
                       in_len: i32,
                       out_ptr_slot: i32,
-                      out_len_slot: i32|
+                      _out_len_slot: i32|
                       -> i32 {
                     handle_import(
                         &mut caller,
                         &host_fn,
+                        interceptor.clone(),
+                        &interface,
+                        &function,
                         in_ptr,
                         in_len,
                         out_ptr_slot,
-                        out_len_slot,
                     )
                 },
             )
@@ -101,17 +106,21 @@ pub async fn call_resume(
     drive(&mut target, name, input).await
 }
 
-/// A poll-once host-import handler: read + decode the input, poll the host future
-/// once. `Ready` → return the result inline (`READY`); `Pending` → stash it under
-/// a fresh `completion_id`, write that id into the guest's out-ptr slot, return
-/// `PENDING`. Returns `-1` on any host-side failure.
+/// Synchronous host-import handler: read + decode the input, build the deferred
+/// interceptor-aware host-call future, stash it under a fresh `completion_id`,
+/// and write that id into the guest's out-ptr slot. Always returns `PENDING` —
+/// the pump runs the future (so the async interceptor hooks run in async context)
+/// and re-enters via `__pack_resume`. Returns `-1` on a host-side failure.
+#[allow(clippy::too_many_arguments)]
 fn handle_import(
     caller: &mut Caller<'_, ModelBCtx>,
     host_fn: &packr_core::host::HostFn,
+    interceptor: Option<std::sync::Arc<dyn packr_core::CallInterceptor>>,
+    interface: &str,
+    function: &str,
     in_ptr: i32,
     in_len: i32,
     out_ptr_slot: i32,
-    out_len_slot: i32,
 ) -> i32 {
     let memory = match caller.get_export("memory").and_then(|e| e.into_memory()) {
         Some(m) => m,
@@ -126,59 +135,29 @@ fn handle_import(
         Err(_) => return -1,
     };
 
-    let mut fut = host_fn(input);
-    let waker = noop_waker();
-    let mut cx = Context::from_waker(&waker);
-    match fut.as_mut().poll(&mut cx) {
-        Poll::Ready(Ok(result)) => match write_guest_result(caller, &memory, &result) {
-            Ok((ptr, len)) => {
-                let _ = memory.write(&mut *caller, out_ptr_slot as usize, &ptr.to_le_bytes());
-                let _ = memory.write(&mut *caller, out_len_slot as usize, &len.to_le_bytes());
-                TAG_READY
-            }
-            Err(_) => -1,
-        },
-        Poll::Ready(Err(_)) => -1,
-        Poll::Pending => {
-            let data = caller.data_mut();
-            assert!(
-                data.new_pending.is_none(),
-                "concurrent host call: actors are sequential (one in-flight host call)"
-            );
-            let id = data.next_id;
-            data.next_id = data.next_id.wrapping_add(1);
-            data.new_pending = Some((id, fut));
-            if memory
-                .write(&mut *caller, out_ptr_slot as usize, &id.to_le_bytes())
-                .is_err()
-            {
-                return -1;
-            }
-            TAG_PENDING
-        }
-    }
-}
+    let fut = packr_core::host::host_call_future(
+        host_fn.clone(),
+        interceptor,
+        interface.to_string(),
+        function.to_string(),
+        input,
+    );
 
-/// Guest-allocate a buffer (sync `__pack_alloc` re-entry) and write `value` into
-/// it; returns `(ptr, len)`. Used by the `READY`-inline import path.
-fn write_guest_result(
-    caller: &mut Caller<'_, ModelBCtx>,
-    memory: &Memory,
-    value: &Value,
-) -> Result<(u32, u32), ()> {
-    let bytes = packr_core::abi::encode(value).map_err(|_| ())?;
-    let alloc = caller
-        .get_export("__pack_alloc")
-        .and_then(|e| e.into_func())
-        .ok_or(())?;
-    let alloc: TypedFunc<i32, i32> = alloc.typed(&*caller).map_err(|_| ())?;
-    let ptr = alloc
-        .call(&mut *caller, bytes.len() as i32)
-        .map_err(|_| ())?;
-    memory
-        .write(&mut *caller, ptr as usize, &bytes)
-        .map_err(|_| ())?;
-    Ok((ptr as u32, bytes.len() as u32))
+    let data = caller.data_mut();
+    assert!(
+        data.new_pending.is_none(),
+        "concurrent host call: actors are sequential (one in-flight host call)"
+    );
+    let id = data.next_id;
+    data.next_id = data.next_id.wrapping_add(1);
+    data.new_pending = Some((id, fut));
+    if memory
+        .write(&mut *caller, out_ptr_slot as usize, &id.to_le_bytes())
+        .is_err()
+    {
+        return -1;
+    }
+    TAG_PENDING
 }
 
 /// The pump's view of the guest: call `process` / `__pack_resume`, and after each
@@ -327,13 +306,4 @@ fn encoded_len(value: &Value) -> Result<i32, packr_core::EngineError> {
 
 fn werr(e: &wasmtime::Error) -> CallError {
     CallError::Engine(packr_core::EngineError::Other(e.to_string()))
-}
-
-fn noop_waker() -> Waker {
-    fn no_op(_: *const ()) {}
-    fn clone(_: *const ()) -> RawWaker {
-        RawWaker::new(std::ptr::null(), &VTABLE)
-    }
-    static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, no_op, no_op, no_op);
-    unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &VTABLE)) }
 }
