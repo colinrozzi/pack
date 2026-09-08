@@ -16,5 +16,11 @@ async-trait = "0.1"
 
 thiserror = "1.0"
 
+# Static CGRF metadata extraction from wasm data segments (read side).
+wasmparser = "0.219"
+
+# Structural type hashing (nominal-ref fallback in the interface hasher).
+sha2 = "0.10"
+
 [dev-dependencies]
 tokio = { version = "1.0", features = ["rt", "macros"] }

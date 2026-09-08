@@ -7,7 +7,7 @@ repository.workspace = true
 description = "The native (wasmtime) backend for packr-core's environment-agnostic wasm-backend traits (see docs/engine-axis.md)"
 
 [dependencies]
-packr-core = { path = "../pack-core" }
+packr-core = { workspace = true }
 wasmtime = "27"
 async-trait = "0.1"
 

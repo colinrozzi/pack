@@ -13,6 +13,7 @@
 //! - **Everything derives `Hash`** - enables hash-based comparison
 //! - **`Value` kept** as dynamic escape hatch
 
+#[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 use std::hash::Hash;
 
@@ -24,7 +25,8 @@ use std::hash::Hash;
 ///
 /// Arenas replace the Package/Interface split with a unified scoping structure.
 /// They can be nested to represent hierarchical namespaces.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Arena {
     /// Name of this arena (e.g., "math", "wasi:cli/stdout")
     pub name: String,
@@ -38,7 +40,7 @@ pub struct Arena {
     /// Empty for non-generic interfaces. Carried through into embedded
     /// metadata so composition can identify which signature type-references are
     /// generic parameters (see [`TypeParam`]).
-    #[serde(default)]
+    #[cfg_attr(feature = "serde", serde(default))]
     pub type_params: Vec<TypeParam>,
 }
 
@@ -46,12 +48,13 @@ pub struct Arena {
 ///
 /// The `constraint` is the name of an interface the bound type must satisfy
 /// (currently carried but not yet enforced).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct TypeParam {
     /// Parameter name (e.g. "t").
     pub name: String,
     /// Optional constraint — an interface name the concrete type must satisfy.
-    #[serde(default)]
+    #[cfg_attr(feature = "serde", serde(default))]
     pub constraint: Option<String>,
 }
 
@@ -177,12 +180,13 @@ impl Arena {
 // ============================================================================
 
 /// A function signature with parameters and results.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Function {
     /// Function name
     pub name: String,
     /// Interface this function belongs to (for metadata)
-    #[serde(default)]
+    #[cfg_attr(feature = "serde", serde(default))]
     pub interface: String,
     /// Local type definitions (scoped to this function)
     pub types: Vec<TypeDef>,
@@ -233,7 +237,8 @@ impl Function {
 }
 
 /// A function parameter.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Param {
     /// Parameter name
     pub name: String,
@@ -256,12 +261,13 @@ impl Param {
 // ============================================================================
 
 /// A type definition (named type).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum TypeDef {
     /// Type alias: `type foo = bar` (optionally generic: `type foo<A> = ...`)
     Alias {
         name: String,
-        #[serde(default)]
+        #[cfg_attr(feature = "serde", serde(default))]
         type_params: Vec<String>,
         ty: Type,
     },
@@ -270,7 +276,7 @@ pub enum TypeDef {
     /// (optionally generic: `record foo<A, B> { ... }`)
     Record {
         name: String,
-        #[serde(default)]
+        #[cfg_attr(feature = "serde", serde(default))]
         type_params: Vec<String>,
         fields: Vec<Field>,
     },
@@ -279,7 +285,7 @@ pub enum TypeDef {
     /// (optionally generic: `variant foo<T> { ... }`)
     Variant {
         name: String,
-        #[serde(default)]
+        #[cfg_attr(feature = "serde", serde(default))]
         type_params: Vec<String>,
         cases: Vec<Case>,
     },
@@ -434,7 +440,8 @@ impl TypeDef {
 }
 
 /// A record field.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Field {
     /// Field name
     pub name: String,
@@ -453,7 +460,8 @@ impl Field {
 }
 
 /// A variant case.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Case {
     /// Case name
     pub name: String,
@@ -487,7 +495,8 @@ impl Case {
 ///
 /// This enum represents all possible types in the Pack type system.
 /// Types can be primitive, compound, or references to named types.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum Type {
     // Unit type (explicit, no value)
     Unit,
@@ -738,7 +747,8 @@ impl Type {
 /// - Simple: just a name like "expr"
 /// - Qualified: segments like ["wasi", "cli", "stdin"]
 /// - Self-reference: empty segments with relative=true
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct TypePath {
     /// Path segments (empty for self-reference)
     pub segments: Vec<String>,
