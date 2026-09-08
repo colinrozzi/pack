@@ -23,7 +23,10 @@ use crate::WasmtimeEngine;
 #[derive(Default)]
 struct ModelBCtx {
     next_id: u32,
-    new_pending: Vec<(u32, BoxFuture<'static, Result<Value, HostError>>)>,
+    /// The at-most-one host future stashed during the current guest call — actors
+    /// are sequential (≤1 in-flight host call). Drained into the pump's registry
+    /// after each guest call.
+    new_pending: Option<(u32, BoxFuture<'static, Result<Value, HostError>>)>,
 }
 
 /// Run an actor export under the pending/resume protocol on wasmtime. Instantiate
@@ -138,9 +141,13 @@ fn handle_import(
         Poll::Ready(Err(_)) => -1,
         Poll::Pending => {
             let data = caller.data_mut();
+            assert!(
+                data.new_pending.is_none(),
+                "concurrent host call: actors are sequential (one in-flight host call)"
+            );
             let id = data.next_id;
             data.next_id = data.next_id.wrapping_add(1);
-            data.new_pending.push((id, fut));
+            data.new_pending = Some((id, fut));
             if memory
                 .write(&mut *caller, out_ptr_slot as usize, &id.to_le_bytes())
                 .is_err()
@@ -218,10 +225,10 @@ impl WasmtimeResume {
         packr_core::abi::decode(&out).map_err(|e| CallError::Abi(format!("{e:?}")))
     }
 
-    /// Move the host futures the handlers stashed during the last guest call into
+    /// Move the host future the handler stashed during the last guest call into
     /// the pump's registry (keyed by the id the handler already told the guest).
     fn drain_into(&mut self, registry: &mut CompletionRegistry) {
-        for (id, fut) in self.store.data_mut().new_pending.drain(..) {
+        if let Some((id, fut)) = self.store.data_mut().new_pending.take() {
             registry.insert(id, fut);
         }
     }

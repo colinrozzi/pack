@@ -30,7 +30,9 @@ struct Shared {
     memory: Option<WebAssembly::Memory>,
     alloc: Option<Function>,
     next_id: u32,
-    new_pending: Vec<(u32, BoxFuture<'static, Result<Value, packr_core::host::HostError>>)>,
+    /// The at-most-one host future stashed during the current guest call — actors
+    /// are sequential (≤1 in-flight host call).
+    new_pending: Option<(u32, BoxFuture<'static, Result<Value, packr_core::host::HostError>>)>,
 }
 
 type SharedRef = Rc<RefCell<Shared>>;
@@ -167,9 +169,13 @@ fn handle_import(
         Poll::Pending => {
             let id = {
                 let mut s = shared.borrow_mut();
+                assert!(
+                    s.new_pending.is_none(),
+                    "concurrent host call: actors are sequential (one in-flight host call)"
+                );
                 let id = s.next_id;
                 s.next_id = s.next_id.wrapping_add(1);
-                s.new_pending.push((id, fut));
+                s.new_pending = Some((id, fut));
                 id
             };
             let s = shared.borrow();
@@ -247,7 +253,7 @@ impl WebResume {
     }
 
     fn drain_into(&self, registry: &mut CompletionRegistry) {
-        for (id, fut) in self.shared.borrow_mut().new_pending.drain(..) {
+        if let Some((id, fut)) = self.shared.borrow_mut().new_pending.take() {
             registry.insert(id, fut);
         }
     }
