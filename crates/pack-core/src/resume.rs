@@ -12,9 +12,6 @@
 //! written against the [`ResumeTarget`] seam so it can be unit-tested with a mock
 //! guest (below) before any real guest executor or backend wiring exists.
 
-use std::collections::HashMap;
-use std::task::Poll;
-
 use packr_abi::Value;
 
 use crate::abi_call::CallError;
@@ -31,71 +28,44 @@ pub const TAG_PENDING: i32 = 1;
 /// Registry of in-flight host futures, keyed by a `completion_id` the guest holds
 /// while its task is parked. Populated (poll-once dispatch stashes a not-yet-ready
 /// host future) as a side effect of a guest call; drained by the pump.
+/// The (at most one) in-flight host future. Actors are **sequential** (a task has
+/// ≤1 host call outstanding — see the project decision), so this is a single slot,
+/// not a map: no concurrency machinery, and a second concurrent stash is a bug
+/// that would corrupt replay ordering, so it panics loudly rather than silently.
 #[derive(Default)]
 pub struct CompletionRegistry {
-    next_id: u32,
-    pending: HashMap<u32, BoxFuture<'static, Result<Value, HostError>>>,
+    pending: Option<(u32, BoxFuture<'static, Result<Value, HostError>>)>,
 }
 
 impl CompletionRegistry {
     pub fn new() -> Self {
-        Self {
-            next_id: 1,
-            pending: HashMap::new(),
-        }
+        Self { pending: None }
     }
 
-    /// Stash a not-yet-ready host future and return its `completion_id`.
-    pub fn stash(&mut self, fut: BoxFuture<'static, Result<Value, HostError>>) -> u32 {
-        let id = self.next_id;
-        self.next_id = self.next_id.wrapping_add(1);
-        self.pending.insert(id, fut);
-        id
-    }
-
-    /// Stash a future under an id the caller already assigned — used when the
-    /// backend's import handler assigned the `completion_id` (and told the guest)
-    /// during a guest call, so the pump must key on that same id rather than a
-    /// fresh one.
+    /// Stash the in-flight host future under the `completion_id` the backend
+    /// assigned. **Panics** if one is already outstanding — an actor may have at
+    /// most one in-flight host call (an accidental `join!` over host calls is
+    /// forbidden; concurrency would break replay's issue-order matching).
     pub fn insert(&mut self, id: u32, fut: BoxFuture<'static, Result<Value, HostError>>) {
-        self.pending.insert(id, fut);
-    }
-
-    /// Number of in-flight completions.
-    pub fn len(&self) -> usize {
-        self.pending.len()
+        assert!(
+            self.pending.is_none(),
+            "concurrent host call: an actor may have at most one in-flight host \
+             call (actors are sequential)"
+        );
+        self.pending = Some((id, fut));
     }
 
     pub fn is_empty(&self) -> bool {
-        self.pending.is_empty()
+        self.pending.is_none()
     }
 
-    /// Await the *next* in-flight future to resolve — joining over ALL of them,
-    /// so whichever host call finishes first is delivered first (an actor task
-    /// may have several outstanding at once). Returns `None` if the registry is
-    /// empty (a deadlock: the guest is parked but nothing is in flight).
+    /// Await the in-flight host future to resolve. `None` if nothing is in flight
+    /// (a deadlock: the guest parked but issued no host call).
     pub async fn await_next(&mut self) -> Option<(u32, Result<Value, HostError>)> {
-        if self.pending.is_empty() {
-            return None;
+        match self.pending.take() {
+            Some((id, fut)) => Some((id, fut.await)),
+            None => None,
         }
-        let pending = &mut self.pending;
-        std::future::poll_fn(move |cx| {
-            let mut done = None;
-            for (id, fut) in pending.iter_mut() {
-                if let Poll::Ready(result) = fut.as_mut().poll(cx) {
-                    done = Some((*id, result));
-                    break;
-                }
-            }
-            match done {
-                Some((id, result)) => {
-                    pending.remove(&id);
-                    Poll::Ready(Some((id, result)))
-                }
-                None => Poll::Pending,
-            }
-        })
-        .await
     }
 }
 
@@ -178,16 +148,34 @@ mod tests {
         Box::pin(async move { Ok(v) })
     }
 
-    /// A mock guest: `process(n)` makes `n_calls` host calls that each return
-    /// `k`, sums them with the input, and finishes. It parks on the first call,
-    /// then completes on the last resume — exercising the full pump loop and the
-    /// concurrent-completion join.
+    /// A mock guest: `process(n)` makes `n_calls` **sequential** host calls that
+    /// each return `per_call`, sums them with the input, and finishes. Each call
+    /// parks (one in flight), the resume adds it and issues the next — exercising
+    /// the full pump loop the sequential way (never more than one outstanding).
     struct MockGuest {
         n_calls: usize,
         per_call: i64,
-        started: bool,
         acc: i64,
         remaining: usize,
+        next_id: u32,
+    }
+
+    impl MockGuest {
+        fn new(n_calls: usize, per_call: i64) -> Self {
+            Self {
+                n_calls,
+                per_call,
+                acc: 0,
+                remaining: 0,
+                next_id: 1,
+            }
+        }
+
+        fn issue(&mut self, registry: &mut CompletionRegistry) {
+            let id = self.next_id;
+            self.next_id += 1;
+            registry.insert(id, ready(Value::S64(self.per_call)));
+        }
     }
 
     impl ResumeTarget for MockGuest {
@@ -201,16 +189,11 @@ mod tests {
                 Value::S64(n) => *n,
                 _ => 0,
             };
-            self.started = true;
             self.remaining = self.n_calls;
             if self.n_calls == 0 {
                 return Ok((TAG_READY, Some(Value::S64(self.acc))));
             }
-            // The guest fires ALL its host calls up front (they're concurrent),
-            // then parks waiting for the first to resolve.
-            for _ in 0..self.n_calls {
-                registry.stash(ready(Value::S64(self.per_call)));
-            }
+            self.issue(registry); // one call in flight
             Ok((TAG_PENDING, None))
         }
 
@@ -218,7 +201,7 @@ mod tests {
             &mut self,
             _completion_id: u32,
             result: Value,
-            _registry: &mut CompletionRegistry,
+            registry: &mut CompletionRegistry,
         ) -> Result<(i32, Option<Value>), EngineError> {
             if let Value::S64(k) = result {
                 self.acc += k;
@@ -227,6 +210,7 @@ mod tests {
             if self.remaining == 0 {
                 Ok((TAG_READY, Some(Value::S64(self.acc))))
             } else {
+                self.issue(registry); // issue the NEXT, one at a time
                 Ok((TAG_PENDING, None))
             }
         }
@@ -234,44 +218,55 @@ mod tests {
 
     #[tokio::test]
     async fn drives_a_single_pending_host_call() {
-        let mut guest = MockGuest {
-            n_calls: 1,
-            per_call: 10,
-            started: false,
-            acc: 0,
-            remaining: 0,
-        };
+        let mut guest = MockGuest::new(1, 10);
         // process(5) with one host call returning 10 -> 15.
         let out = drive(&mut guest, "process", &Value::S64(5)).await.unwrap();
         assert_eq!(out, Value::S64(15));
     }
 
     #[tokio::test]
-    async fn drives_multiple_concurrent_completions() {
-        let mut guest = MockGuest {
-            n_calls: 3,
-            per_call: 7,
-            started: false,
-            acc: 0,
-            remaining: 0,
-        };
-        // process(1) + 3 host calls of 7 each -> 1 + 21 = 22. Exercises the pump
-        // draining a registry with several completions in flight at once.
+    async fn drives_sequential_host_calls() {
+        let mut guest = MockGuest::new(3, 7);
+        // process(1) + 3 sequential host calls of 7 -> 1 + 21 = 22. One in flight
+        // at a time; exercises the resume loop without any concurrency.
         let out = drive(&mut guest, "process", &Value::S64(1)).await.unwrap();
         assert_eq!(out, Value::S64(22));
     }
 
     #[tokio::test]
     async fn synchronous_guest_never_parks() {
-        let mut guest = MockGuest {
-            n_calls: 0,
-            per_call: 0,
-            started: false,
-            acc: 0,
-            remaining: 0,
-        };
+        let mut guest = MockGuest::new(0, 0);
         let out = drive(&mut guest, "process", &Value::S64(42)).await.unwrap();
         assert_eq!(out, Value::S64(42));
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "concurrent host call")]
+    async fn concurrent_host_calls_panic() {
+        // A misbehaving guest that stashes two host calls at once (an accidental
+        // `join!`) must trip the sequential guard, not silently corrupt replay.
+        struct Concurrent;
+        impl ResumeTarget for Concurrent {
+            async fn call_entry(
+                &mut self,
+                _: &str,
+                _: &Value,
+                registry: &mut CompletionRegistry,
+            ) -> Result<(i32, Option<Value>), EngineError> {
+                registry.insert(1, ready(Value::S64(1)));
+                registry.insert(2, ready(Value::S64(2))); // second in flight → panic
+                Ok((TAG_PENDING, None))
+            }
+            async fn resume(
+                &mut self,
+                _: u32,
+                _: Value,
+                _: &mut CompletionRegistry,
+            ) -> Result<(i32, Option<Value>), EngineError> {
+                Ok((TAG_READY, Some(Value::S64(0))))
+            }
+        }
+        let _ = drive(&mut Concurrent, "x", &Value::S64(0)).await;
     }
 
     #[tokio::test]
