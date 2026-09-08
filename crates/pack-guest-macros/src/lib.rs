@@ -2017,6 +2017,137 @@ fn parse_func_sigs_into(
     Ok(())
 }
 
+// ============================================================================
+// Async ABI (pending/resume) — see docs/async-abi.md
+// ============================================================================
+
+/// `#[async_export]` on `async fn NAME(input: Value) -> Value` — generates the
+/// model-B export entry: decode the input, spawn the async body on the guest
+/// executor (from `setup_async_guest!`), and marshal DONE/PENDING. The actor's
+/// body may `.await` `#[async_import]` functions, which park the task.
+#[proc_macro_attribute]
+pub fn async_export(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let func = parse_macro_input!(item as ItemFn);
+    let name = func.sig.ident.clone();
+    let inner_ident = Ident::new(&format!("__packr_inner_{name}"), name.span());
+
+    // Keep the user's function verbatim (async, its own params/return/body),
+    // just renamed; the extern calls it positionally with the decoded input.
+    let mut inner_fn = func;
+    inner_fn.sig.ident = inner_ident.clone();
+    let inner = inner_ident;
+
+    let expanded = quote! {
+        #inner_fn
+
+        #[no_mangle]
+        pub extern "C" fn #name(
+            in_ptr: i32,
+            in_len: i32,
+            out_ptr_ptr: i32,
+            out_len_ptr: i32,
+        ) -> i32 {
+            let input = {
+                let bytes = unsafe {
+                    core::slice::from_raw_parts(in_ptr as *const u8, in_len as usize)
+                };
+                match packr_guest::decode(bytes) {
+                    ::core::result::Result::Ok(v) => v,
+                    ::core::result::Result::Err(_) => return -1,
+                }
+            };
+            let task = packr_guest::__alloc::boxed::Box::pin(#inner(input));
+            packr_guest::executor::run_export_global(task, out_ptr_ptr, out_len_ptr)
+        }
+    };
+    expanded.into()
+}
+
+/// Arguments for `#[async_import(module = "...", name = "...")]`.
+struct AsyncImportArgs {
+    module: String,
+    name: String,
+}
+
+impl Parse for AsyncImportArgs {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let mut module = None;
+        let mut name = None;
+        let pairs = Punctuated::<AsyncImportKv, Token![,]>::parse_terminated(input)?;
+        for kv in pairs {
+            match kv.key.to_string().as_str() {
+                "module" => module = Some(kv.value.value()),
+                "name" => name = Some(kv.value.value()),
+                other => {
+                    return Err(syn::Error::new(
+                        kv.key.span(),
+                        format!("unknown async_import arg `{other}` (expected module/name)"),
+                    ))
+                }
+            }
+        }
+        Ok(AsyncImportArgs {
+            module: module.ok_or_else(|| {
+                syn::Error::new(input.span(), "async_import needs `module = \"..\"`")
+            })?,
+            name: name.ok_or_else(|| {
+                syn::Error::new(input.span(), "async_import needs `name = \"..\"`")
+            })?,
+        })
+    }
+}
+
+struct AsyncImportKv {
+    key: Ident,
+    value: LitStr,
+}
+
+impl Parse for AsyncImportKv {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let key: Ident = input.parse()?;
+        let _: Token![=] = input.parse()?;
+        let value: LitStr = input.parse()?;
+        Ok(AsyncImportKv { key, value })
+    }
+}
+
+/// `#[async_import(module = "math", name = "double")]` on a stub
+/// `async fn NAME(input: Value) -> Value {}` — generates the raw wasm import
+/// binding and the async shim that makes a pending/resume host call (parks the
+/// task until the host resumes it). The stub's body is discarded.
+#[proc_macro_attribute]
+pub fn async_import(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let args = parse_macro_input!(attr as AsyncImportArgs);
+    let func = parse_macro_input!(item as ItemFn);
+    let vis = &func.vis;
+    let name = &func.sig.ident;
+    let module = &args.module;
+    let function = &args.name;
+    let raw = Ident::new(&format!("__packr_raw_{name}"), name.span());
+
+    let expanded = quote! {
+        #[link(wasm_import_module = #module)]
+        extern "C" {
+            #[link_name = #function]
+            fn #raw(in_ptr: i32, in_len: i32, out_ptr_slot: i32, out_len_slot: i32) -> i32;
+        }
+
+        #vis async fn #name(input: packr_guest::Value) -> packr_guest::Value {
+            packr_guest::executor::host_call(
+                packr_guest::executor::global_runtime(),
+                &packr_guest::executor::WasmCaller::new(
+                    |a, b, c, d| unsafe { #raw(a, b, c, d) },
+                ),
+                #module,
+                #function,
+                input,
+            )
+            .await
+        }
+    };
+    expanded.into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

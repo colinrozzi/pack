@@ -855,7 +855,7 @@ dependencies = [
 
 [[package]]
 name = "packr-core"
-version = "0.22.0"
+version = "0.23.0"
 dependencies = [
  "async-trait",
  "packr-abi",
@@ -894,7 +894,7 @@ dependencies = [
 
 [[package]]
 name = "packr-wasmtime"
-version = "0.22.0"
+version = "0.23.0"
 dependencies = [
  "async-trait",
  "packr-core",
