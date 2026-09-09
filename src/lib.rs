@@ -57,7 +57,9 @@ pub mod metadata;
 pub mod parser;
 pub mod runtime;
 pub mod transform;
-pub mod types;
+// The pact interface AST now lives in packr-abi (single-sourced with the value
+// ABI). Re-exported so `crate::types::*` keeps resolving for umbrella code.
+pub use packr_abi::types;
 pub mod verify;
 
 pub use abi::{decode, encode};

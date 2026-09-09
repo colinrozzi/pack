@@ -29,6 +29,7 @@ pub mod abi_call;
 pub mod backend;
 pub mod host;
 pub mod interceptor;
+pub mod metadata;
 pub mod resume;
 
 pub use abi_call::{

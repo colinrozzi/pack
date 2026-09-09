@@ -31,6 +31,13 @@ mod parse;
 mod pattern;
 mod value;
 
+// The pact interface AST (Arena / TypeDef / Type / Function / TypePath …).
+// Host-side only — the guest macro bakes metadata to bytes and never needs the
+// AST at runtime, so this is gated behind `std` (guests link packr-abi with
+// `default-features = false`, i.e. no_std, and must not see `std::` here).
+#[cfg(feature = "std")]
+pub mod types;
+
 pub use pattern::Pattern;
 
 pub use hash::{
@@ -313,6 +320,19 @@ pub fn decode_with_limits(bytes: &[u8], limits: &Limits) -> Result<Value, AbiErr
     Value::decode_graph(&decoder, buffer.root)
 }
 
+/// Decode a value from the *prefix* of `bytes`, returning the value and the
+/// number of bytes consumed. Tolerates trailing bytes — useful when the value is
+/// embedded in a larger buffer, e.g. package `__pack_types` metadata that sits at
+/// the start of a data segment followed by other static data.
+pub fn decode_prefix(bytes: &[u8]) -> Result<(Value, usize), AbiError> {
+    let limits = Limits::default();
+    let (buffer, consumed) = GraphBuffer::from_bytes_prefix_with_limits(bytes, &limits)?;
+    buffer.validate_basic_with_limits(&limits)?;
+    let decoder = Decoder::new(&buffer);
+    let value = Value::decode_graph(&decoder, buffer.root)?;
+    Ok((value, consumed))
+}
+
 impl GraphBuffer {
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
@@ -340,6 +360,22 @@ impl GraphBuffer {
     }
 
     pub fn from_bytes_with_limits(bytes: &[u8], limits: &Limits) -> Result<Self, AbiError> {
+        let (buffer, consumed) = Self::from_bytes_prefix_with_limits(bytes, limits)?;
+        if consumed != bytes.len() {
+            return Err(AbiError::InvalidEncoding(String::from("Trailing bytes")));
+        }
+        Ok(buffer)
+    }
+
+    /// Parse a graph buffer from the *prefix* of `bytes`, returning it and the
+    /// number of bytes consumed. Unlike [`GraphBuffer::from_bytes_with_limits`],
+    /// this tolerates trailing bytes — useful when the value is embedded in a
+    /// larger buffer, e.g. `__pack_types` metadata that sits at the start of a
+    /// data segment followed by other static data.
+    pub fn from_bytes_prefix_with_limits(
+        bytes: &[u8],
+        limits: &Limits,
+    ) -> Result<(Self, usize), AbiError> {
         if bytes.len() > limits.max_buffer_size {
             return Err(AbiError::InvalidEncoding(String::from("Buffer too large")));
         }
@@ -385,11 +421,7 @@ impl GraphBuffer {
             )));
         }
 
-        if !cursor.is_eof() {
-            return Err(AbiError::InvalidEncoding(String::from("Trailing bytes")));
-        }
-
-        Ok(Self { nodes, root })
+        Ok((Self { nodes, root }, cursor.pos))
     }
 
     pub fn validate_basic(&self) -> Result<(), AbiError> {
