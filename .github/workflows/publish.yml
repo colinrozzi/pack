@@ -78,6 +78,39 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
+      - name: Publish packr-core
+        run: nix develop --command cargo publish --allow-dirty -p packr-core
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Publish packr-wasmtime
+        run: nix develop
+  --command cargo publish --allow-dirty -p packr-wasmtime
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Publish packr-core
+        run: nix develop --command cargo publish --allow-dirty -p packr-core
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Publish packr-wasmtime
+        run: nix develop
+  --command cargo publish --allow-dirty -p packr-wasmtime
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Publish packr-core
+        run: nix develop --command cargo publish --allow-dirty -p packr-core
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Publish packr-wasmtime
+        run: nix develop
+  --command cargo publish --allow-dirty -p packr-wasmtime
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
       - name: Publish packr-guest-macros
         run: nix develop --command cargo publish --allow-dirty -p packr-guest-macros
         env:
