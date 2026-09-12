@@ -357,9 +357,13 @@ macro_rules! bump_allocator {
     };
 }
 
-/// Set up a panic handler that loops forever.
+/// Set up a panic handler that **traps** (emits a wasm `unreachable`).
 ///
-/// Use this in `no_std` packages.
+/// Use this in `no_std` packages. A guest panic must abort the instance so the
+/// host observes a trap and reports a `Failed` termination — supervisors depend
+/// on that signal. A spinning `loop {}` would instead leave the actor a silent
+/// zombie (the host call never returns; no crash is ever reported), which is
+/// exactly the swallowed-callback-trap class this avoids.
 ///
 /// # Example
 ///
@@ -371,7 +375,17 @@ macro_rules! panic_handler {
     () => {
         #[panic_handler]
         fn panic(_info: &core::panic::PanicInfo) -> ! {
-            loop {}
+            // Trap so the host sees a failure. On wasm this is the `unreachable`
+            // instruction; the non-wasm fallback (never hit by real guests) keeps
+            // the macro compilable off-target.
+            #[cfg(target_arch = "wasm32")]
+            {
+                core::arch::wasm32::unreachable()
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                loop {}
+            }
         }
     };
 }

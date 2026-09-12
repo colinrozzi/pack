@@ -44,18 +44,18 @@ exclude = [
 ]
 
 [workspace.package]
-version = "0.24.0"
+version = "0.24.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/colinrozzi/pack"
 
 [workspace.dependencies]
-packr-abi = { version = "0.24.0", path = "crates/pack-abi", default-features = false }
-packr-core = { version = "0.24.0", path = "crates/pack-core" }
-packr-wasmtime = { version = "0.24.0", path = "crates/pack-wasmtime" }
-packr-derive = { version = "0.24.0", path = "crates/pack-derive" }
-packr-guest = { version = "0.24.0", path = "crates/pack-guest" }
-packr-guest-macros = { version = "0.24.0", path = "crates/pack-guest-macros" }
+packr-abi = { version = "0.24.1", path = "crates/pack-abi", default-features = false }
+packr-core = { version = "0.24.1", path = "crates/pack-core" }
+packr-wasmtime = { version = "0.24.1", path = "crates/pack-wasmtime" }
+packr-derive = { version = "0.24.1", path = "crates/pack-derive" }
+packr-guest = { version = "0.24.1", path = "crates/pack-guest" }
+packr-guest-macros = { version = "0.24.1", path = "crates/pack-guest-macros" }
 
 [package]
 name = "packr"
