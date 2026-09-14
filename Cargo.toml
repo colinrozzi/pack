@@ -8,6 +8,7 @@ members = [
     "crates/pack-guest-macros",
 ]
 exclude = [
+    "tools/packr-migrate-v2v3",
     "crates/pack-web",
     "packages/async-adder",
     "packages/pack-alloc",
