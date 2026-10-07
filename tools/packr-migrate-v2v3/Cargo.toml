@@ -1,0 +1,15 @@
+[package]
+name = "packr-migrate-v2v3"
+version = "0.1.0"
+edition = "2021"
+description = "One-shot CGRF graph-format v2->v3 store-blob migrator (packr-abi 0.20 reader -> 0.24.1 writer)"
+
+[[bin]]
+name = "packr-migrate-v2v3"
+path = "src/main.rs"
+
+[dependencies]
+# v2 reader: last VERSION-2 packr-abi (0.11-0.20 all wrote graph VERSION 2)
+packr-abi-v2 = { package = "packr-abi", version = "=0.20.0", default-features = false, features = ["std"] }
+# v3 writer: the cutover target
+packr-abi = { package = "packr-abi", version = "=0.24.1", default-features = false, features = ["std"] }
