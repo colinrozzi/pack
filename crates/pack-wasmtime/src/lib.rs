@@ -43,6 +43,13 @@ impl WasmtimeEngine {
         config.async_support(true);
         config.wasm_multi_memory(true);
         config.epoch_interruption(true);
+        // An interpreter guest (Wisp) nests real wasm frames per level of
+        // non-tail recursion; wasmtime's 512 KiB default allowed ~1,500 levels.
+        // 8 MiB allows ~25,000. Measured (theater-repl, 10 sessions): resident
+        // memory and speed unchanged, since fiber stack pages are touched only
+        // as deep as a call actually goes.
+        config.max_wasm_stack(8 << 20);
+        config.async_stack_size(9 << 20); // must exceed max_wasm_stack, plus host frames
         let engine = Engine::new(&config).expect("valid wasmtime config");
         Self { engine }
     }
