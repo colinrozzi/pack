@@ -866,15 +866,10 @@ fn decode_interface_hash(value: Value) -> Result<InterfaceHash, MetadataError> {
                     "hash" => {
                         // Hash can be stored as list<u8> or tuple<u64, u64, u64, u64>
                         match val {
-                            Value::List { items, .. } => {
-                                // List of u8 bytes
-                                let bytes: Vec<u8> = items
-                                    .into_iter()
-                                    .filter_map(|v| match v {
-                                        Value::U8(b) => Some(b),
-                                        _ => None,
-                                    })
-                                    .collect();
+                            v @ (Value::List { .. } | Value::Bytes(_)) => {
+                                // a list<u8>, in either form (a decoded Array of u8 is Value::Bytes)
+                                let bytes: Vec<u8> =
+                                    v.as_bytes().map(|b| b.into_owned()).unwrap_or_default();
                                 if bytes.len() == 32 {
                                     let mut arr = [0u8; 32];
                                     arr.copy_from_slice(&bytes);
@@ -1836,6 +1831,11 @@ pub fn validate_value_in_type_space(
 
         // Compound types — recurse
         Type::List(elem_type) => match value {
+            // a list<u8> held as one buffer
+            Value::Bytes(_) => match elem_type.as_ref() {
+                Type::U8 => Ok(()),
+                _ => Err(mismatch("list", value)),
+            },
             Value::List { items, .. } => {
                 for (i, item) in items.iter().enumerate() {
                     validate_value_in_type_space(item, elem_type, type_defs).map_err(|e| {
@@ -2160,6 +2160,7 @@ fn value_type_name(value: &Value) -> String {
         Value::Char(_) => "char".into(),
         Value::String(_) => "string".into(),
         Value::List { .. } => "list".into(),
+        Value::Bytes(_) => "list<u8>".into(),
         Value::Option { .. } => "option".into(),
         Value::Result { .. } => "result".into(),
         Value::Record { type_name, .. } => format!("record '{}'", type_name),

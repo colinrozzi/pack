@@ -96,6 +96,14 @@ pub enum Value {
     Char(char),
     String(String),
 
+    /// A `list<u8>` held as one buffer instead of one `Value::U8` per byte (a
+    /// `Value` is 88 bytes, so a 10 MB file as a `List` is an 880 MB tree).
+    /// Its type is `list<u8>` and it encodes to the same `Array` node as a
+    /// `List` of `U8`, so the wire bytes are identical; decoding an `Array`
+    /// of `u8` gives `Bytes`. Code that reads bytes should use
+    /// [`Value::as_bytes`], which takes both forms.
+    Bytes(Vec<u8>),
+
     // Compound types WITH type info
     List {
         elem_type: ValueType,
@@ -175,6 +183,26 @@ impl Value {
         }
     }
 
+    /// A `list<u8>`'s bytes, whichever form holds them: borrowed from
+    /// `Bytes`, or collected from a `List` of `U8`. `None` for anything else.
+    pub fn as_bytes(&self) -> Option<alloc::borrow::Cow<'_, [u8]>> {
+        match self {
+            Value::Bytes(b) => Some(alloc::borrow::Cow::Borrowed(b)),
+            Value::List {
+                elem_type: ValueType::U8,
+                items,
+            } => items
+                .iter()
+                .map(|v| match v {
+                    Value::U8(x) => Some(*x),
+                    _ => None,
+                })
+                .collect::<Option<Vec<u8>>>()
+                .map(alloc::borrow::Cow::Owned),
+            _ => None,
+        }
+    }
+
     /// Infer the ValueType from this Value
     pub fn infer_type(&self) -> ValueType {
         match self {
@@ -191,6 +219,7 @@ impl Value {
             Value::F64(_) => ValueType::F64,
             Value::Char(_) => ValueType::Char,
             Value::String(_) => ValueType::String,
+            Value::Bytes(_) => ValueType::List(Box::new(ValueType::U8)),
             Value::List { elem_type, .. } => ValueType::List(Box::new(elem_type.clone())),
             Value::Option { inner_type, .. } => ValueType::Option(Box::new(inner_type.clone())),
             Value::Result {
@@ -277,6 +306,15 @@ impl core::fmt::Display for Value {
                 }
                 write!(f, ")")
             }
+            // the text of the equivalent List of U8, so it parses back to the same bytes
+            Value::Bytes(b) => write!(
+                f,
+                "{}",
+                Value::List {
+                    elem_type: ValueType::U8,
+                    items: b.iter().map(|x| Value::U8(*x)).collect(),
+                }
+            ),
             Value::List { elem_type, items } => {
                 if items.is_empty() {
                     // Empty list: annotate elem_type since we can't infer it
@@ -850,6 +888,14 @@ impl<T: TryFrom<Value, Error = ConversionError>> TryFrom<Value> for Vec<T> {
                 .enumerate()
                 .map(|(i, item)| {
                     T::try_from(item).map_err(|e| ConversionError::IndexError(i, Box::new(e)))
+                })
+                .collect(),
+            Value::Bytes(b) => b
+                .into_iter()
+                .enumerate()
+                .map(|(i, x)| {
+                    T::try_from(Value::U8(x))
+                        .map_err(|e| ConversionError::IndexError(i, Box::new(e)))
                 })
                 .collect(),
             other => Err(ConversionError::ExpectedList(format!("{:?}", other))),

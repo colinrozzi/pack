@@ -139,6 +139,18 @@ impl Pattern {
                             && items.iter().zip(vitems).all(|(p, v)| p.matches(v))
                     }
                 }
+                // a list<u8> held as one buffer matches as its bytes would
+                Value::Bytes(bytes) => {
+                    let fits = if *open {
+                        bytes.len() >= items.len()
+                    } else {
+                        bytes.len() == items.len()
+                    };
+                    fits && items
+                        .iter()
+                        .zip(bytes)
+                        .all(|(p, b)| p.matches(&Value::U8(*b)))
+                }
                 _ => false,
             },
 

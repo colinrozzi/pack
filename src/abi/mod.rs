@@ -766,6 +766,17 @@ impl GraphCodec for Value {
                     payload,
                 }))
             }
+            Value::Bytes(bytes) => {
+                // the same Array node as a List of U8: [elem_type:u8, count:u32, data:u8*]
+                let mut payload = Vec::with_capacity(1 + 4 + bytes.len());
+                encode_value_type(&ValueType::U8, &mut payload);
+                payload.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+                payload.extend_from_slice(bytes);
+                Ok(encoder.push_node(Node {
+                    kind: NodeKind::Array,
+                    payload,
+                }))
+            }
             Value::List { elem_type, items }
                 if fixed_width(elem_type).is_some()
                     && items.iter().all(|v| v.infer_type() == *elem_type) =>
@@ -1053,11 +1064,16 @@ fn decode_value(
             // Array: [elem_type:u8, count:u32, data:u8*]
             let elem_type = decode_value_type(&mut cursor)?;
             let count = cursor.read_u32()? as usize;
-            let mut items = Vec::with_capacity(count);
-            for _ in 0..count {
-                items.push(decode_array_element(&mut cursor, &elem_type)?);
+            if elem_type == ValueType::U8 {
+                // one buffer, not one Value per byte (Value::Bytes, as packr-abi decodes)
+                Value::Bytes(cursor.read_bytes(count)?.to_vec())
+            } else {
+                let mut items = Vec::with_capacity(count);
+                for _ in 0..count {
+                    items.push(decode_array_element(&mut cursor, &elem_type)?);
+                }
+                Value::List { elem_type, items }
             }
-            Value::List { elem_type, items }
         }
         NodeKind::List => {
             // v2 format: [elem_type:type_tag*, count:u32, child_indices:u32*]
