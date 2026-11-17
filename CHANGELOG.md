@@ -6,7 +6,7 @@
 
 - **`Value::Bytes(Vec<u8>)` — a `list<u8>` as one buffer.** A byte list is now
   held as one `Vec<u8>` instead of one boxed `Value::U8` per byte, which cut the
-  host's memory for large byte payloads by about 40x (theater-repl 0157).
+  host's memory for large byte payloads (theater-repl ticket 0157).
   `Value::as_bytes()`, `TryFrom<Value> for Vec<u8>`, and `Pattern` support it.
   **No wire change:** `Bytes` encodes to the same `Array` node of u8 as
   `Value::List { elem_type: U8, .. }`, byte for byte.
