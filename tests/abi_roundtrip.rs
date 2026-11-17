@@ -121,7 +121,9 @@ fn roundtrip_array_u8() {
 
     let bytes = encode(&value).expect("encode");
     let decoded = decode(&bytes).expect("decode");
-    assert_eq!(decoded, value);
+    // an Array of u8 decodes as Bytes, which encodes to the same wire
+    assert_eq!(decoded, Value::Bytes(byte_data.clone()));
+    assert_eq!(encode(&decoded).expect("encode bytes"), bytes);
 
     // Verify: single Array node, not 256+ individual nodes
     let buffer = GraphBuffer::from_bytes(&bytes).expect("from_bytes");
@@ -186,10 +188,10 @@ fn roundtrip_array_bool() {
 fn roundtrip_large_byte_array() {
     // The original bug: large byte payloads that blew past max_buffer_size
     let size = 100_000;
-    let byte_data: Vec<Value> = (0..size).map(|i| Value::U8((i % 256) as u8)).collect();
+    let raw: Vec<u8> = (0..size).map(|i| (i % 256) as u8).collect();
     let value = Value::List {
         elem_type: ValueType::U8,
-        items: byte_data,
+        items: raw.iter().map(|&b| Value::U8(b)).collect(),
     };
 
     let bytes = encode(&value).expect("encode");
@@ -201,7 +203,8 @@ fn roundtrip_large_byte_array() {
     );
 
     let decoded = decode(&bytes).expect("decode");
-    assert_eq!(decoded, value);
+    assert_eq!(decoded, Value::Bytes(raw));
+    assert_eq!(encode(&decoded).expect("encode bytes"), bytes);
 }
 
 #[test]

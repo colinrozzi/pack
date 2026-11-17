@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.25.0 (2026-11-17)
+
+### Added
+
+- **`Value::Bytes(Vec<u8>)` — a `list<u8>` as one buffer.** A byte list is now
+  held as one `Vec<u8>` instead of one boxed `Value::U8` per byte, which cut the
+  host's memory for large byte payloads by about 40x (theater-repl 0157).
+  `Value::as_bytes()`, `TryFrom<Value> for Vec<u8>`, and `Pattern` support it.
+  **No wire change:** `Bytes` encodes to the same `Array` node of u8 as
+  `Value::List { elem_type: U8, .. }`, byte for byte.
+
+### Changed
+
+- **Decoding an `Array` of u8 now gives `Value::Bytes`**, not
+  `Value::List { elem_type: U8, items: [Value::U8 ..] }`. Code that matched the
+  `List` form after a decode must match `Value::Bytes` (or use `as_bytes()`).
+  Encoding either form still works.
+
 ## v0.23.0 (2026-08-30)
 
 ### Added
